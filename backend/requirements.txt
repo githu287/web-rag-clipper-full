@@ -1,0 +1,33 @@
+﻿# web-rag-clipper-full backend dependencies
+# Phase 1: 依赖清单（尚未安装业务实现）
+
+fastapi>=0.115.0,<1.0.0
+uvicorn[standard]>=0.30.0,<1.0.0
+pydantic>=2.8.0,<3.0.0
+pydantic-settings>=2.4.0,<3.0.0
+
+# MySQL
+sqlalchemy>=2.0.0,<3.0.0
+pymysql>=1.1.0,<2.0.0
+alembic>=1.13.0,<2.0.0
+
+# Redis
+redis>=5.0.0,<6.0.0
+
+# Milvus
+# 版本严格对齐 Phase 2.2 §2：Milvus Server=milvusdb/milvus:v2.4.4（docker-compose.yml）
+# 官方推荐同 minor 最终补丁版 pymilvus==2.4.15（含 2.4.x 全部修复）；禁止升级到 2.5.x+/3.x 跨 minor。
+pymilvus==2.4.15
+
+# 阿里云百炼 OpenAI 兼容 API
+openai>=1.40.0,<2.0.0
+httpx>=0.27.0,<1.0.0
+
+# FastAPI multipart 解析（Phase 2.10 Step 3：POST /documents/upload 依赖 UploadFile/File）
+python-multipart>=0.0.9,<1.0.0
+
+# 工具
+python-dotenv>=1.0.0,<2.0.0
+
+# Phase 3.4 Step 3：AES-256-GCM API Key 加密（backend/core/security.py）
+cryptography>=42.0.0,<46.0.0

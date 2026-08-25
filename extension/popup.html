@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>Web RAG Clipper</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <!-- Header（固定顶部） -->
+  <div class="header">
+    <span class="logo">R</span>
+    <h1>Web RAG Clipper</h1>
+  </div>
+
+  <!-- Auth bar（Phase 3.4 Step 4：API Key 连接，token 由 popup.js 存储于 chrome.storage.local） -->
+  <div class="auth-bar" id="auth-bar">
+    <div class="auth-row">
+      <input type="password" id="auth-api-key" placeholder="百炼 API Key（sk-...）" autocomplete="off" spellcheck="false">
+      <button type="button" id="auth-btn">连接</button>
+    </div>
+    <div class="auth-status" id="auth-status">未连接：输入 API Key 后点击「连接」</div>
+  </div>
+
+  <!-- Tabs -->
+  <div class="tabs">
+    <button type="button" class="tab-btn active" id="tab-clip" data-tab="clip">剪藏</button>
+    <button type="button" class="tab-btn" id="tab-ask" data-tab="ask">AI问答</button>
+  </div>
+
+  <!-- ============ 剪藏 Tab ============ -->
+  <div class="panel active" id="panel-clip">
+    <div class="content">
+      <div class="field">
+        <div class="label">当前页面标题</div>
+        <div class="value" id="page-title">—</div>
+      </div>
+      <div class="field">
+        <div class="label">当前 URL</div>
+        <div class="value" id="page-url">—</div>
+      </div>
+      <div class="field">
+        <div class="label">正文长度</div>
+        <div class="value" id="text-length">—</div>
+      </div>
+      <button id="clip-btn" disabled>剪藏当前页面</button>
+      <div id="status">
+        <span class="state ready">准备剪藏</span>
+        <div class="detail" id="status-detail"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ AI 问答 Tab ============ -->
+  <div class="panel" id="panel-ask">
+    <div class="ask-head">
+      <div class="ask-page-title" id="ask-page-title" title="当前网页模式基于此页面回答">（未读取页面）</div>
+      <div class="mode-switch">
+        <button type="button" class="mode-btn active" id="mode-current">当前网页</button>
+        <button type="button" class="mode-btn" id="mode-all">全部知识库</button>
+      </div>
+    </div>
+    <div class="chat-area" id="chat-area">
+      <div class="chat-empty" id="chat-empty">输入问题，AI 将基于检索内容回答</div>
+    </div>
+    <div class="chat-input">
+      <textarea id="chat-textarea" rows="2" placeholder="输入问题…（Enter 发送，Shift+Enter 换行）"></textarea>
+      <button type="button" id="chat-send" disabled>发送</button>
+    </div>
+  </div>
+
+  <script src="config.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>
