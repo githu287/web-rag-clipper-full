@@ -21,9 +21,12 @@
    - 装配 RagService + LLMClient + DocumentRepository → RagAnswerService；不调用 ask()。
 10) 提供 UserRepository（Protocol）实例工厂 get_user_repository()（Phase 3.4 Step 4 新增）：
     - 装配 Engine → UserRepositoryImpl；不调用 CRUD 方法。
-11) 提供 UserService 实例工厂 get_user_service()（Phase 3.4 Step 4 新增）：
-    - 装配 UserRepository + Settings(app_master_key) → UserService；不调用
-      register / login / update_api_key / decrypt_api_key。
+11) 提供 UserService 实例工厂 get_user_service()（Phase 3.4 Step 4 新增；
+    F-REV3 增配 EmbeddingClient）：
+    - 装配 UserRepository + Settings(app_master_key) + EmbeddingClient →
+      UserService；不调用 register / login / update_api_key / decrypt_api_key。
+    - EmbeddingClient 仅用于 update_api_key 时以「用户提交的 Key」做最小验证；
+      不在此处调用 embed()（生命周期红线）。
 
 DI 层允许装配：
 - Milvus Repository
@@ -700,23 +703,27 @@ def get_user_service() -> UserService:
     依赖链：
         get_user_repository()  → UserRepository (Protocol)
         get_settings()         → Settings（app_master_key）
+        get_embedding_client() → EmbeddingClient（仅 API Key 最小验证）
             ↓
-        UserService(user_repository, settings)
+        UserService(user_repository, settings, embedding_client)
 
     只负责依赖装配：
     - 获取已缓存的 UserRepository（Protocol）单例；
     - 获取 Settings 单例（读 app_master_key，AES-256-GCM 主密钥）；
-    - 创建 UserService 实例（构造函数仅保存两个依赖引用）。
+    - 获取已缓存的 EmbeddingClient 单例（仅用于 update_api_key 时以
+      用户提交的 Key 做最小 embedding 验证，不在此调用 embed()）；
+    - 创建 UserService 实例（构造函数仅保存三个依赖引用）。
 
     不执行（生命周期红线）：
     - register / login / update_api_key / decrypt_api_key 调用；
+    - embed() / OpenAI client 创建调用；
     - 任何 MySQL 网络请求 / 加密计算。
 
     设计要点：
     1) **lru_cache 单例**：UserService 无状态（仅持有注入依赖的引用），
        进程内共享一个实例安全且高效，与已有 DI 工厂风格一致。
-    2) **依赖复用**：UserRepository 为 lru_cache 单例，不会重复创建
-       Engine / sessionmaker。
+    2) **依赖复用**：UserRepository / EmbeddingClient 均为 lru_cache 单例，
+       不会重复创建 Engine / sessionmaker / OpenAI client。
     3) **Protocol 注入**：user_repository 类型为 UserRepository Protocol，
        UserService 不感知 UserRepositoryImpl 具体类型，便于单元测试 Mock。
     4) **不调用业务方法**：DI 仅 return 对象，不触发认证链路。
@@ -727,4 +734,9 @@ def get_user_service() -> UserService:
     """
     user_repository = get_user_repository()
     settings = get_settings()
-    return UserService(user_repository=user_repository, settings=settings)
+    embedding_client = get_embedding_client()
+    return UserService(
+        user_repository=user_repository,
+        settings=settings,
+        embedding_client=embedding_client,
+    )

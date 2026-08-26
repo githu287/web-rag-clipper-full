@@ -395,3 +395,85 @@ class AuthOperationError(AuthError):
     处理策略：外部数据服务问题（MySQL 连接 / 约束冲突），映射 503 Service
     Unavailable，与 DocumentOperationError → 503 风格对齐。
     """
+
+
+# ============================================================================
+# 身份重构异常族（Phase 3.4 Step F-REV3 新增：username+password 身份模型）
+#
+# 旧身份模型（API Key 即身份）相关的 ApiKeyInvalidError / ApiKeyAlreadyRegisteredError
+# 将在后续 Step（F4 重写 UserService / F5 重写 Router）完成后移除，F1 阶段先只增不改。
+# ============================================================================
+
+
+class UsernameAlreadyExistsError(AuthError):
+    """
+    注册用户名已存在：POST /auth/register 时 username 与现有用户冲突。
+
+    触发场景（UserService.register）：get_user_by_username 返回非 None。
+
+    处理策略：不可重试（客户端应改用 /auth/login 或换 username），映射 409 Conflict；
+    响应不泄露任何已有用户细节（除 username 已被占用外）。
+    """
+
+
+class InvalidCredentialsError(AuthError):
+    """
+    登录凭据无效：username 不存在或 password 错误（二者统一响应，防用户枚举）。
+
+    触发场景（UserService.login）：
+      - get_user_by_username 返回 None；
+      - verify_password 返回 False。
+
+    处理策略：不可重试（客户端需纠正输入），映射 401；
+    与「不泄露身份存在性」原则一致——不区分「用户名不存在」与「密码错误」。
+    """
+
+
+class PasswordPolicyError(AuthError):
+    """
+    密码强度不足：不符合 NIST 800-63B 最小长度策略。
+
+    触发场景（backend/core/security.py validate_password_strength）：
+      - 长度 < 8 或 > 128。
+
+    处理策略：不可重试（输入本身非法），映射 422 Unprocessable Entity。
+    """
+
+
+class ApiKeyValidationError(AuthError):
+    """
+    API Key 校验失败：格式非法或百炼实时验证未通过。
+
+    触发场景（UserService.update_api_key）：
+      - 格式不符合预期（非 sk- 前缀等）；
+      - 调百炼验证时服务端返回无效（401/403 等）。
+
+    处理策略：不可重试（输入本身无效），映射 400 Bad Request；
+    失败时**不写入数据库**，避免无效 Key 入库。
+    """
+
+
+class ApiKeyNotConfiguredError(AuthError):
+    """
+    当前用户未配置模型 API Key，但请求需要模型能力。
+
+    触发场景（UserService.decrypt_api_key 或业务 Service 注入 Embedding/LLM 前）：
+      - users.api_key_ciphertext IS NULL（api_key_configured=False）。
+
+    处理策略：不可重试（用户需前往设置配置 Key），映射 409 Conflict；
+    响应消息固定为：
+      "当前账号尚未配置阿里云百炼 API Key，请前往设置配置。"
+    与「认证无效 → 401」严格区分：身份有效，仅缺少模型凭证。
+    """
+
+
+class DisabledUserError(AuthError):
+    """
+    用户已被禁用：users.status = DISABLED 时尝试访问业务能力。
+
+    触发场景（backend/api/deps.py get_current_user）：
+      - token 有效但用户状态为 DISABLED。
+
+    处理策略：不可重试（需管理员启用），映射 403 Forbidden；
+    与 AuthenticationError（401，身份无效）语义区分。
+    """

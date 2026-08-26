@@ -77,7 +77,7 @@ class BailianLLMClientTest(unittest.TestCase):
         )
         client = self._make_client()
 
-        result = client.generate("system prompt", "user prompt")
+        result = client.generate("system prompt", "user prompt", api_key="test-user-key")
 
         self.assertEqual(result, "你好，这是回答内容。")
         # 断言请求参数：model / messages（system + user）/ temperature
@@ -98,7 +98,7 @@ class BailianLLMClientTest(unittest.TestCase):
         )
         client = self._make_client()
 
-        result = client.generate("s", "u")
+        result = client.generate("s", "u", api_key="test-user-key")
 
         self.assertEqual(result, "第一段\n\n第二段")
 
@@ -111,7 +111,7 @@ class BailianLLMClientTest(unittest.TestCase):
         client = self._make_client()
 
         with self.assertRaises(LLMClientEmptyResponseError):
-            client.generate("s", "u")
+            client.generate("s", "u", api_key="test-user-key")
 
     # ----------------------------------------------------- 4. None response
     def test_generate_none_content_raises_empty_response(self) -> None:
@@ -122,7 +122,7 @@ class BailianLLMClientTest(unittest.TestCase):
         client = self._make_client()
 
         with self.assertRaises(LLMClientEmptyResponseError):
-            client.generate("s", "u")
+            client.generate("s", "u", api_key="test-user-key")
 
     # ----------------------------------------------------- 5. API error
     def test_generate_api_error_wrapped_as_request_error(self) -> None:
@@ -133,7 +133,7 @@ class BailianLLMClientTest(unittest.TestCase):
         client = self._make_client()
 
         with self.assertRaises(LLMClientRequestError) as ctx:
-            client.generate("s", "u")
+            client.generate("s", "u", api_key="test-user-key")
 
         self.assertIsInstance(ctx.exception.__cause__, TimeoutError)
         self.assertIn("connection timeout", str(ctx.exception))
@@ -147,7 +147,7 @@ class BailianLLMClientTest(unittest.TestCase):
         client = self._make_client()
 
         with self.assertRaises(LLMClientResponseError) as ctx:
-            client.generate("s", "u")
+            client.generate("s", "u", api_key="test-user-key")
 
         self.assertIsInstance(ctx.exception.__cause__, AttributeError)
 
@@ -159,7 +159,7 @@ class BailianLLMClientTest(unittest.TestCase):
         client = self._make_client()
 
         with self.assertRaises(LLMClientResponseError):
-            client.generate("s", "u")
+            client.generate("s", "u", api_key="test-user-key")
 
     def test_generate_missing_message_raises_response_error(self) -> None:
         """6c：choices[0] 无 message → LLMClientResponseError，保留异常链。"""
@@ -171,14 +171,14 @@ class BailianLLMClientTest(unittest.TestCase):
         client = self._make_client()
 
         with self.assertRaises(LLMClientResponseError) as ctx:
-            client.generate("s", "u")
+            client.generate("s", "u", api_key="test-user-key")
 
         self.assertIsInstance(ctx.exception.__cause__, AttributeError)
 
     # ----------------------------------------------------- 7. API key missing
     def test_generate_missing_api_key_raises_config_error(self) -> None:
-        """7：API Key 为空 → LLMClientConfigError（不触发网络调用）。"""
-        client = self._make_client(_make_settings(bailian_api_key=""))
+        """7：api_key 未显式提供 → LLMClientConfigError（不触发网络调用）。"""
+        client = self._make_client()
 
         with self.assertRaises(LLMClientConfigError):
             client.generate("s", "u")
@@ -196,7 +196,7 @@ class BailianLLMClientTest(unittest.TestCase):
         client = self._make_client(settings)
 
         with self.assertRaises(LLMClientConfigError):
-            client.generate("s", "u")
+            client.generate("s", "u", api_key="test-user-key")
 
         self.mock_openai_cls.assert_not_called()
 
@@ -208,7 +208,7 @@ class BailianLLMClientTest(unittest.TestCase):
         client = self._make_client()
 
         with self.assertRaises(LLMClientRequestError) as ctx:
-            client.generate("s", "u")
+            client.generate("s", "u", api_key="test-user-key")
 
         self.assertIs(ctx.exception.__cause__, original)
 
@@ -221,10 +221,10 @@ class BailianLLMClientTest(unittest.TestCase):
         client = self._make_client()
         self.mock_openai_cls.assert_not_called()
 
-        client.generate("s", "u")
+        client.generate("s", "u", api_key="test-user-key")
         self.mock_openai_cls.assert_called_once()
-        # 第二次调用复用同一 client（不重复构造）
-        client.generate("s", "u")
+        # 第二次调用复用同一 client（相同 Key 不重复构造）
+        client.generate("s", "u", api_key="test-user-key")
         self.assertEqual(self.mock_openai_cls.call_count, 1)
 
     # ----------------------------------------------------- 额外：prompt 空值防御
@@ -238,6 +238,50 @@ class BailianLLMClientTest(unittest.TestCase):
             client.generate("s", "")
 
         self.mock_openai_cls.assert_not_called()
+
+
+class BailianLLMClientUserKeyTest(unittest.TestCase):
+    """Phase 3.4 Step F6：用户 API Key 必须显式传入且按 Key 隔离缓存。"""
+
+    def setUp(self) -> None:
+        self.patcher = patch("backend.clients.llm.OpenAI")
+        self.mock_openai_cls = self.patcher.start()
+        self.addCleanup(self.patcher.stop)
+        self.mock_client = Mock()
+        self.mock_openai_cls.return_value = self.mock_client
+        self.mock_client.chat.completions.create.return_value = _make_client_response(
+            "ok"
+        )
+        # 显式放置「服务器 Key」，断言用户链路绝不使用它
+        self.client = BailianLLMClient(_make_settings(bailian_api_key="server-key"))
+
+    def test_user_api_key_used_in_client(self) -> None:
+        """F6-A：显式用户 Key → OpenAI 以该 Key 构造（不读取 settings.bailian_api_key）。"""
+        self.client.generate("s", "u", api_key="sk-user-a")
+        _, kwargs = self.mock_openai_cls.call_args
+        self.assertEqual(kwargs["api_key"], "sk-user-a")
+        self.assertNotEqual(kwargs["api_key"], "server-key")
+
+    def test_missing_api_key_raises_config_error(self) -> None:
+        """F6-B：api_key 缺失 → LLMClientConfigError，不构造 OpenAI。"""
+        with self.assertRaises(LLMClientConfigError) as ctx:
+            self.client.generate("s", "u")
+        self.assertIn("User API Key is required", str(ctx.exception))
+        self.mock_openai_cls.assert_not_called()
+
+    def test_different_keys_isolated_clients(self) -> None:
+        """F6-D：Key A / Key B → 两个独立 OpenAI client（cache 按 Key 隔离）。"""
+        self.client.generate("s", "u", api_key="sk-user-a")
+        self.client.generate("s", "u", api_key="sk-user-b")
+        self.assertEqual(self.mock_openai_cls.call_count, 2)
+        self.assertEqual(len(self.client._clients), 2)  # noqa: SLF001
+
+    def test_same_key_shared_client(self) -> None:
+        """F6-E：相同 Key → 共享同一 OpenAI client（不重复构造）。"""
+        self.client.generate("s", "u", api_key="sk-user-a")
+        self.client.generate("s", "u", api_key="sk-user-a")
+        self.assertEqual(self.mock_openai_cls.call_count, 1)
+        self.assertEqual(len(self.client._clients), 1)  # noqa: SLF001
 
 
 if __name__ == "__main__":

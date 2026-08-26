@@ -24,8 +24,9 @@ Phase 3.4 Step D（user-aware 身份传递）：
     ask() 新增 user_id 与 api_key 参数：
       - user_id：身份传递 + ownership —— get_document(document_id, user_id)
         （跨用户 → DocumentNotFoundError → 404）与 search(user_id) 一致；
-      - api_key：LLM 生成使用用户自己的百炼 API Key（AuthService 解密后传入；
-        None 回退 settings.bailian_api_key，仅本地测试 / 兼容旧调用）。
+      - api_key：LLM 生成使用当前用户自己的百炼 API Key（AuthService
+        decrypt_api_key 解密后传入；Phase 3.4 Step F6：必填，严禁回退
+        settings.bailian_api_key）。
     绝不使用服务器 Key 冒充用户 Key。
     Step 8: 组装 Sources（document_id / title / url / chunk_id=result.id / score=result.distance；
               不重新转换 score，当前 Milvus COSINE 语义：越大越相似）。

@@ -110,6 +110,11 @@ copy .env.example .env
 
 - `BAILIAN_API_KEY`：填写百炼 API Key
 - `MYSQL_PORT`：使用本 compose 时填 `33066`
+- `APP_MASTER_KEY`：**必填**。用于加密用户阿里云百炼 API Key 的服务端主密钥，必须由部署者自行生成并妥善保存，不得提交 Git。值必须是「utf-8 编码后恰好 32 字节」的字符串，例如执行以下命令生成 32 个 hex 字符后粘贴：
+
+```powershell
+python -c "import secrets; print(secrets.token_hex(16))"
+```
 
 ### 3. 安装依赖（项目虚拟环境）
 
@@ -244,6 +249,7 @@ curl.exe -F "file=@C:\path\to\sample.txt" http://localhost:8000/documents/upload
 | `APP_ENV` | `development` | 运行环境 |
 | `API_HOST` / `API_PORT` | `0.0.0.0` / `8000` | 服务监听地址 / 端口 |
 | `API_TOKEN` | `change-me...` | 预留鉴权令牌（当前实现未接入） |
+| `APP_MASTER_KEY` | 空 | **必填**。AES-256-GCM 服务端主密钥，用于加密/解密用户百炼 API Key；须为 utf-8 编码后恰好 32 字节的字符串，部署者自行生成并妥善保存，不得提交 Git |
 | `MYSQL_HOST` / `MYSQL_PORT` | `localhost` / `3306` | MySQL 连接（compose 场景端口填 `33066`） |
 | `MYSQL_USER` / `MYSQL_PASSWORD` / `MYSQL_DATABASE` | `rag_user` / `rag_password` / `rag_clipper` | MySQL 凭证 |
 | `REDIS_*` | — | Redis 连接（当前业务未使用） |

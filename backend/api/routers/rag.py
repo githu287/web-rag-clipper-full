@@ -96,6 +96,7 @@ async def rag_search(
     results = await service.search(
         query=request.query,
         limit=request.limit,
+        document_id=request.document_id,
         user_id=current_user.id,
         api_key=api_key,
     )

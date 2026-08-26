@@ -1,11 +1,11 @@
 """
-Security 纯工具单元测试（Phase 3.4 Step 3）。
+Security 纯工具单元测试（Phase 3.4 Step 3；F-REV3 新增 Argon2id 密码测试）。
 
 测试策略：
 - 纯函数测试：无 DB / 无 Settings / 无 IO；
 - master key 由测试显式构造 32 bytes 字符串，不依赖 .env；
 - 覆盖：sha256 / token 生成与哈希 / AES-256-GCM round trip / 随机 nonce /
-  篡改与错误密钥失败路径 / 密钥长度校验。
+  篡改与错误密钥失败路径 / 密钥长度校验 / Argon2id 密码哈希与强度校验。
 
 不依赖：
 - 真实 MySQL / Redis / Milvus；
@@ -19,6 +19,7 @@ import hashlib
 import unittest
 
 from backend.core.exceptions import (
+    PasswordPolicyError,
     SecurityConfigurationError,
     SecurityDecryptionError,
 )
@@ -26,8 +27,11 @@ from backend.core.security import (
     decrypt_api_key,
     encrypt_api_key,
     generate_token,
+    hash_password,
     hash_token,
     sha256_hex,
+    validate_password_strength,
+    verify_password,
 )
 
 # 32 bytes 的 ASCII 字符串，utf-8 编码后恰好 32 bytes（AES-256）
@@ -119,6 +123,61 @@ class SecurityUtilTest(unittest.TestCase):
                 encrypt_api_key("sk-test", bad_key)
             with self.assertRaises(SecurityConfigurationError):
                 decrypt_api_key("dummy", "dummy", bad_key)
+
+
+class PasswordHashTest(unittest.TestCase):
+    """Argon2id 密码哈希与强度校验测试（Phase 3.4 Step F-REV3）。"""
+
+    def test_hash_password_argon2id_phc(self) -> None:
+        """hash_password 输出 $argon2id$ 前缀的 PHC 格式字符串。"""
+        h = hash_password("correct-horse-12")
+        self.assertTrue(h.startswith("$argon2id$"), f"unexpected prefix: {h[:24]}")
+        self.assertGreater(len(h), 40)
+
+    def test_hash_password_random_salt(self) -> None:
+        """同一密码两次哈希结果不同（随机 salt），且均可验证通过。"""
+        h1 = hash_password("same-password-123")
+        h2 = hash_password("same-password-123")
+        self.assertNotEqual(h1, h2)
+        self.assertTrue(verify_password("same-password-123", h1))
+        self.assertTrue(verify_password("same-password-123", h2))
+
+    def test_verify_password_correct(self) -> None:
+        """正确密码验证通过。"""
+        h = hash_password("my-secret-pass")
+        self.assertTrue(verify_password("my-secret-pass", h))
+
+    def test_verify_password_wrong(self) -> None:
+        """错误密码验证失败。"""
+        h = hash_password("my-secret-pass")
+        self.assertFalse(verify_password("wrong-pass", h))
+
+    def test_verify_password_invalid_hash_returns_false(self) -> None:
+        """非法 / 损坏哈希统一返回 False，不抛异常、不泄露细节。"""
+        self.assertFalse(verify_password("any-password", "not-a-valid-hash"))
+        self.assertFalse(verify_password("any-password", ""))
+        self.assertFalse(verify_password("any-password", "$argon2id$truncated"))
+
+    def test_hash_not_contain_plaintext(self) -> None:
+        """哈希字符串不包含明文密码。"""
+        pwd = "super-secret-pass-42"
+        self.assertNotIn(pwd, hash_password(pwd))
+
+    def test_validate_password_strength_ok(self) -> None:
+        """最小 8 位 / 最大 128 位边界内通过。"""
+        validate_password_strength("12345678")
+        validate_password_strength("a" * 128)
+
+    def test_validate_password_strength_too_short(self) -> None:
+        """长度 < 8（含空串）抛 PasswordPolicyError。"""
+        for bad in ("", "1234567"):
+            with self.assertRaises(PasswordPolicyError):
+                validate_password_strength(bad)
+
+    def test_validate_password_strength_too_long(self) -> None:
+        """长度 > 128 抛 PasswordPolicyError。"""
+        with self.assertRaises(PasswordPolicyError):
+            validate_password_strength("a" * 129)
 
 
 if __name__ == "__main__":

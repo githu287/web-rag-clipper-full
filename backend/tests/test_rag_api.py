@@ -38,7 +38,11 @@ from fastapi.testclient import TestClient
 
 from backend.api.deps import get_current_user
 from backend.core.di import get_rag_service, get_user_service
-from backend.core.exceptions import DocumentOperationError
+from backend.core.exceptions import (
+    DocumentNotFoundError,
+    DocumentNotSuccessError,
+    DocumentOperationError,
+)
 from backend.main import create_app
 from backend.models.api_schema import RagSearchResult
 
@@ -271,9 +275,11 @@ class RagApiTest(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         # Phase 3.4 Step 4：user_id（ownership）+ api_key（用户自己的 Key）透传
+        # Phase 3.4 Step E：document_id（当前网页模式；默认 None=全库模式）透传
         self.fake_rag_service.search.assert_awaited_once_with(
             query="hello world",
             limit=20,
+            document_id=None,
             user_id=1,
             api_key="sk-test",
         )
@@ -336,6 +342,150 @@ class RagApiTest(unittest.TestCase):
         self.assertEqual(response.status_code, 503)
         body = response.json()
         self.assertEqual(body["type"], "DocumentOperationError")
+
+    # ------------------------------------------- Phase 3.4 Step E：document_id + 用户隔离
+    def test_search_document_id_passthrough(self) -> None:
+        """E1（18）：当前网页模式：document_id 透传给 service → 200。"""
+        self.fake_rag_service.search.return_value = [self._make_result()]
+
+        response = self.client.post(
+            "/rag/search",
+            json={"query": "hello", "limit": 5, "document_id": 1},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.fake_rag_service.search.assert_awaited_once_with(
+            query="hello",
+            limit=5,
+            document_id=1,
+            user_id=1,
+            api_key="sk-test",
+        )
+
+    def test_search_other_users_document_404(self) -> None:
+        """E2（19）：当前网页请求其他用户 document → 404（DocumentNotFoundError handler）。"""
+        self.fake_rag_service.search.side_effect = DocumentNotFoundError(
+            "Document 999 不存在或不属于当前用户"
+        )
+
+        response = self.client.post(
+            "/rag/search",
+            json={"query": "hello", "limit": 5, "document_id": 999},
+        )
+
+        self.assertEqual(response.status_code, 404)
+
+    def test_search_non_success_document_409(self) -> None:
+        """E3（22）：非 SUCCESS document → 409（DocumentNotSuccessError handler）。"""
+        self.fake_rag_service.search.side_effect = DocumentNotSuccessError(
+            "Document 1 当前状态为 FAILED，非 SUCCESS 不可检索"
+        )
+
+        response = self.client.post(
+            "/rag/search",
+            json={"query": "hello", "limit": 5, "document_id": 1},
+        )
+
+        self.assertEqual(response.status_code, 409)
+
+    def test_search_document_id_zero_422(self) -> None:
+        """E4（24）：document_id <= 0 → 422（gt=0）。"""
+        response = self.client.post(
+            "/rag/search",
+            json={"query": "hello", "limit": 5, "document_id": 0},
+        )
+
+        self.assertEqual(response.status_code, 422)
+        self.fake_rag_service.search.assert_not_called()
+
+    def test_search_user_a_full_knowledge_only_a(self) -> None:
+        """E5（20）：用户 A 全库查询只能看到 A（document_id=None，user_id=1）。"""
+        self.fake_rag_service.search.return_value = [self._make_result()]
+
+        response = self.client.post(
+            "/rag/search",
+            json={"query": "hello", "limit": 5},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            [item["document_id"] for item in response.json()["results"]],
+            [1],
+        )
+        self.fake_rag_service.search.assert_awaited_once_with(
+            query="hello",
+            limit=5,
+            document_id=None,
+            user_id=1,
+            api_key="sk-test",
+        )
+
+    def test_search_user_b_full_knowledge_only_b(self) -> None:
+        """E6（21）：用户 B 全库查询只能看到 B（user_id=2）。"""
+        # 切换到用户 B（user_id 来自后端认证上下文，不从请求体读取）
+        self.app.dependency_overrides[get_current_user] = (
+            lambda: SimpleNamespace(id=2)
+        )
+        self.fake_rag_service.search.return_value = [
+            self._make_result(pk="2_0", page_id=2, document_id=2)
+        ]
+
+        response = self.client.post(
+            "/rag/search",
+            json={"query": "hello", "limit": 5},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            [item["document_id"] for item in response.json()["results"]],
+            [2],
+        )
+        self.fake_rag_service.search.assert_awaited_once_with(
+            query="hello",
+            limit=5,
+            document_id=None,
+            user_id=2,
+            api_key="sk-test",
+        )
+
+
+class RagApiUnauthenticatedTest(unittest.TestCase):
+    """Phase 3.4 Step E（17）：未认证访问 /rag/search → 401。"""
+
+    def setUp(self) -> None:
+        self._milvus_init_patcher = patch("backend.main.get_milvus_initializer")
+        self.mock_initializer = Mock()
+        self.mock_initializer.initialize.return_value = None
+        self._milvus_init_patcher.start().return_value = self.mock_initializer
+
+        self.fake_rag_service = Mock()
+        self.fake_rag_service.search = AsyncMock()
+        self.fake_user_service = Mock()
+        self.fake_user_service.decrypt_api_key = Mock(return_value="sk-test")
+
+        self.app = create_app()
+        self.app.dependency_overrides[get_rag_service] = (
+            lambda: self.fake_rag_service
+        )
+        # 不 override get_current_user → 走真实认证依赖（无 token → 401）
+        self.app.dependency_overrides[get_user_service] = (
+            lambda: self.fake_user_service
+        )
+        self.client = TestClient(self.app)
+
+    def tearDown(self) -> None:
+        self._milvus_init_patcher.stop()
+        self.app.dependency_overrides.clear()
+
+    def test_search_unauthenticated_401(self) -> None:
+        """17：未认证（无 Bearer token）→ 401，service 不被调用。"""
+        response = self.client.post(
+            "/rag/search",
+            json={"query": "hello", "limit": 5},
+        )
+
+        self.assertEqual(response.status_code, 401)
+        self.fake_rag_service.search.assert_not_awaited()
 
 
 if __name__ == "__main__":

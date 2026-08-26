@@ -65,9 +65,10 @@ class MilvusRepository(Protocol):
         *,
         limit: int = 10,
         ef: int = 128,
+        expr: str | None = None,
     ) -> list[ChunkSearchResult]:
         """
-        向量 ANN 检索（Phase 2.2 §14.1）。
+        向量 ANN 检索（Phase 2.2 §14.1；Phase 3.4 Step E 增 expr）。
 
         锁定参数（Impl 必须固定写常量，严禁允许调用方覆盖）：
           - metric_type = "COSINE"
@@ -79,6 +80,10 @@ class MilvusRepository(Protocol):
             limit  : Milvus 初始候选召回数；默认 10（硬编码；RAG_TOP_K_CANDIDATES 未定义，
                      为未来预留配置，当前不读取），可覆盖。
             ef     : HNSW 查询候选池参数；默认 128（Phase 2.2 §10.2），可覆盖。
+            expr   : 可选标量过滤表达式（Phase 3.4 Step E，用户隔离用）：
+                     - 例如 "page_id == 1"（当前网页模式）或 "page_id in [1, 2]"（全库模式）；
+                     - 默认 None = 全库 ANN 检索，行为与 Step E 前完全一致；
+                     - 仅透传给 pymilvus client.search 的 expr 参数，不修改 Schema / index / metric。
 
         Returns:
             按 COSINE similarity 降序（最相似在前；由 Milvus 返回顺序保证）严格排序的结果列表，

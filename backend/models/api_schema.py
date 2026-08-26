@@ -77,8 +77,11 @@ class RagSearchRequest(BaseModel):
     POST /rag/search 请求体。
 
     字段：
-        query : 用户查询文本（必须非空字符串）。
-        limit : 最终返回结果数上限；默认 5；范围 1 <= limit <= 20。
+        query       : 用户查询文本（必须非空字符串）。
+        limit       : 最终返回结果数上限；默认 5；范围 1 <= limit <= 20。
+        document_id : 可选；限定检索范围（当前网页模式，Phase 3.4 Step E）；
+                      None = 全部知识库模式。ownership 由后端 user_id 校验，
+                      不允许客户端通过 document_id 访问他人文档。
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -93,6 +96,11 @@ class RagSearchRequest(BaseModel):
         ge=1,
         le=20,
         description="最终返回结果数上限；范围 1-20；默认 5",
+    )
+    document_id: int | None = Field(
+        default=None,
+        gt=0,
+        description="限定检索范围（当前网页模式）；None=全部知识库模式",
     )
 
 
@@ -264,25 +272,57 @@ class RagAskResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class ApiKeyAuthRequest(BaseModel):
+class RegisterRequest(BaseModel):
     """
-    注册 / 登录请求体：以「用户自己的百炼 API Key」作为身份凭据。
+    POST /auth/register 请求体（F-REV3：注册仅需 username + password）。
 
-    设计说明：
-        - API Key 即身份：SHA-256(api_key) 作为 users.api_key_hash 唯一键；
-        - 明文 API Key 仅存在于请求体内存，绝不写日志 / 落库（落库的是 AES
-          加密副本 + hash）；
-        - 同一 Key 重复调用 register 会 409（应改用 login），login 每次成功
-          轮换 token（旧 token 失效）。
+    注册完全不依赖百炼 API Key：账号身份与模型配置解耦，用户注册成功后
+    可随时在 PUT /users/me/api-key 配置模型 Key。
+
+    字段约束：
+        - username：1-64 字符，仅允许字母数字与 _ . -（Pydantic 层 422）；
+        - password：1-128 字符；长度强度（8-128）由 Service 层
+          validate_password_strength 校验（PasswordPolicyError → 422）。
     """
 
     model_config = ConfigDict(extra="forbid")
 
-    api_key: str = Field(
+    username: str = Field(
         ...,
         min_length=1,
-        max_length=512,
-        description="用户自己的百炼 API Key（身份凭据；不落库明文）",
+        max_length=64,
+        pattern=r"^[a-zA-Z0-9_.\-]+$",
+        description="用户名（1-64 字符；字母数字与 _ . -）",
+    )
+    password: str = Field(
+        ...,
+        min_length=1,
+        max_length=128,
+        description="登录密码（8-128 字符；强度由后端校验）",
+    )
+
+
+class LoginRequest(BaseModel):
+    """
+    POST /auth/login 请求体（F-REV3：登录仅需 username + password）。
+
+    username 不存在与密码错误统一 401（防用户枚举），由 Service 层保证。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    username: str = Field(
+        ...,
+        min_length=1,
+        max_length=64,
+        pattern=r"^[a-zA-Z0-9_.\-]+$",
+        description="用户名",
+    )
+    password: str = Field(
+        ...,
+        min_length=1,
+        max_length=128,
+        description="登录密码",
     )
 
 
@@ -305,12 +345,17 @@ class AuthResponse(BaseModel):
 
 class ApiKeyUpdateRequest(BaseModel):
     """
-    PUT /auth/api-key 请求体：已登录用户更换自己的 API Key。
+    PUT /users/me/api-key 请求体：已登录用户配置 / 更换自己的百炼 API Key。
 
     更换后：
-        - api_key_hash / ciphertext / nonce 更新为新 Key 的加密副本；
-        - token 不变（用户身份不变）、user_id 不变、知识库归属不变；
+        - api_key_ciphertext / nonce 更新为新 Key 的加密副本（AES-256-GCM）；
+        - token 不变（用户身份不变）、user_id 不变、username 不变、
+          password_hash 不变、documents 归属不变；
         - 后续所有 embedding / LLM 调用自动使用新 Key。
+
+    字段约束：
+        - 必须以 "sk-" 开头（百炼 DashScope Key 格式；Pydantic 层 422）；
+        - 真实有效性由 UserService 调 EmbeddingClient 最小验证（失败 400）。
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -319,18 +364,38 @@ class ApiKeyUpdateRequest(BaseModel):
         ...,
         min_length=1,
         max_length=512,
-        description="新的百炼 API Key（更换后立即生效）",
+        pattern=r"^sk-",
+        description="百炼 API Key（sk- 开头；配置后立即生效）",
     )
 
 
 class ApiKeyUpdateResponse(BaseModel):
     """
-    PUT /auth/api-key 响应体。
+    PUT /users/me/api-key 响应体。
 
     字段：
-        user_id: 被更换 Key 的用户主键（token 不变，客户端继续用原 token）。
+        user_id: 被配置 Key 的用户主键（token 不变，客户端继续用原 token）。
     """
 
     model_config = ConfigDict(extra="forbid")
 
     user_id: int = Field(..., ge=1, description="用户主键 ID")
+
+
+class UserMeResponse(BaseModel):
+    """
+    GET /users/me 响应体（当前用户信息）。
+
+    安全红线：绝不返回 api_key / api_key_ciphertext / api_key_nonce /
+    password_hash / token_hash / APP_MASTER_KEY。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    user_id: int = Field(..., ge=1, description="用户主键 ID")
+    username: str = Field(..., min_length=1, max_length=64, description="用户名")
+    api_key_configured: bool = Field(
+        ...,
+        description="是否已配置百炼 API Key（ciphertext 与 nonce 均非 NULL）",
+    )
+    created_at: datetime = Field(..., description="用户创建时间（ISO 8601）")

@@ -48,7 +48,11 @@ from datetime import datetime
 from unittest.mock import Mock
 
 from backend.clients.embedding import EmbeddingClient
-from backend.core.exceptions import DocumentOperationError
+from backend.core.exceptions import (
+    DocumentNotFoundError,
+    DocumentNotSuccessError,
+    DocumentOperationError,
+)
 from backend.models.api_schema import RagSearchResult
 from backend.models.document import Document, DocumentStatus
 from backend.models.milvus_dto import ChunkSearchResult
@@ -67,6 +71,9 @@ class RagServiceStatusFilterTest(unittest.TestCase):
         self.embedding.embed.return_value = [_QUERY_VECTOR]
         self.milvus = Mock(spec=MilvusRepository)
         self.documents = Mock(spec=DocumentRepository)
+        # Phase 3.4 Step E：全库模式先取当前用户 SUCCESS document ids
+        # （单测默认用户有 doc 1、2；特殊用例按需覆盖）。
+        self.documents.get_success_document_ids.return_value = [1, 2]
         self.service = RagService(
             embedding_client=self.embedding,
             milvus_repository=self.milvus,
@@ -92,7 +99,8 @@ class RagServiceStatusFilterTest(unittest.TestCase):
         )
 
     def _search(self, query: str = "hello", limit: int = 5) -> list[ChunkSearchResult]:
-        return asyncio.run(self.service.search(query=query, limit=limit))
+        # Phase 3.4 Step E：全库模式要求 user_id（匿名返回 []）。
+        return asyncio.run(self.service.search(query=query, limit=limit, user_id=1))
 
     # ------------------------------------------------------------- A. SUCCESS 放行
     def test_a_success_passthrough(self) -> None:
@@ -106,7 +114,7 @@ class RagServiceStatusFilterTest(unittest.TestCase):
         results = self._search()
 
         self.assertEqual([c.id for c in results], ["1_0", "2_0"])
-        self.documents.get_documents_by_ids.assert_called_once_with([1, 2], None)
+        self.documents.get_documents_by_ids.assert_called_once_with([1, 2], 1)
 
     # ------------------------------------------------------------- B. FAILED 过滤
     def test_b_failed_filtered(self) -> None:
@@ -164,6 +172,9 @@ class RagServiceStatusFilterTest(unittest.TestCase):
     def test_f_orphan_chunk_filtered(self) -> None:
         candidates = [self._chunk("1_0", 1), self._chunk("999_0", 999)]
         self.milvus.search.return_value = candidates
+        # 999 属于当前用户 SUCCESS 集合（否则会被 Step E 兜底提前剔除，
+        # 无法单独验证 orphan 过滤）；MySQL 层只有 id=1，999 → 孤儿被过滤。
+        self.documents.get_success_document_ids.return_value = [1, 999]
         # MySQL 只有 id=1；999 不存在 → 应被当作孤儿过滤。
         self.documents.get_documents_by_ids.return_value = [
             self._doc(1, DocumentStatus.SUCCESS),
@@ -172,7 +183,7 @@ class RagServiceStatusFilterTest(unittest.TestCase):
         results = self._search()
 
         self.assertEqual([c.id for c in results], ["1_0"])
-        self.documents.get_documents_by_ids.assert_called_once_with([1, 999], None)
+        self.documents.get_documents_by_ids.assert_called_once_with([1, 999], 1)
 
     # ---------------------------------------------------------------- G. limit=1
     def test_g_limit_1_search_10(self) -> None:
@@ -185,7 +196,10 @@ class RagServiceStatusFilterTest(unittest.TestCase):
 
         results = self._search(limit=1)
 
-        self.milvus.search.assert_called_once_with(_QUERY_VECTOR, limit=10)
+        # Step E：全库模式 Milvus 检索携带用户隔离 expr（success_ids=[1, 2]）
+        self.milvus.search.assert_called_once_with(
+            _QUERY_VECTOR, limit=10, expr="page_id in [1,2]"
+        )
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0].id, "1_0")
 
@@ -193,26 +207,42 @@ class RagServiceStatusFilterTest(unittest.TestCase):
     def test_h_limit_10_search_10(self) -> None:
         candidates = [self._chunk(f"{i}_0", i) for i in range(1, 11)]
         self.milvus.search.return_value = candidates
+        # 当前用户 SUCCESS 集合覆盖全部候选 page_id（避免 Step E 兜底误过滤）
+        self.documents.get_success_document_ids.return_value = list(range(1, 11))
         self.documents.get_documents_by_ids.return_value = [
             self._doc(i, DocumentStatus.SUCCESS) for i in range(1, 11)
         ]
 
         results = self._search(limit=10)
 
-        self.milvus.search.assert_called_once_with(_QUERY_VECTOR, limit=10)
+        # Step E：expr 覆盖当前用户全部 SUCCESS ids（1..10）
+        self.milvus.search.assert_called_once_with(
+            _QUERY_VECTOR,
+            limit=10,
+            expr="page_id in [1,2,3,4,5,6,7,8,9,10]",
+        )
         self.assertEqual(len(results), 10)
 
     # --------------------------------------------------------------- I. limit=20
     def test_i_limit_20_search_20(self) -> None:
         candidates = [self._chunk(f"{i}_0", i) for i in range(1, 21)]
         self.milvus.search.return_value = candidates
+        # 当前用户 SUCCESS 集合覆盖全部候选 page_id（避免 Step E 兜底误过滤）
+        self.documents.get_success_document_ids.return_value = list(range(1, 21))
         self.documents.get_documents_by_ids.return_value = [
             self._doc(i, DocumentStatus.SUCCESS) for i in range(1, 21)
         ]
 
         results = self._search(limit=20)
 
-        self.milvus.search.assert_called_once_with(_QUERY_VECTOR, limit=20)
+        # Step E：expr 覆盖当前用户全部 SUCCESS ids（1..20）
+        self.milvus.search.assert_called_once_with(
+            _QUERY_VECTOR,
+            limit=20,
+            expr=(
+                "page_id in [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20]"
+            ),
+        )
         self.assertEqual(len(results), 20)
 
     # --------------------------------------------------------- J. 空 Milvus 候选
@@ -252,7 +282,7 @@ class RagServiceStatusFilterTest(unittest.TestCase):
         results = self._search()
 
         # 去重后 [1, 2]，只调用一次；不能传 [1, 1, 1, 2]。
-        self.documents.get_documents_by_ids.assert_called_once_with([1, 2], None)
+        self.documents.get_documents_by_ids.assert_called_once_with([1, 2], 1)
         self.assertEqual([c.id for c in results], ["1_0", "1_1", "1_2", "2_0"])
 
 
@@ -271,6 +301,8 @@ class RagServiceMetadataTest(unittest.TestCase):
         self.embedding.embed.return_value = [_QUERY_VECTOR]
         self.milvus = Mock(spec=MilvusRepository)
         self.documents = Mock(spec=DocumentRepository)
+        # Phase 3.4 Step E：全库模式先取当前用户 SUCCESS document ids
+        self.documents.get_success_document_ids.return_value = [1, 2]
         self.service = RagService(
             embedding_client=self.embedding,
             milvus_repository=self.milvus,
@@ -312,7 +344,8 @@ class RagServiceMetadataTest(unittest.TestCase):
         query: str = "hello",
         limit: int = 5,
     ) -> list[RagSearchResult]:
-        return asyncio.run(self.service.search(query=query, limit=limit))
+        # Phase 3.4 Step E：全库模式要求 user_id（匿名返回 []）。
+        return asyncio.run(self.service.search(query=query, limit=limit, user_id=1))
 
     # ------------------------------------- A. SUCCESS chunk 附带完整 metadata
     def test_a_success_chunk_attaches_metadata(self) -> None:
@@ -379,6 +412,8 @@ class RagServiceMetadataTest(unittest.TestCase):
     def test_e_document_id_equals_page_id(self) -> None:
         candidates = [self._chunk("7_0", 7)]
         self.milvus.search.return_value = candidates
+        # page 7 属于当前用户 SUCCESS 集合（避免 Step E 兜底误过滤）
+        self.documents.get_success_document_ids.return_value = [7]
         self.documents.get_documents_by_ids.return_value = [
             self._doc(7, DocumentStatus.SUCCESS),
         ]
@@ -392,6 +427,7 @@ class RagServiceMetadataTest(unittest.TestCase):
     def test_f_orphan_chunk_still_filtered(self) -> None:
         candidates = [self._chunk("1_0", 1), self._chunk("999_0", 999)]
         self.milvus.search.return_value = candidates
+        self.documents.get_success_document_ids.return_value = [1, 999]
         self.documents.get_documents_by_ids.return_value = [
             self._doc(1, DocumentStatus.SUCCESS),
         ]
@@ -399,11 +435,12 @@ class RagServiceMetadataTest(unittest.TestCase):
         results = self._search()
 
         self.assertEqual([r.id for r in results], ["1_0"])
-        self.documents.get_documents_by_ids.assert_called_once_with([1, 999], None)
+        self.documents.get_documents_by_ids.assert_called_once_with([1, 999], 1)
 
     # ------------------------------ G. 非 SUCCESS 状态仍然被过滤
     def test_g_non_success_statuses_still_filtered(self) -> None:
         candidates = [self._chunk(f"{i}_0", i) for i in range(1, 6)]
+        self.documents.get_success_document_ids.return_value = list(range(1, 6))
         self.milvus.search.return_value = candidates
         self.documents.get_documents_by_ids.return_value = [
             self._doc(1, DocumentStatus.SUCCESS),
@@ -431,7 +468,7 @@ class RagServiceMetadataTest(unittest.TestCase):
 
         results = self._search()
 
-        self.documents.get_documents_by_ids.assert_called_once_with([1], None)
+        self.documents.get_documents_by_ids.assert_called_once_with([1], 1)
         self.assertEqual(len(results), 3)
         self.assertTrue(all(r.document_id == 1 for r in results))
         self.assertEqual({r.filename for r in results}, {"file-1.txt"})
@@ -464,13 +501,22 @@ class RagServiceMetadataTest(unittest.TestCase):
     def test_j_limit_20_unchanged(self) -> None:
         candidates = [self._chunk(f"{i}_0", i) for i in range(1, 21)]
         self.milvus.search.return_value = candidates
+        # 当前用户 SUCCESS 集合覆盖全部候选 page_id（避免 Step E 兜底误过滤）
+        self.documents.get_success_document_ids.return_value = list(range(1, 21))
         self.documents.get_documents_by_ids.return_value = [
             self._doc(i, DocumentStatus.SUCCESS) for i in range(1, 21)
         ]
 
         results = self._search(limit=20)
 
-        self.milvus.search.assert_called_once_with(_QUERY_VECTOR, limit=20)
+        # Step E：expr 覆盖当前用户全部 SUCCESS ids（1..20）
+        self.milvus.search.assert_called_once_with(
+            _QUERY_VECTOR,
+            limit=20,
+            expr=(
+                "page_id in [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20]"
+            ),
+        )
         self.assertEqual(len(results), 20)
         self.assertTrue(all(r.document_id == r.page_id for r in results))
 
@@ -576,6 +622,7 @@ class RagServiceMetadataTest(unittest.TestCase):
         """P：metadata 不改变 orphan filter（SUCCESS-only filter 保持原行为）。"""
         candidates = [self._chunk("1_0", 1), self._chunk("999_0", 999)]
         self.milvus.search.return_value = candidates
+        self.documents.get_success_document_ids.return_value = [1, 999]
         self.documents.get_documents_by_ids.return_value = [
             self._doc(
                 1,
@@ -589,7 +636,247 @@ class RagServiceMetadataTest(unittest.TestCase):
         results = self._search()
 
         self.assertEqual([r.id for r in results], ["1_0"])
-        self.documents.get_documents_by_ids.assert_called_once_with([1, 999], None)
+        self.documents.get_documents_by_ids.assert_called_once_with([1, 999], 1)
+
+
+class RagServiceUserIsolationTest(unittest.TestCase):
+    """
+    Phase 3.4 Step E：RAG 检索按用户隔离（全部知识库模式 + 当前网页模式）。
+
+    覆盖 Step E §十一 1-10：
+      1. A 全库只检索 A（success_ids=[1]；混入 page_id=999 → 剔除）
+      2. B 全库只检索 B（success_ids=[2]；混入 page_id=1 → 剔除）
+      3. success_ids 正确构造 Milvus expr（expr="page_id in [1,2]"）
+      4. 混入其他用户 page_id → 应用层 post-filter 删除（双保险）
+      5. 当前网页模式 expr == "page_id == {document_id}"
+      6. 当前网页模式 ownership 失败（跨用户）→ DocumentNotFoundError
+      7. 非 SUCCESS → DocumentNotSuccessError
+      8. success_ids=[] → 不调用 Milvus，直接返回 []
+      9. limit 仍正确
+      10. document_id 模式 candidate_limit 仍为 max(limit*4, 40)
+    """
+
+    def setUp(self) -> None:
+        self.embedding = Mock(spec=EmbeddingClient)
+        self.embedding.embed.return_value = [_QUERY_VECTOR]
+        self.milvus = Mock(spec=MilvusRepository)
+        self.documents = Mock(spec=DocumentRepository)
+        self.service = RagService(
+            embedding_client=self.embedding,
+            milvus_repository=self.milvus,
+            document_repository=self.documents,
+        )
+
+    def _chunk(self, pk: str, page_id: int, index: int = 0) -> ChunkSearchResult:
+        return ChunkSearchResult(
+            id=pk,
+            page_id=page_id,
+            chunk_index=index,
+            chunk_text=f"text-{pk}",
+            distance=0.1,
+        )
+
+    def _doc(self, doc_id: int, status: str) -> Document:
+        return Document(
+            id=doc_id,
+            filename=f"file-{doc_id}.txt",
+            file_path=f"uploads/file-{doc_id}.txt",
+            status=status,
+        )
+
+    def _search(
+        self,
+        query: str = "hello",
+        limit: int = 5,
+        document_id: int | None = None,
+        user_id: int | None = 1,
+    ) -> list[RagSearchResult]:
+        return asyncio.run(
+            self.service.search(
+                query=query,
+                limit=limit,
+                document_id=document_id,
+                user_id=user_id,
+            )
+        )
+
+    # 1. A 全库只检索 A（Milvus 混入其他用户 page_id=999，双保险剔除）
+    def test_user_a_full_knowledge_only_sees_a(self) -> None:
+        self.documents.get_success_document_ids.return_value = [1]
+        self.milvus.search.return_value = [
+            self._chunk("1_0", 1),
+            self._chunk("999_0", 999),
+        ]
+        self.documents.get_documents_by_ids.return_value = [
+            self._doc(1, DocumentStatus.SUCCESS),
+        ]
+
+        results = self._search()
+
+        # 应用层兜底：999 不属于 A 的 success_ids → 被剔除
+        self.assertEqual([r.id for r in results], ["1_0"])
+        self.documents.get_success_document_ids.assert_called_once_with(1)
+        self.milvus.search.assert_called_once_with(
+            _QUERY_VECTOR, limit=10, expr="page_id in [1]"
+        )
+
+    # 2. B 全库只检索 B
+    def test_user_b_full_knowledge_only_sees_b(self) -> None:
+        self.documents.get_success_document_ids.return_value = [2]
+        self.milvus.search.return_value = [
+            self._chunk("1_0", 1),
+            self._chunk("2_0", 2),
+        ]
+        self.documents.get_documents_by_ids.return_value = [
+            self._doc(1, DocumentStatus.SUCCESS),
+            self._doc(2, DocumentStatus.SUCCESS),
+        ]
+
+        results = self._search(user_id=2)
+
+        # 即使 SQL 层（mock）返回了两份 SUCCESS 文档，post-filter 仍以
+        # user B 的 success_ids=[2] 为唯一允许集合 → 剔除 page 1。
+        self.assertEqual([r.id for r in results], ["2_0"])
+        self.documents.get_success_document_ids.assert_called_once_with(2)
+        self.milvus.search.assert_called_once_with(
+            _QUERY_VECTOR, limit=10, expr="page_id in [2]"
+        )
+
+    # 3. success_ids 正确构造 Milvus expr
+    def test_success_ids_build_milvus_expr(self) -> None:
+        self.documents.get_success_document_ids.return_value = [1, 2]
+        self.milvus.search.return_value = [
+            self._chunk("1_0", 1),
+            self._chunk("2_0", 2),
+        ]
+        self.documents.get_documents_by_ids.return_value = [
+            self._doc(1, DocumentStatus.SUCCESS),
+            self._doc(2, DocumentStatus.SUCCESS),
+        ]
+
+        self._search()
+
+        self.milvus.search.assert_called_once_with(
+            _QUERY_VECTOR, limit=10, expr="page_id in [1,2]"
+        )
+
+    # 4. 混入其他用户 page_id → post-filter 删除（即使下游全放行也兜底）
+    def test_post_filter_removes_other_users_page(self) -> None:
+        self.documents.get_success_document_ids.return_value = [1, 2]
+        # Milvus 异常返回三个候选（含其他用户 page 999）
+        self.milvus.search.return_value = [
+            self._chunk("1_0", 1),
+            self._chunk("2_0", 2),
+            self._chunk("999_0", 999),
+        ]
+        # 极端场景：mock SQL 层也“错误”放行 999（真实不会发生），
+        # 应用层 page_id in success_ids 兜底必须删除 999。
+        self.documents.get_documents_by_ids.return_value = [
+            self._doc(1, DocumentStatus.SUCCESS),
+            self._doc(2, DocumentStatus.SUCCESS),
+            self._doc(999, DocumentStatus.SUCCESS),
+        ]
+
+        results = self._search()
+
+        self.assertEqual({r.id for r in results}, {"1_0", "2_0"})
+        self.assertEqual({r.page_id for r in results}, {1, 2})
+
+    # 5. 当前网页模式 expr == page_id == document_id
+    def test_current_page_mode_expr(self) -> None:
+        self.documents.get_document.return_value = self._doc(
+            1, DocumentStatus.SUCCESS
+        )
+        self.milvus.search.return_value = [self._chunk("1_0", 1)]
+        self.documents.get_documents_by_ids.return_value = [
+            self._doc(1, DocumentStatus.SUCCESS),
+        ]
+
+        results = self._search(document_id=1, limit=5)
+
+        self.assertEqual([r.id for r in results], ["1_0"])
+        self.documents.get_document.assert_called_once_with(1, 1)
+        # candidate_limit = max(5*4, 40) = 40
+        self.milvus.search.assert_called_once_with(
+            _QUERY_VECTOR, limit=40, expr="page_id == 1"
+        )
+
+    # 6. 当前网页模式 ownership 失败（跨用户 / 不存在）→ DocumentNotFoundError
+    def test_current_page_mode_other_users_document_raises(self) -> None:
+        # get_document(document_id, user_id) 带归属过滤：他人文档返回 None
+        self.documents.get_document.return_value = None
+
+        with self.assertRaises(DocumentNotFoundError):
+            self._search(document_id=999, user_id=1)
+
+        self.milvus.search.assert_not_called()
+
+    # 7. 非 SUCCESS → DocumentNotSuccessError
+    def test_current_page_mode_non_success_raises(self) -> None:
+        self.documents.get_document.return_value = self._doc(
+            1, DocumentStatus.FAILED
+        )
+
+        with self.assertRaises(DocumentNotSuccessError):
+            self._search(document_id=1, user_id=1)
+
+        self.milvus.search.assert_not_called()
+
+    # 8. success_ids=[] → 不调用 Milvus
+    def test_empty_success_ids_skips_milvus(self) -> None:
+        self.documents.get_success_document_ids.return_value = []
+
+        results = self._search()
+
+        self.assertEqual(results, [])
+        self.milvus.search.assert_not_called()
+        self.documents.get_documents_by_ids.assert_not_called()
+
+    # 9. limit 仍正确（全库模式 top-K）
+    def test_full_knowledge_limit_respected(self) -> None:
+        self.documents.get_success_document_ids.return_value = [1, 2]
+        self.milvus.search.return_value = [
+            self._chunk(f"{i}_0", 1 if i % 2 else 2) for i in range(5)
+        ]
+        self.documents.get_documents_by_ids.return_value = [
+            self._doc(1, DocumentStatus.SUCCESS),
+            self._doc(2, DocumentStatus.SUCCESS),
+        ]
+
+        results = self._search(limit=2)
+
+        self.assertEqual(len(results), 2)
+        self.milvus.search.assert_called_once_with(
+            _QUERY_VECTOR, limit=10, expr="page_id in [1,2]"
+        )
+
+    # 10. document_id 模式 candidate_limit = max(limit*4, 40)
+    def test_current_page_candidate_limit(self) -> None:
+        self.documents.get_document.return_value = self._doc(
+            1, DocumentStatus.SUCCESS
+        )
+        self.milvus.search.return_value = [self._chunk("1_0", 1)]
+        self.documents.get_documents_by_ids.return_value = [
+            self._doc(1, DocumentStatus.SUCCESS),
+        ]
+
+        results = self._search(document_id=1, limit=1)
+
+        self.assertEqual(len(results), 1)
+        # max(1*4, 40) = 40
+        self.milvus.search.assert_called_once_with(
+            _QUERY_VECTOR, limit=40, expr="page_id == 1"
+        )
+
+    # 全库模式匿名（user_id=None）→ 拒绝并返回 []（不调用 Milvus / MySQL）
+    def test_anonymous_full_knowledge_rejected(self) -> None:
+        results = asyncio.run(
+            self.service.search(query="hello", limit=5, user_id=None)
+        )
+
+        self.assertEqual(results, [])
+        self.documents.get_success_document_ids.assert_not_called()
+        self.milvus.search.assert_not_called()
 
 
 if __name__ == "__main__":

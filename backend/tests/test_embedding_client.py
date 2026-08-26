@@ -233,15 +233,17 @@ class EmbeddingClientConfigTest(unittest.TestCase):
     """I. 配置错误：不 mock _get_client，走真实惰性校验路径。"""
 
     def test_i_missing_api_key_raises_config_error(self) -> None:
-        client = EmbeddingClient(_make_settings(bailian_api_key=""))
+        # Phase 3.4 Step F6：api_key 必须显式提供，不再回退 settings.bailian_api_key
+        client = EmbeddingClient(_make_settings())
         with self.assertRaises(EmbeddingConfigError) as ctx:
             client.embed(["x"])
-        self.assertIn("BAILIAN_API_KEY", str(ctx.exception))
+        self.assertIn("User API Key is required", str(ctx.exception))
 
     def test_i_missing_base_url_raises_config_error(self) -> None:
+        # F6：必须显式传入 api_key，才能走到 base_url 校验分支
         client = EmbeddingClient(_make_settings(bailian_base_url=""))
         with self.assertRaises(EmbeddingConfigError):
-            client.embed(["x"])
+            client.embed(["x"], api_key="test-user-key")
 
     def test_i_missing_model_raises_config_error(self) -> None:
         # 设计说明：Settings.bailian_embedding_model 带 min_length=1，空值在 Settings 构造期即被
@@ -250,7 +252,60 @@ class EmbeddingClientConfigTest(unittest.TestCase):
         client = EmbeddingClient(_make_settings())
         client._settings.bailian_embedding_model = ""  # noqa: SLF001 — 测试绕过 pydantic 前置校验
         with self.assertRaises(EmbeddingConfigError):
-            client.embed(["x"])
+            client.embed(["x"], api_key="test-user-key")
+
+
+class EmbeddingClientUserKeyTest(unittest.TestCase):
+    """Phase 3.4 Step F6：用户 API Key 必须显式传入，且按 Key 隔离缓存。"""
+
+    def setUp(self) -> None:
+        self.patcher = mock.patch("backend.clients.embedding.OpenAI")
+        self.mock_openai_cls = self.patcher.start()
+        self.addCleanup(self.patcher.stop)
+        # 显式放置一个「服务器 Key」，用于断言它绝不被用户链路使用
+        self.settings = _make_settings(bailian_api_key="server-key")
+        self.client = EmbeddingClient(self.settings)
+
+    def test_user_api_key_used_in_client(self) -> None:
+        """F6-A：显式用户 Key → OpenAI 以该 Key 构造（不读取 settings.bailian_api_key）。"""
+        self.client._get_client("sk-user-a")
+        self.mock_openai_cls.assert_called_once_with(
+            api_key="sk-user-a",
+            base_url="https://example.com/v1",
+        )
+
+    def test_missing_api_key_raises_config_error(self) -> None:
+        """F6-B：api_key=None → EmbeddingConfigError，且不构造 OpenAI。"""
+        with self.assertRaises(EmbeddingConfigError) as ctx:
+            self.client._get_client(None)
+        self.assertIn("User API Key is required", str(ctx.exception))
+        self.mock_openai_cls.assert_not_called()
+
+    def test_empty_api_key_raises_config_error(self) -> None:
+        """F6-B：api_key="" → EmbeddingConfigError，且不构造 OpenAI。"""
+        with self.assertRaises(EmbeddingConfigError):
+            self.client._get_client("")
+        self.mock_openai_cls.assert_not_called()
+
+    def test_different_keys_isolated_clients(self) -> None:
+        """F6-D：Key A / Key B → 两个独立 OpenAI client（cache 按 Key 隔离）。"""
+        self.client._get_client("sk-user-a")
+        self.client._get_client("sk-user-b")
+        # OpenAI 构造了 2 次，且每次使用各自 Key
+        self.assertEqual(self.mock_openai_cls.call_count, 2)
+        calls = self.mock_openai_cls.call_args_list
+        self.assertEqual(calls[0][1]["api_key"], "sk-user-a")
+        self.assertEqual(calls[1][1]["api_key"], "sk-user-b")
+        # cache 有 2 个独立条目（Key A / Key B 各占一条）
+        self.assertEqual(len(self.client._clients), 2)  # noqa: SLF001
+
+    def test_same_key_shared_client(self) -> None:
+        """F6-E：相同 Key → 共享同一 OpenAI client（不重复构造）。"""
+        client_a1 = self.client._get_client("sk-user-a")
+        client_a2 = self.client._get_client("sk-user-a")
+        self.assertIs(client_a1, client_a2)
+        self.assertEqual(self.mock_openai_cls.call_count, 1)
+        self.assertEqual(len(self.client._clients), 1)  # noqa: SLF001
 
 
 if __name__ == "__main__":

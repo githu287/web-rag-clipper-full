@@ -1,5 +1,5 @@
 """
-POST /ingest/page API 集成测试（Phase 2.13 Step 3）。
+POST /ingest/page API 集成测试（Phase 2.13 Step 3；Phase 3.4 Step F6 认证升级）。
 
 技术栈：unittest + unittest.mock + FastAPI TestClient。
 不连接真实 MySQL / Milvus / 百炼：
@@ -8,7 +8,14 @@ POST /ingest/page API 集成测试（Phase 2.13 Step 3）。
     - 通过 patch("backend.main.get_milvus_initializer") 阻断 lifespan 启动期
       真实 Milvus 连接。
 
-覆盖场景（对应 Phase 2.13 Step 3 §五 A~K）：
+Phase 3.4 Step F6 变更（认证 + 用户 Key）：
+    - /ingest/page 接入 Depends(get_current_user)：未认证 → 401，禁止 anonymous ingest；
+    - 接入 UserService.decrypt_api_key(current_user)：未配置 API Key → 409
+      API_KEY_NOT_CONFIGURED，不进入 Embedding；
+    - ingest_page(page_id, chunks, user_id=current_user.id, api_key=<用户 Key>)；
+    - 严禁使用服务器 settings.bailian_api_key 作为 fallback。
+
+覆盖场景（对应 Phase 2.13 Step 3 §五 A~K + F6）：
     A. 正常请求（page_id=123, chunks=["chunk A","chunk B"]）→ 200，参数透传
     B. response：success=true，message="success"
     C. page_id <= 0（0 / 负数）→ 422
@@ -22,18 +29,25 @@ POST /ingest/page API 集成测试（Phase 2.13 Step 3）。
     K. Router 不直接构造 IngestService（依赖 Depends(get_ingest_service)；
        源码审查：ingest_page 签名 service: IngestService = Depends(get_ingest_service)，
        路由体无 IngestService(...) 构造；本测试验证 Depends 注入链路生效）
+    F6-1. 未认证 → 401（不 override get_current_user，走真实认证）
+    F6-2. 已认证但未配置 API Key → 409 API_KEY_NOT_CONFIGURED，service 不被调用
+    F6-3. 已配置 → decrypt_api_key(current_user) 被调用，service 收到
+          user_id=current_user.id + api_key=解密后的用户 Key
+    F6-4. service 收到的 api_key 只能是用户 Key（服务器 .env Key 不被使用）
 """
 
 from __future__ import annotations
 
 import unittest
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
 from fastapi.testclient import TestClient
 
+from backend.api.deps import get_current_user
 from backend.clients.embedding import EmbeddingClientError
-from backend.core.di import get_ingest_service
-from backend.core.exceptions import MilvusRepositoryError
+from backend.core.di import get_ingest_service, get_user_service
+from backend.core.exceptions import ApiKeyNotConfiguredError, MilvusRepositoryError
 from backend.main import create_app
 
 
@@ -50,10 +64,17 @@ class IngestApiTest(unittest.TestCase):
         self.fake_ingest_service = Mock()
         self.fake_ingest_service.ingest_page = AsyncMock(return_value=None)
 
+        # Phase 3.4 Step F6：认证 + 用户 Key 注入
+        self.fake_user = SimpleNamespace(id=42)
+        self.fake_user_service = Mock()
+        self.fake_user_service.decrypt_api_key = Mock(return_value="sk-user")
+
         self.app = create_app()
         self.app.dependency_overrides[get_ingest_service] = (
             lambda: self.fake_ingest_service
         )
+        self.app.dependency_overrides[get_current_user] = lambda: self.fake_user
+        self.app.dependency_overrides[get_user_service] = lambda: self.fake_user_service
         self.client = TestClient(self.app)
 
     def tearDown(self) -> None:
@@ -65,15 +86,19 @@ class IngestApiTest(unittest.TestCase):
 
     # ----------------------------------------------------- A. 正常请求 → 200
     def test_ingest_page_success(self) -> None:
-        """A：正常请求 → 200，page_id / chunks 正确透传。"""
+        """A：正常请求 → 200，page_id / chunks / user_id / api_key 正确透传。"""
         response = self._post(
             {"page_id": 123, "chunks": ["chunk A", "chunk B"]}
         )
 
         self.assertEqual(response.status_code, 200)
+        # F6：decrypt_api_key(current_user) 被调用，返回用户 Key
+        self.fake_user_service.decrypt_api_key.assert_called_once_with(self.fake_user)
         self.fake_ingest_service.ingest_page.assert_awaited_once_with(
             page_id=123,
             chunks=["chunk A", "chunk B"],
+            user_id=42,
+            api_key="sk-user",
         )
 
     # ------------------------------------------- B. response success=true
@@ -179,6 +204,8 @@ class IngestApiTest(unittest.TestCase):
         self.fake_ingest_service.ingest_page.assert_awaited_once_with(
             page_id=7,
             chunks=["x"],
+            user_id=42,
+            api_key="sk-user",
         )
 
     # ---------------------------------- K. Router 不直接构造 IngestService
@@ -204,6 +231,67 @@ class IngestApiTest(unittest.TestCase):
         response = self._post({"page_id": 3, "chunks": ["y"]})
         self.assertEqual(response.status_code, 503)
         self.fake_ingest_service.ingest_page.assert_awaited_once()
+
+    # ================================================================
+    # Phase 3.4 Step F6：认证 + 用户 API Key
+    # ================================================================
+    def test_ingest_page_requires_authentication(self) -> None:
+        """F6-1：未认证（无 Authorization）→ 401，禁止 anonymous ingest。"""
+        # 移除认证 override，走真实 get_current_user（无 token → 401）
+        self.app.dependency_overrides.pop(get_current_user, None)
+        self.app.dependency_overrides.pop(get_user_service, None)
+
+        response = self._post({"page_id": 1, "chunks": ["x"]})
+
+        self.assertEqual(response.status_code, 401)
+        self.fake_ingest_service.ingest_page.assert_not_called()
+
+    def test_ingest_page_no_api_key_returns_409(self) -> None:
+        """F6-2：已认证但未配置 API Key → 409 API_KEY_NOT_CONFIGURED，不进入 service。"""
+        self.fake_user_service.decrypt_api_key.side_effect = ApiKeyNotConfiguredError(
+            "current user has no api key"
+        )
+
+        response = self._post({"page_id": 1, "chunks": ["x"]})
+
+        self.assertEqual(response.status_code, 409)
+        body = response.json()
+        self.assertIn("API Key", body.get("detail", ""))
+        self.assertEqual(body.get("type"), "ApiKeyNotConfiguredError")
+        # 未配置 Key 时不得调用 Embedding / Milvus（service 不被调用）
+        self.fake_ingest_service.ingest_page.assert_not_called()
+
+    def test_ingest_page_passes_user_id_and_api_key(self) -> None:
+        """F6-3：已配置 → service 收到 current_user.id 与 decrypt 后的用户 Key。"""
+        self.fake_user_service.decrypt_api_key.return_value = "sk-real-user"
+
+        response = self._post({"page_id": 5, "chunks": ["x"]})
+
+        self.assertEqual(response.status_code, 200)
+        self.fake_user_service.decrypt_api_key.assert_called_once_with(self.fake_user)
+        self.fake_ingest_service.ingest_page.assert_awaited_once_with(
+            page_id=5,
+            chunks=["x"],
+            user_id=42,
+            api_key="sk-real-user",
+        )
+
+    def test_ingest_page_never_uses_server_key(self) -> None:
+        """F6-4：service 收到的 api_key 只能是用户 Key（服务器 .env Key 不被使用）。"""
+        # 服务器 Key 只存在于 settings（测试中未配置）；
+        # 断言 service 收到的 api_key 严格等于 decrypt_api_key 的返回值，
+        # 且不存在任何 settings.bailian_api_key 注入路径。
+        self.fake_user_service.decrypt_api_key.return_value = "sk-user-only"
+
+        response = self._post({"page_id": 9, "chunks": ["y"]})
+
+        self.assertEqual(response.status_code, 200)
+        self.fake_ingest_service.ingest_page.assert_awaited_once_with(
+            page_id=9,
+            chunks=["y"],
+            user_id=42,
+            api_key="sk-user-only",
+        )
 
 
 if __name__ == "__main__":

@@ -61,15 +61,15 @@ class EmbeddingClient:
     百炼 text-embedding-v3 嵌入客户端（OpenAI 兼容模式）。
 
     依赖：
-        settings.bailian_api_key            → OpenAI api_key
         settings.bailian_base_url           → OpenAI base_url
         settings.bailian_embedding_model    → 请求 model 参数
         settings.bailian_embedding_dimension → 返回维度强校验基准（默认 1024）
         settings.embedding_batch_size       → 自动分批大小（≤10，百炼硬限制）
+        （Phase 3.4 Step F6：API Key 由调用方显式传入，禁止读取 settings.bailian_api_key）
 
     使用方式（后续 Service 层示例，本阶段不实现）：
         client = EmbeddingClient(settings)
-        vectors = client.embed(["hello", "world"])  # → [[...1024...], [...1024...]]
+        vectors = client.embed(["hello", "world"], api_key="<用户自己的百炼 Key>")
     """
 
     def __init__(self, settings: Settings) -> None:
@@ -102,9 +102,8 @@ class EmbeddingClient:
 
         Args:
             texts: 待嵌入的文本列表；每条必须非空字符串。
-            api_key: 百炼 API Key（Phase 3.4 Step D：用户自己的 Key，由
-                AuthService 解密后经 Service 传入）；None 时回退
-                settings.bailian_api_key（仅本地测试 / 兼容旧调用）。
+            api_key: 当前用户的百炼 API Key（Phase 3.4 Step F6：必填，
+                必须显式提供，禁止回退 settings.bailian_api_key）。
 
         Returns:
             list[list[float]]：与 texts 等长、同序；每条向量长度 == bailian_embedding_dimension。
@@ -142,19 +141,20 @@ class EmbeddingClient:
         按 API Key 隔离的 OpenAI client 获取（Phase 3.4 Step D）。
 
         规则：
-          - api_key 提供 → 使用该 Key（用户自己的百炼 Key；AuthService 解密后传入）；
-          - api_key 为 None → 回退 settings.bailian_api_key（仅本地测试 / 兼容旧调用）；
+          - api_key 必填：调用方必须显式提供当前用户的百炼 API Key（AuthService
+            decrypt_api_key 解密后传入）；api_key 为 None 或空字符串 → EmbeddingConfigError；
+          - 严禁回退 settings.bailian_api_key（服务器 .env Key 不参与用户业务链路）；
           - 缓存 key = sha256(api_key)，不把明文 Key 当 dict key；
           - client 只存进程内存 dict，不落数据库 / Redis / 磁盘等任何持久存储；
           - 不打印 / 不记录 API Key 本身。
 
         经验库 153832：延迟真实连接，避免 import 阶段 / __init__ 阶段对百炼服务的硬依赖。
         """
-        effective_key = api_key if api_key else self._settings.bailian_api_key
-        if not effective_key:
+        if not api_key:
             raise EmbeddingConfigError(
-                "API Key 未配置：请检查环境变量 BAILIAN_API_KEY 或传入用户 Key"
+                "User API Key is required：调用方必须显式提供当前用户的百炼 API Key"
             )
+        effective_key = api_key
 
         client_key = sha256_hex(effective_key)
         cached = self._clients.get(client_key)

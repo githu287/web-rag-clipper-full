@@ -67,8 +67,8 @@ class LLMClient(Protocol):
         Args:
             system_prompt: 系统提示词（非空字符串，定义回答约束）。
             user_prompt: 用户提示词（非空字符串，含 Context + 用户问题）。
-            api_key: 百炼 API Key（Phase 3.4 Step D：用户自己的 Key）；
-                None 时回退 settings.bailian_api_key（仅本地测试 / 兼容旧调用）。
+            api_key: 当前用户的百炼 API Key（Phase 3.4 Step F6：必填，
+                必须显式提供，禁止回退 settings.bailian_api_key）。
 
         Returns:
             strip() 后的非空回答文本。
@@ -88,9 +88,9 @@ class BailianLLMClient:
     百炼 LLM Chat Completion 客户端（OpenAI 兼容模式）。
 
     依赖：
-        settings.bailian_api_key     → OpenAI api_key
         settings.bailian_base_url    → OpenAI base_url
         settings.bailian_llm_model   → 请求 model 参数（默认 qwen-plus）
+        （Phase 3.4 Step F6：API Key 由调用方显式传入，禁止读取 settings.bailian_api_key）
     """
 
     def __init__(self, settings: Settings) -> None:
@@ -119,8 +119,8 @@ class BailianLLMClient:
         Args:
             system_prompt: 系统提示词（定义回答约束）。
             user_prompt: 用户提示词（Context + 用户问题）。
-            api_key: 百炼 API Key（Phase 3.4 Step D：用户自己的 Key）；
-                None 时回退 settings.bailian_api_key（仅本地测试 / 兼容旧调用）。
+            api_key: 当前用户的百炼 API Key（Phase 3.4 Step F6：必填，
+                必须显式提供，禁止回退 settings.bailian_api_key）。
 
         Returns:
             strip() 后的非空回答文本。
@@ -186,19 +186,20 @@ class BailianLLMClient:
         按 API Key 隔离的 OpenAI client 获取（Phase 3.4 Step D）。
 
         规则：
-          - api_key 提供 → 使用该 Key（用户自己的百炼 Key；AuthService 解密后传入）；
-          - api_key 为 None → 回退 settings.bailian_api_key（仅本地测试 / 兼容旧调用）；
+          - api_key 必填：调用方必须显式提供当前用户的百炼 API Key（AuthService
+            decrypt_api_key 解密后传入）；api_key 为 None 或空字符串 → LLMClientConfigError；
+          - 严禁回退 settings.bailian_api_key（服务器 .env Key 不参与用户业务链路）；
           - 缓存 key = sha256(api_key)，不把明文 Key 当 dict key；
           - client 只存进程内存 dict，不落数据库 / Redis / 磁盘等任何持久存储；
           - 不打印 / 不记录 API Key 本身。
 
         经验库 153832：延迟真实连接，避免 __init__ 阶段对百炼服务的硬依赖。
         """
-        effective_key = api_key if api_key else self._settings.bailian_api_key
-        if not effective_key:
+        if not api_key:
             raise LLMClientConfigError(
-                "API Key 未配置：请检查环境变量 BAILIAN_API_KEY 或传入用户 Key"
+                "User API Key is required：调用方必须显式提供当前用户的百炼 API Key"
             )
+        effective_key = api_key
 
         client_key = sha256_hex(effective_key)
         cached = self._clients.get(client_key)

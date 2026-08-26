@@ -36,14 +36,21 @@ from .api.routers import clips as clips_router_module
 from .api.routers import documents as documents_router_module
 from .api.routers import ingest as ingest_router_module
 from .api.routers import rag as rag_router_module
+from .api.routers import users as users_router_module
 from .clients.embedding import EmbeddingClientError
 from .clients.llm import LLMClientError
 from .core.di import get_milvus_initializer
 from .core.exceptions import (
     ApiKeyAlreadyRegisteredError,
     ApiKeyInvalidError,
+    ApiKeyNotConfiguredError,
+    ApiKeyValidationError,
     AuthenticationError,
     AuthOperationError,
+    DisabledUserError,
+    InvalidCredentialsError,
+    PasswordPolicyError,
+    UsernameAlreadyExistsError,
     DocumentChunkingError,
     DocumentFileEmptyError,
     DocumentFileTooLargeError,
@@ -110,8 +117,8 @@ def create_app() -> FastAPI:
         1) 创建 FastAPI 实例（绑定 lifespan）；
         2) 注册全局异常处理器（MilvusRepositoryError / EmbeddingClientError → HTTPException；
            Phase 3.4 Step 4 新增 Auth / User / Security 异常 handler）；
-        3) include_router 注册 ingest + rag + documents + clips + auth（Phase 3.4 Step 4）
-           路由器。
+        3) include_router 注册 ingest + rag + documents + clips + auth + users
+           （Phase 3.4 Step 4 认证 / 用户 / API Key 配置）路由器。
 
     严格不执行：
         - 不在 import 阶段创建 FastAPI 实例（由调用方 / uvicorn 显式调用 create_app()）；
@@ -137,6 +144,7 @@ def create_app() -> FastAPI:
     app.include_router(documents_router_module.router)
     app.include_router(clips_router_module.router)
     app.include_router(auth_router_module.router)  # Phase 3.4 Step 4：认证体系
+    app.include_router(users_router_module.router)  # Phase 3.4 Step 4：用户信息 / API Key 配置
 
     return app
 
@@ -159,8 +167,15 @@ def _register_exception_handlers(app: FastAPI) -> None:
         - DocumentStorageError 族 → 400（路径穿越）/ 500（存储 IO 失败）
         - DocumentParserError 族 → 400（不支持扩展名，防御）/ 500（读取失败）
         - DocumentChunkingError 族 → 500（切分内部错误）
-        - AuthenticationError / ApiKeyInvalidError → 401（未认证 / 凭据无效，Phase 3.4 Step 4）
-        - ApiKeyAlreadyRegisteredError → 409（API Key 已注册，Phase 3.4 Step 4）
+        - AuthenticationError → 401（token 无效 / 缺失，Phase 3.4 Step 4）
+        - ApiKeyInvalidError → 401 / ApiKeyAlreadyRegisteredError → 409（旧 API Key
+          身份模型；F-REV3 后不再被新代码抛出，F5 清理阶段统一移除）
+        - InvalidCredentialsError → 401（username 不存在 / 密码错误，统一语义，F-REV3）
+        - DisabledUserError → 403（账号被禁用，F-REV3）
+        - UsernameAlreadyExistsError → 409（注册重名，F-REV3）
+        - PasswordPolicyError → 422（密码强度不满足，F-REV3）
+        - ApiKeyValidationError → 400（API Key 验证失败，F-REV3）
+        - ApiKeyNotConfiguredError → 409（未配置 API Key，F-REV3）
         - AuthOperationError / UserOperationError → 503（用户数据服务问题，Phase 3.4 Step 4）
         - UserNotFoundError → 404（用户不存在，Phase 3.4 Step 4）
         - SecurityConfigurationError / SecurityDecryptionError → 500（安全配置 / 解密失败）
@@ -561,6 +576,140 @@ def _register_exception_handlers(app: FastAPI) -> None:
             status_code=503,
             content={
                 "detail": f"用户数据服务异常：{exc}",
+                "type": type(exc).__name__,
+            },
+        )
+
+    @app.exception_handler(UsernameAlreadyExistsError)
+    async def handle_username_already_exists_error(
+        request: Request,
+        exc: UsernameAlreadyExistsError,
+    ) -> JSONResponse:
+        """
+        UsernameAlreadyExistsError → 409 Conflict（F-REV3 新增）。
+
+        触发场景（UserService.register）：username 已被注册
+        （客户端应改用 POST /auth/login）。
+        处理策略：不可重试；错误消息只含 username（不含任何凭据）。
+        """
+        logger.warning("UsernameAlreadyExistsError -> 409: %s", exc)
+        return JSONResponse(
+            status_code=409,
+            content={
+                "detail": f"用户名已存在：{exc}",
+                "type": type(exc).__name__,
+            },
+        )
+
+    @app.exception_handler(InvalidCredentialsError)
+    async def handle_invalid_credentials_error(
+        request: Request,
+        exc: InvalidCredentialsError,
+    ) -> JSONResponse:
+        """
+        InvalidCredentialsError → 401 Unauthorized（F-REV3 新增）。
+
+        触发场景（UserService.login）：
+            - username 不存在；
+            - password 错误。
+        两者返回完全相同的语义（防用户枚举），错误消息统一
+        "invalid username or password"，不含具体差异。
+        """
+        logger.warning("InvalidCredentialsError -> 401: %s", exc)
+        return JSONResponse(
+            status_code=401,
+            content={
+                "detail": f"登录失败：{exc}",
+                "type": type(exc).__name__,
+            },
+        )
+
+    @app.exception_handler(DisabledUserError)
+    async def handle_disabled_user_error(
+        request: Request,
+        exc: DisabledUserError,
+    ) -> JSONResponse:
+        """
+        DisabledUserError → 403 Forbidden（F-REV3 新增）。
+
+        触发场景：
+            - login 时用户 status != ACTIVE；
+            - 已登录用户 token 对应账号被禁用。
+        处理策略：不可重试；客户端应提示账号状态异常（联系管理员 / 重新注册）。
+        """
+        logger.warning("DisabledUserError -> 403: %s", exc)
+        return JSONResponse(
+            status_code=403,
+            content={
+                "detail": f"账号已被禁用：{exc}",
+                "type": type(exc).__name__,
+            },
+        )
+
+    @app.exception_handler(PasswordPolicyError)
+    async def handle_password_policy_error(
+        request: Request,
+        exc: PasswordPolicyError,
+    ) -> JSONResponse:
+        """
+        PasswordPolicyError → 422 Unprocessable Entity（F-REV3 新增）。
+
+        触发场景（UserService.register）：
+            - 密码长度 < 8 / > 128；
+            - 未包含大写 / 小写 / 数字等强度要求。
+        处理策略：不可重试；客户端按规则提示后重试。
+        """
+        logger.warning("PasswordPolicyError -> 422: %s", exc)
+        return JSONResponse(
+            status_code=422,
+            content={
+                "detail": f"密码不符合要求：{exc}",
+                "type": type(exc).__name__,
+            },
+        )
+
+    @app.exception_handler(ApiKeyValidationError)
+    async def handle_api_key_validation_error(
+        request: Request,
+        exc: ApiKeyValidationError,
+    ) -> JSONResponse:
+        """
+        ApiKeyValidationError → 400 Bad Request（F-REV3 新增）。
+
+        触发场景（UserService.update_api_key）：
+            - api_key 为空；
+            - 用「用户提交的 Key」调百炼最小 embedding 验证失败。
+        处理策略：不可重试；客户端应检查 Key 后重试。
+        错误消息不含 API Key 明文 / 片段。
+        """
+        logger.warning("ApiKeyValidationError -> 400: %s", exc)
+        return JSONResponse(
+            status_code=400,
+            content={
+                "detail": f"API Key 校验失败：{exc}",
+                "type": type(exc).__name__,
+            },
+        )
+
+    @app.exception_handler(ApiKeyNotConfiguredError)
+    async def handle_api_key_not_configured_error(
+        request: Request,
+        exc: ApiKeyNotConfiguredError,
+    ) -> JSONResponse:
+        """
+        ApiKeyNotConfiguredError → 409 Conflict（F-REV3 新增）。
+
+        触发场景（UserService.decrypt_api_key）：
+            - 账号未配置百炼 API Key（ciphertext / nonce 为 NULL），
+              业务链路（Embedding / LLM）需要用户 Key 时返回。
+        处理策略：不可重试；客户端应引导用户前往 PUT /users/me/api-key 配置。
+        消息固定为「当前账号尚未配置阿里云百炼 API Key，请前往设置配置。」
+        """
+        logger.warning("ApiKeyNotConfiguredError -> 409: %s", exc)
+        return JSONResponse(
+            status_code=409,
+            content={
+                "detail": f"API Key 未配置：{exc}",
                 "type": type(exc).__name__,
             },
         )

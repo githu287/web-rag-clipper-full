@@ -19,10 +19,10 @@ Phase 3.4 Step D 增加 api_key 参数，透传用户自己的百炼 API Key 到
               进入 PROCESSING 时清空旧 error_message（retry 生命周期修复）；
               不修改 chunk_count。
       Step 3: ingest_service.ingest_page(page_id=document_id, chunks=chunks,
-                                         api_key=api_key)
+                                         user_id=user_id, api_key=api_key)
               （复用 Phase 2.6 现有 IngestService，纯 Milvus 编排：query old → embedding
-                → upsert new → stale delete；api_key 为 Phase 3.4 Step D 透传的用户
-                自己的百炼 API Key，None 时回退测试 Key）
+                → upsert new → stale delete；api_key 为 Phase 3.4 Step D/F6 透传的
+                当前用户自己的百炼 API Key，严禁回退服务器 Key）
       Step 4: 成功 → document_repository.update_ingest_result(
                          document_id, chunk_count=len(chunks),
                          status=SUCCESS, error_message=None)
@@ -118,14 +118,15 @@ class DocumentIngestService:
         PROCESSING/SUCCESS/FAILED 状态机不变。
 
         Phase 3.4 Step D：新增 api_key 参数 —— 当前用户的百炼 API Key
-        （AuthService 解密后传入），透传至 Embedding；None 时回退
-        settings.bailian_api_key（仅本地测试 / 兼容旧调用）。
+        （AuthService 解密后传入），透传至 Embedding；
+        Phase 3.4 Step F6：api_key 不得为 None（Client 层已强制），
+        严禁回退 settings.bailian_api_key。
 
         Args:
             document_id: Document 主键 ID（1:1 对应 Milvus page_id）。
             chunks: 已切分的 chunk 文本列表（Phase 2.10 前由调用方传入）。
             user_id: 当前用户 ID（归属校验，由认证上下文 / 测试显式传入）。
-            api_key: 用户自己的百炼 API Key（Phase 3.4 Step D；None 回退测试 Key）。
+            api_key: 用户自己的百炼 API Key（Phase 3.4 Step D/F6；必填透传）。
 
         Raises:
             DocumentNotFoundError: document_id 不存在（Step 1 直接抛出，无状态写入）。
@@ -171,6 +172,7 @@ class DocumentIngestService:
             await self._ingest_service.ingest_page(
                 page_id=document_id,
                 chunks=chunks,
+                user_id=user_id,
                 api_key=api_key,
             )
         except Exception as exc:

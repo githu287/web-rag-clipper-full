@@ -118,4 +118,37 @@
       });
     }
   });
+
+  // ------------------------------------------------------------ URL 变化通知（SPA，Phase 3.4 Step F8 Step 2）
+  // 独立消息 WEB_RAG_URL_CHANGED，不改变 WEB_CLIP_PING / WEB_CLIP_EXTRACT 原有行为。
+  // history.pushState / replaceState 不触发 chrome.tabs.onUpdated，SPA 路由变化依赖此通知
+  // 使 background 将旧 documentId 置为失效（stale），避免跨页面错误复用。
+  const notifyUrlChanged = () => {
+    try {
+      chrome.runtime.sendMessage({
+        type: "WEB_RAG_URL_CHANGED",
+        url: document.URL,
+        title: document.title || "",
+      });
+    } catch (_err) {
+      // 通知失败不影响页面
+    }
+  };
+
+  const patchHistoryMethod = (method) => {
+    if (typeof history[method] !== "function" || history["__webRagOriginal_" + method]) {
+      return;
+    }
+    const original = history[method];
+    history["__webRagOriginal_" + method] = original;
+    history[method] = function (...args) {
+      const result = original.apply(history, args);
+      notifyUrlChanged();
+      return result;
+    };
+  };
+
+  patchHistoryMethod("pushState");
+  patchHistoryMethod("replaceState");
+  window.addEventListener("popstate", notifyUrlChanged);
 })();

@@ -1,227 +1,354 @@
 """
-UserService —— 用户认证业务编排（Phase 3.4 Step 4 用户身份接入）。
+用户 / 认证业务编排服务（Phase 3.4 Step 3 用户体系；F-REV3 身份重构）。
 
 职责：
-    在 core.security（纯安全计算）与 UserRepository（users 表持久化）之上，
-    编排「API Key 即身份」的注册 / 登录 / 换 Key / 解密注入流程：
-    - register(api_key)       ：新 API Key 注册并签发首个 Bearer token；
-    - login(api_key)          ：已注册用户登录，轮换 token（旧 token 立即失效）；
-    - update_api_key(user_id, api_key)：已登录用户更换自己的 API Key（token 不变）；
-    - decrypt_api_key(user)   ：解密用户 API Key，供 Embedding / LLM 业务链路注入。
+    register / login / logout / update_api_key / remove_api_key /
+    decrypt_api_key / get_current_user —— 即「用户注册、登录、会话、
+    API Key 配置」这一层的全部业务编排。
 
-身份模型（与 core.security / models/user.py / UserRepository 契约对齐）：
-    - 凭据 = 用户自己的百炼 API Key（本产品单凭据设计，无密码体系）；
-    - users.api_key_hash = SHA-256(api_key)（唯一键，注册幂等判断）；
-    - 明文 API Key 不落库：AES-256-GCM 密文 + 每条记录独立 nonce 落库，
-      仅服务器以 APP_MASTER_KEY 解密后注入业务链路；
-    - Bearer token 每次登录轮换，DB 只存 SHA-256(token)。
+分层边界（严格）：
+    - 不直接操作 SQL（全部经 UserRepository）；
+    - 不负责加密 / hash / token 生成（那是 core.security 职责）；
+    - 不负责 HTTP 语义（那是 Router + 异常 handler 职责）；
+    - API Key 永远不参与身份认证：本服务所有身份判定仅依赖
+      username → users.id → token_hash。
 
-范围边界：
-    - 不含密码 / 多因素 / OAuth —— 未来如需扩展，另开 Service 组合本类；
-    - 不直接操作 Milvus / Document 表（那是 RAG 链路职责）；
-    - 解密出的 API Key 明文只存在于调用栈内存：不写日志、不返回给客户端、
-      不随任何响应体 / 异常消息泄露；
-    - UserRepository 抛出的 UserOperationError → 包装为 AuthOperationError
-      （503，与 DocumentOperationError → 503 风格对齐）。
+身份职责边界（F-REV3 最终版）：
+    username        = 身份入口（UNIQUE NOT NULL）
+    users.id        = 系统内部稳定身份主键
+    password_hash   = 登录凭证（Argon2id）
+    token_hash      = 会话认证（Bearer token 的 SHA-256）
+    api_key_ciphertext/nonce = 百炼模型调用凭证（AES-256-GCM 加密副本）
 
-异常契约：
-    - ApiKeyInvalidError(401)           ：空 Key / 登录时未注册 / 用户被禁用；
-    - ApiKeyAlreadyRegisteredError(409) ：注册时该 Key 已存在（应改走 login）；
-    - AuthOperationError(503)           ：UserRepository 操作失败；
-    - UserNotFoundError(404)            ：update_api_key 时 user_id 不存在（冒泡）；
-    - SecurityConfigurationError(500)   ：APP_MASTER_KEY 非 32 bytes（冒泡）；
-    - SecurityDecryptionError(500)      ：密文损坏 / 主密钥变更（冒泡）。
+安全红线：
+    - 本模块可接触 password / token 明文（仅调用栈内存），
+      绝不写入日志 / 数据库 / 异常消息；
+    - 不输出 API Key 明文、ciphertext 完整内容、token 明文、
+      APP_MASTER_KEY 到任何对外信息。
+
+依赖注入：
+    - user_repository: UserRepository（core.di.get_user_repository）
+    - settings       : Settings（core.di.get_settings；提供 APP_MASTER_KEY）
+    - embedding_client: EmbeddingClient | None（core.di.get_embedding_client；
+      仅用于 update_api_key 的最小验证；可为 None 以禁用验证，便于测试）
 """
 
 from __future__ import annotations
 
+import logging
+
+from ..clients.embedding import EmbeddingClient
 from ..core.config import Settings
 from ..core.exceptions import (
-    ApiKeyAlreadyRegisteredError,
-    ApiKeyInvalidError,
+    ApiKeyNotConfiguredError,
+    ApiKeyValidationError,
     AuthOperationError,
+    DisabledUserError,
+    InvalidCredentialsError,
+    PasswordPolicyError,
+    UsernameAlreadyExistsError,
+    UserNotFoundError,
     UserOperationError,
 )
 from ..core.security import (
-    decrypt_api_key,
+    decrypt_api_key as _decrypt_ciphertext,
     encrypt_api_key,
     generate_token,
+    hash_password,
     hash_token,
-    sha256_hex,
+    validate_password_strength,
+    verify_password,
 )
 from ..models.user import User, UserStatus
 from ..repositories.mysql.user_protocol import UserRepository
 
+logger: logging.Logger = logging.getLogger(__name__)
+
+# update_api_key 最小验证用的探针文本（单条最小 embedding 请求，不调 LLM）
+_API_KEY_VALIDATION_PROBE: str = "api-key-validation-probe"
+
 
 class UserService:
-    """
-    用户认证业务编排：以「用户自己的百炼 API Key」为唯一身份凭据。
+    """用户注册 / 登录 / 会话 / API Key 配置的业务编排服务。"""
 
-    实例持有 UserRepository（Protocol）与 APP_MASTER_KEY（Settings 注入），
-    无状态、线程安全（所有安全计算为纯函数，所有 DB 操作委托 Repository）。
-    """
-
-    def __init__(self, user_repository: UserRepository, settings: Settings) -> None:
+    def __init__(
+        self,
+        user_repository: UserRepository,
+        settings: Settings,
+        embedding_client: EmbeddingClient | None = None,
+    ) -> None:
         """
+        构造 UserService。
+
         Args:
-            user_repository: UserRepository（Protocol）；由 core.di 装配
-                UserRepositoryImpl（生产）或测试 Mock。
-            settings: Settings 单例；仅读取 app_master_key（AES-256-GCM 主密钥，
-                必须 32 bytes，由 .env 的 APP_MASTER_KEY 注入）。
+            user_repository: users 表数据访问（core.di.get_user_repository）。
+            settings: 配置单源；仅使用 app_master_key（API Key 加密）。
+            embedding_client: 可选；update_api_key 时用用户提交的 Key
+                调最小 embedding 请求做真实验证（不调 LLM）。
         """
-        self._user_repository = user_repository
-        self._master_key = settings.app_master_key
+        self._user_repository: UserRepository = user_repository
+        self._master_key: str = settings.app_master_key
+        self._embedding_client: EmbeddingClient | None = embedding_client
 
-    # ---------------------------------------------------------------- register
-    def register(self, api_key: str) -> tuple[User, str]:
+    # ------------------------------------------------------------------ register
+    def register(self, username: str, password: str) -> tuple[User, str]:
         """
-        注册新用户：新 API Key 创建用户并签发首个 Bearer token。
+        注册新用户（仅 username + password，完全脱离第三方服务）。
 
         流程：
-            1) strip + 空值校验（空白 → ApiKeyInvalidError）；
-            2) sha256(api_key) → 查 users；已存在 → ApiKeyAlreadyRegisteredError
-               （提示改用 /auth/login；不泄露任何既有用户信息）；
-            3) AES-256-GCM 加密 + 生成 opaque token → create_user
-               （users.status 默认 ACTIVE）→ 返回 (User, token)。
+            1. strip + 校验 password 强度（PasswordPolicyError → 422）；
+            2. 查重 username（已存在 → UsernameAlreadyExistsError → 409）；
+            3. password → Argon2id password_hash；
+            4. generate_token + hash_token；
+            5. create_user(username, password_hash, token_hash,
+                           api_key_ciphertext=None, api_key_nonce=None)；
+            6. 返回 (User, token)。
+
+        明确不执行：调百炼 / 校验 API Key / 加密 API Key / Embedding / LLM。
+        注册成功即已登录（token 可直接认证）。
 
         Args:
-            api_key: 用户自己的百炼 API Key（明文仅存在于调用栈内存）。
+            username: 身份入口（1-64 字符）。
+            password: 明文密码（仅调用栈内存；8-128 字符）。
 
         Returns:
-            (User, token)：User 为已落库的 ORM 对象；token 为 opaque Bearer
-            token（仅本次返回明文，DB 只存 hash）。
+            (User, token)：新建的 User ORM 对象 + opaque Bearer token。
 
         Raises:
-            ApiKeyInvalidError           : api_key 为空 / 全空白。
-            ApiKeyAlreadyRegisteredError : 该 API Key 已注册（应改走 login）。
-            AuthOperationError           : UserRepository 操作失败。
-            SecurityConfigurationError   : APP_MASTER_KEY 非 32 bytes。
+            UsernameAlreadyExistsError: username 已被注册（409）。
+            PasswordPolicyError: 密码长度 / 复杂度不满足（422）。
+            AuthOperationError: users 表写入异常（503）。
         """
-        api_key = api_key.strip()
-        if not api_key:
-            raise ApiKeyInvalidError("api_key must not be empty")
-
-        api_key_hash = sha256_hex(api_key)
-        existing = self._user_repository.get_user_by_api_key_hash(api_key_hash)
+        username = (username or "").strip()
+        # 先校验密码强度：非法密码不触发 DB 查询，避免暴露 username 存在性
+        validate_password_strength(password)
+        existing = self._user_repository.get_user_by_username(username)
         if existing is not None:
-            raise ApiKeyAlreadyRegisteredError(
-                "api key already registered; please use /auth/login instead"
+            raise UsernameAlreadyExistsError(
+                f"username already exists: {username!r}"
             )
-
-        ciphertext, nonce = encrypt_api_key(api_key, self._master_key)
+        password_hash = hash_password(password)
         token = generate_token()
         try:
             user = self._user_repository.create_user(
-                api_key_hash=api_key_hash,
-                api_key_ciphertext=ciphertext,
-                api_key_nonce=nonce,
+                username=username,
+                password_hash=password_hash,
                 token_hash=hash_token(token),
+                api_key_ciphertext=None,
+                api_key_nonce=None,
             )
         except UserOperationError as e:
-            raise AuthOperationError(f"register failed: {e}") from e
+            # 唯一约束竞态（并发重复注册）也包装为 409 语义
+            raise AuthOperationError(
+                f"register failed: username={username!r}, error={e}"
+            ) from e
+        logger.info("register success: username=%s, user_id=%s", username, user.id)
         return user, token
 
-    # ------------------------------------------------------------------- login
-    def login(self, api_key: str) -> tuple[User, str]:
+    # ----------------------------------------------------------------------- login
+    def login(self, username: str, password: str) -> tuple[User, str]:
         """
-        登录：已注册用户用 API Key 换取 token，每次登录轮换（旧 token 立即失效）。
+        登录（仅 username + password；API Key 完全不参与）。
 
         流程：
-            1) strip + 空值校验；
-            2) sha256(api_key) → 查 users；不存在 → ApiKeyInvalidError
-               （提示先注册；不泄露用户是否存在）；
-            3) user.status != ACTIVE（DISABLED）→ ApiKeyInvalidError；
-            4) 生成新 token → update_token 轮换（旧 token 失效）→ 返回 (User, token)。
+            1. get_user_by_username；
+            2. 不存在 → InvalidCredentialsError（401，与密码错误同语义）；
+            3. verify_password 失败 → InvalidCredentialsError（401）；
+            4. status != ACTIVE → DisabledUserError（403）；
+            5. generate_token + hash_token + update_token（轮换，旧 token 失效）；
+            6. 返回 (User, token)。
+
+        安全要求：
+            - 用户不存在与密码错误返回完全相同的异常类型与消息语义
+              （防用户枚举）；
+            - 登录过程绝不读取 / 解密 API Key，绝不调百炼。
 
         Args:
-            api_key: 用户自己的百炼 API Key。
+            username: 身份入口。
+            password: 明文密码（仅调用栈内存）。
 
         Returns:
-            (User, token)：token 为本次登录新签发的明文（仅返回一次）。
+            (User, token)：登录用户 + 新签发的 opaque Bearer token。
 
         Raises:
-            ApiKeyInvalidError : api_key 未注册 / 用户被禁用。
-            AuthOperationError : UserRepository 操作失败。
+            InvalidCredentialsError: username 不存在或密码错误（401）。
+            DisabledUserError: 用户被禁用（403）。
+            AuthOperationError: users 表写入异常（503）。
         """
-        api_key = api_key.strip()
-        if not api_key:
-            raise ApiKeyInvalidError("api_key must not be empty")
-
-        api_key_hash = sha256_hex(api_key)
-        user = self._user_repository.get_user_by_api_key_hash(api_key_hash)
+        username = (username or "").strip()
+        user = self._user_repository.get_user_by_username(username)
         if user is None:
-            raise ApiKeyInvalidError(
-                "api key not registered; please call /auth/register first"
-            )
+            raise InvalidCredentialsError("invalid username or password")
+        if not verify_password(password, user.password_hash):
+            raise InvalidCredentialsError("invalid username or password")
         if user.status != UserStatus.ACTIVE:
-            raise ApiKeyInvalidError("user is disabled")
-
+            raise DisabledUserError("user is disabled")
         token = generate_token()
         try:
             self._user_repository.update_token(user.id, hash_token(token))
         except UserOperationError as e:
-            raise AuthOperationError(f"login failed: {e}") from e
+            raise AuthOperationError(
+                f"login failed: user_id={user.id}, error={e}"
+            ) from e
+        logger.info("login success: username=%s, user_id=%s", username, user.id)
         return user, token
 
-    # ----------------------------------------------------------- update_api_key
+    # ---------------------------------------------------------------------- logout
+    def logout(self, user_id: int) -> None:
+        """
+        登出：清除用户会话 token（旧 token 立即 401）。
+
+        流程：clear_token(user_id) → token_hash = NULL。
+        不创建 refresh token、不引入 Redis。
+
+        Args:
+            user_id: 已认证用户主键（来自 get_current_user）。
+
+        Raises:
+            UserNotFoundError: user_id 不存在（防御；get_current_user 已保证存在）。
+            AuthOperationError: users 表写入异常（503）。
+        """
+        try:
+            self._user_repository.clear_token(user_id)
+        except UserNotFoundError:
+            raise
+        except UserOperationError as e:
+            raise AuthOperationError(
+                f"logout failed: user_id={user_id}, error={e}"
+            ) from e
+        logger.info("logout success: user_id=%s", user_id)
+
+    # ------------------------------------------------------------- update_api_key
     def update_api_key(self, user_id: int, api_key: str) -> User:
         """
-        更换用户自己的 API Key（token / user_id / 知识库归属不变）。
+        配置 / 更换用户的百炼 API Key（仅通过 users.id 关联，不参与身份）。
 
         流程：
-            1) strip + 空值校验；
-            2) AES-256-GCM 加密 + sha256 → repo.update_api_key
-               （只更新 api_key_hash / ciphertext / nonce + updated_at；
-               token_hash 不变，客户端可继续使用原 token）。
+            1. strip + 空值防御（ApiKeyValidationError → 400）；
+            2. 注入的 EmbeddingClient 用「用户提交的 Key」做最小 embedding
+               验证（不调 LLM）；失败 → ApiKeyValidationError → 400；
+            3. encrypt_api_key(api_key, APP_MASTER_KEY) → ciphertext + nonce；
+            4. UserRepository.update_api_key(user_id, ciphertext, nonce)。
+
+        明确不改变：user_id / username / password_hash / token_hash /
+        status / documents 归属。
 
         Args:
-            user_id: 当前登录用户主键（来自 get_current_user）。
-            api_key: 新的百炼 API Key。
+            user_id: 已认证用户主键。
+            api_key: 用户自己的百炼 API Key（sk- 开头；仅调用栈内存）。
 
         Returns:
-            更新后的 User ORM 对象。
+            更新后的 User ORM 对象（detached 可读）。
 
         Raises:
-            ApiKeyInvalidError : api_key 为空。
-            UserNotFoundError  : user_id 不存在（冒泡 → 404）。
-            AuthOperationError : UserRepository 操作失败。
-            SecurityConfigurationError : APP_MASTER_KEY 非 32 bytes。
+            ApiKeyValidationError: Key 为空或最小 embedding 验证失败（400）。
+            UserNotFoundError: user_id 不存在（404）。
+            AuthOperationError: 加密配置异常 / users 表写入异常（503）。
         """
-        api_key = api_key.strip()
+        api_key = (api_key or "").strip()
         if not api_key:
-            raise ApiKeyInvalidError("api_key must not be empty")
-
+            raise ApiKeyValidationError("api_key must not be empty")
+        if self._embedding_client is not None:
+            try:
+                self._embedding_client.embed(
+                    [_API_KEY_VALIDATION_PROBE], api_key=api_key
+                )
+            except Exception as e:  # noqa: BLE001 — 所有百炼侧异常视为 Key 无效
+                logger.warning(
+                    "api_key validation failed: user_id=%s, error_type=%s",
+                    user_id,
+                    type(e).__name__,
+                )
+                raise ApiKeyValidationError(
+                    "API Key 验证失败：请检查 Key 是否有效。"
+                ) from e
         ciphertext, nonce = encrypt_api_key(api_key, self._master_key)
         try:
-            return self._user_repository.update_api_key(
-                user_id=user_id,
-                api_key_hash=sha256_hex(api_key),
-                api_key_ciphertext=ciphertext,
-                api_key_nonce=nonce,
+            user = self._user_repository.update_api_key(
+                user_id, ciphertext, nonce
             )
+        except UserNotFoundError:
+            raise
         except UserOperationError as e:
-            raise AuthOperationError(f"update_api_key failed: {e}") from e
+            raise AuthOperationError(
+                f"update_api_key failed: user_id={user_id}, error={e}"
+            ) from e
+        logger.info("update_api_key success: user_id=%s", user_id)
+        return user
 
-    # ---------------------------------------------------------- decrypt_api_key
-    def decrypt_api_key(self, user: User) -> str:
+    # ------------------------------------------------------------ remove_api_key
+    def remove_api_key(self, user_id: int) -> User:
         """
-        解密用户的 API Key 明文，供 Embedding / LLM 业务链路注入。
+        清除用户的百炼 API Key（api_key_ciphertext / nonce → NULL）。
 
-        调用方（Router）拿到明文后应立即传给下游 Client（embed / generate），
-        不得写日志、不得返回给客户端、不得跨请求缓存。
+        明确不改变：user_id / username / password_hash / token_hash /
+        status；不删除用户、不删除 documents、不修改任何知识库数据。
 
         Args:
-            user: 当前登录 User ORM 对象（含 api_key_ciphertext / nonce）。
+            user_id: 已认证用户主键。
 
         Returns:
-            API Key 明文（仅存在于调用栈内存）。
+            更新后的 User ORM 对象（api_key_* 为 None）。
 
         Raises:
-            SecurityConfigurationError : APP_MASTER_KEY 非 32 bytes。
-            SecurityDecryptionError    : 密文 / nonce 损坏或主密钥变更（500）。
+            UserNotFoundError: user_id 不存在（404）。
+            AuthOperationError: users 表写入异常（503）。
         """
-        return decrypt_api_key(
-            user.api_key_ciphertext,
-            user.api_key_nonce,
-            self._master_key,
+        try:
+            user = self._user_repository.clear_api_key(user_id)
+        except UserNotFoundError:
+            raise
+        except UserOperationError as e:
+            raise AuthOperationError(
+                f"remove_api_key failed: user_id={user_id}, error={e}"
+            ) from e
+        logger.info("remove_api_key success: user_id=%s", user_id)
+        return user
+
+    # ------------------------------------------------------------ decrypt_api_key
+    def decrypt_api_key(self, user: User) -> str:
+        """
+        解密用户的百炼 API Key（仅业务链路 Embedding / LLM 使用）。
+
+        规则：
+            - ciphertext 或 nonce 任一为 None → ApiKeyNotConfiguredError（409）；
+            - 不 fallback 到 settings.bailian_api_key（.env 的 Key 仅用于
+              开发 / migration / 测试，不能作为已认证真实用户的业务凭据）；
+            - 解密失败（密文损坏 / 主密钥更换）→ SecurityDecryptionError。
+
+        Args:
+            user: 已认证用户（必须含 api_key_ciphertext / api_key_nonce）。
+
+        Returns:
+            明文 API Key（仅调用栈内存；调用方不得写日志 / 落库）。
+
+        Raises:
+            ApiKeyNotConfiguredError: 账号尚未配置 API Key（409）。
+            SecurityDecryptionError: 解密失败（500）。
+        """
+        if user.api_key_ciphertext is None or user.api_key_nonce is None:
+            raise ApiKeyNotConfiguredError(
+                "当前账号尚未配置阿里云百炼 API Key，请前往设置配置。"
+            )
+        return _decrypt_ciphertext(
+            user.api_key_ciphertext, user.api_key_nonce, self._master_key
         )
+
+    # ---------------------------------------------------------- get_current_user
+    def get_current_user(self, user_id: int) -> User:
+        """
+        按主键获取当前用户（GET /users/me 使用）。
+
+        Args:
+            user_id: 来自 get_current_user 依赖解析的已认证用户主键。
+
+        Returns:
+            User ORM 对象。
+
+        Raises:
+            UserNotFoundError: user_id 不存在（404；防御兜底）。
+        """
+        user = self._user_repository.get_user_by_id(user_id)
+        if user is None:
+            raise UserNotFoundError(f"user not found: id={user_id}")
+        return user

@@ -122,8 +122,9 @@ class DocumentUploadService:
             4. 扩展名 ∈ {.txt, .md, .markdown}（.pdf / .docx 等返回明确异常）。
 
         Phase 3.4 Step D：新增 api_key 参数 —— 当前用户的百炼 API Key
-        （AuthService 解密后传入），透传至 Embedding；None 时回退
-        settings.bailian_api_key（仅本地测试 / 兼容旧调用）。
+        （AuthService 解密后传入），透传至 Embedding；
+        Phase 3.4 Step F6：api_key 必填（Client 层已强制），
+        严禁回退 settings.bailian_api_key。
 
         Args:
             filename: 上传文件名（来自 UploadFile.filename，可为空串）。
@@ -131,7 +132,7 @@ class DocumentUploadService:
             user_id : 所属用户 ID（**必填**，Phase 3.4 Step C：由认证上下文 /
                       测试显式传入，不允许 None）。
             mime_type: 文件 MIME 类型（来自 UploadFile.content_type，可为 None）。
-            api_key: 用户自己的百炼 API Key（Phase 3.4 Step D；None 回退测试 Key）。
+            api_key: 用户自己的百炼 API Key（Phase 3.4 Step D/F6；必填透传）。
 
         Returns:
             Document: 终态对象（SUCCESS，chunk_count = 实际入库数，

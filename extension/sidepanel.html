@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>Web RAG Clipper</title>
+  <link rel="stylesheet" href="sidepanel.css">
+</head>
+<body>
+
+  <!-- ============ 登录 / 注册视图 ============ -->
+  <div class="view" id="view-auth" hidden>
+    <div class="auth-brand">
+      <span class="logo">R</span>
+      <h1>Web RAG Clipper</h1>
+    </div>
+
+    <div class="auth-tabs">
+      <button type="button" class="auth-tab active" id="auth-tab-login">登录</button>
+      <button type="button" class="auth-tab" id="auth-tab-register">注册</button>
+    </div>
+
+    <form id="form-login" class="auth-form" novalidate>
+      <label for="login-username">用户名</label>
+      <input type="text" id="login-username" autocomplete="username" spellcheck="false">
+      <label for="login-password">密码</label>
+      <input type="password" id="login-password" autocomplete="current-password">
+      <button type="submit" class="primary-btn" id="login-btn">登录</button>
+      <div class="auth-status" id="login-status"></div>
+    </form>
+
+    <form id="form-register" class="auth-form" hidden novalidate>
+      <label for="reg-username">用户名</label>
+      <input type="text" id="reg-username" autocomplete="username" spellcheck="false">
+      <label for="reg-password">密码</label>
+      <input type="password" id="reg-password" autocomplete="new-password">
+      <label for="reg-password2">确认密码</label>
+      <input type="password" id="reg-password2" autocomplete="new-password">
+      <button type="submit" class="primary-btn" id="reg-btn">注册并登录</button>
+      <div class="auth-status" id="reg-status"></div>
+    </form>
+  </div>
+
+  <!-- ============ 应用视图 ============ -->
+  <div class="view" id="view-app" hidden>
+    <header class="sp-header">
+      <span class="logo">R</span>
+      <span class="app-name">Web RAG Clipper</span>
+      <button type="button" class="icon-btn" id="new-session-btn" title="新建会话">＋</button>
+      <button type="button" class="icon-btn" id="header-settings-btn" title="设置">⚙</button>
+    </header>
+
+    <div class="warn-banner" id="warn-banner" hidden>
+      <span class="warn-text">⚠ 尚未配置阿里云百炼 API Key</span>
+      <button type="button" class="warn-btn" id="warn-goto-settings">去设置</button>
+    </div>
+
+    <nav class="sp-nav">
+      <button type="button" class="nav-btn active" id="nav-current">当前网页</button>
+      <button type="button" class="nav-btn" id="nav-all">全部知识库</button>
+      <button type="button" class="nav-btn nav-coming" id="nav-coming">我的知识库<span class="tag">即将推出</span></button>
+      <button type="button" class="nav-btn" id="nav-settings">设置</button>
+    </nav>
+
+    <!-- 聊天视图 -->
+    <div class="view-inner active" id="view-chat">
+      <section class="page-context" id="page-context" hidden>
+        <div class="pc-title" id="pc-title">—</div>
+        <div class="pc-url" id="pc-url">—</div>
+        <div class="pc-status" id="pc-status"></div>
+        <button type="button" class="clip-btn" id="clip-btn">剪藏当前网页</button>
+        <div class="pc-stale" id="pc-stale" hidden>⚠ 页面已变化，请重新剪藏当前网页</div>
+      </section>
+
+      <div class="all-banner" id="all-banner" hidden>
+        检索范围：你的全部已剪藏文档（由后端按登录账号自动确定）
+      </div>
+
+      <main class="chat-area" id="chat-area">
+        <div class="chat-empty" id="chat-empty">暂无对话</div>
+        <button type="button" class="back-to-bottom" id="back-to-bottom" hidden>↓ 回到底部</button>
+      </main>
+
+      <footer class="chat-input">
+        <textarea id="chat-textarea" placeholder="输入你的问题…（Enter 发送，Shift+Enter 换行）" rows="2"></textarea>
+        <button type="button" class="primary-btn" id="chat-send">发送</button>
+      </footer>
+    </div>
+
+    <!-- 设置视图 -->
+    <div class="view-inner" id="view-settings" hidden>
+      <div class="settings-content">
+        <div class="section-title">账户</div>
+        <div class="field">
+          <div class="label">用户名</div>
+          <div class="value" id="account-username">—</div>
+        </div>
+        <div class="field">
+          <div class="label">User ID</div>
+          <div class="value" id="account-user-id">—</div>
+        </div>
+        <div class="field">
+          <div class="label">登录状态</div>
+          <div class="value" id="account-status">—</div>
+        </div>
+        <button type="button" class="btn-danger" id="logout-btn">退出登录</button>
+
+        <div class="section-title">模型配置</div>
+        <div class="model-status" id="model-status">—</div>
+        <div class="api-key-form" id="api-key-form" hidden>
+          <input type="password" id="api-key-input" placeholder="阿里云百炼 API Key（sk-…）" autocomplete="off" spellcheck="false">
+          <button type="button" class="primary-btn" id="api-key-save-btn">保存</button>
+        </div>
+        <button type="button" class="btn-secondary" id="api-key-config-btn">配置 API Key</button>
+        <button type="button" class="btn-danger" id="api-key-remove-btn" hidden>移除 API Key</button>
+        <div class="api-key-status" id="api-key-status"></div>
+        <div class="hint">仅支持阿里云百炼 DashScope API Key。</div>
+        <div class="hint">API Key 仅用于当前账号的 Embedding 与 AI 问答，不参与用户身份识别。</div>
+      </div>
+    </div>
+
+    <!-- 我的知识库（占位） -->
+    <div class="view-inner" id="view-coming" hidden>
+      <div class="coming-note">「我的知识库」即将推出，敬请期待。</div>
+    </div>
+  </div>
+
+  <script src="config.js"></script>
+  <script src="session-store.js"></script>
+  <script src="api-client.js"></script>
+  <script src="sidepanel.js"></script>
+</body>
+</html>

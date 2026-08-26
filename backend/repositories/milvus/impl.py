@@ -240,9 +240,10 @@ class PyMilvusRepositoryImpl(MilvusRepository):
         *,
         limit: int = 10,
         ef: int = 128,
+        expr: str | None = None,
     ) -> list[ChunkSearchResult]:
         """
-        向量 ANN 检索（Phase 2.3 Protocol 方法 4）。
+        向量 ANN 检索（Phase 2.3 Protocol 方法 4；Phase 3.4 Step E 增 expr）。
 
         锁定常量：
           - metric_type="COSINE"（Phase 2.2 §11）
@@ -252,6 +253,11 @@ class PyMilvusRepositoryImpl(MilvusRepository):
           - 输入 vector 长度必须 == settings.bailian_embedding_dimension（默认 1024），
             否则立即抛 MilvusSchemaMismatchError（不可重试；Milvus 端会写入错误维度或报维度错，
             在应用层防御避免 DataNotMatchException）。
+
+        expr（Phase 3.4 Step E）：
+          - 可选标量过滤表达式（如 "page_id == 1" / "page_id in [1, 2]"）；
+          - 默认 None = 全库检索（行为与 Step E 前一致）；
+          - 原样透传给 client.search(..., expr=expr)，不修改 Schema / index / metric。
         """
         msg_prefix = (
             f"PyMilvusRepositoryImpl.search 失败（collection={self._collection_name},"
@@ -277,6 +283,10 @@ class PyMilvusRepositoryImpl(MilvusRepository):
                         "metric_type": _SEARCH_METRIC_TYPE,
                         "params": {"ef": ef},
                     },
+                    # Phase 3.4 Step E：用户隔离标量过滤（None = 全库，行为不变）。
+                    # 注意：pymilvus 2.4.x MilvusClient.search 的过滤参数名为 filter
+                    # （query_page_chunks 同款用法），expr 会与内部 search_requests_with_expr 冲突。
+                    filter=expr,
                 )
             finally:
                 client.close()

@@ -27,8 +27,9 @@ Phase 3.4 Step D（user-aware 身份传递）：
       - user_id：ownership 约束 —— get_documents_by_ids(page_ids, user_id)
         在 SQL 层完成用户归属过滤（Step C 已实现），跨用户候选不会进入
         SUCCESS 集合；Router 层必传 current_user.id。
-      - api_key：query embedding 使用用户自己的百炼 API Key（AuthService
-        解密后传入）；None 时回退 settings.bailian_api_key。
+      - api_key：query embedding 使用当前用户自己的百炼 API Key（AuthService
+        decrypt_api_key 解密后传入；Phase 3.4 Step F6：必填，严禁回退
+        settings.bailian_api_key）。
     本步骤只完成身份传递与 ownership 约束；「get_success_document_ids +
     Milvus expr user 过滤」属后续 RAG 隔离步骤，本步骤不做 Milvus user isolation。
 
@@ -53,6 +54,7 @@ from __future__ import annotations
 import logging
 
 from ..clients.embedding import EmbeddingClient
+from ..core.exceptions import DocumentNotFoundError, DocumentNotSuccessError
 from ..models.api_schema import RagSearchResult
 from ..models.document import DocumentStatus
 from ..models.milvus_dto import ChunkSearchResult
@@ -136,16 +138,32 @@ class RagService:
         Phase 3.4 Step D：新增 user_id 与 api_key —— user_id 用于
         get_documents_by_ids(page_ids, user_id) 的 SQL 层归属过滤（ownership
         约束，Router 必传）；api_key 用于 query embedding（用户自己的 Key，
-        None 回退测试 Key）。本步骤不做 Milvus user isolation。
+        None 回退测试 Key）。
+
+        Phase 3.4 Step E（RAG 检索用户隔离）：
+            - 全部知识库模式（document_id is None）：
+                1) user_id 为 None → 禁止匿名访问，直接返回 []（绝不查库）；
+                2) success_ids = DocumentRepository.get_success_document_ids(user_id)
+                   （SQL 层 user_id + SUCCESS 双条件过滤；严禁先查全部文档再 Python 过滤）；
+                3) success_ids 为空 → 返回 []，不调用 Milvus；
+                4) Milvus search 携带 expr = "page_id in [...]"（Milvus 侧收敛召回）；
+                5) 应用层最终兜底 candidate.page_id in success_ids（双保险）。
+            - 当前网页模式（document_id is not None）：
+                1) get_document(document_id, user_id) 前置校验：不存在 / 跨用户 →
+                   DocumentNotFoundError（404）；非 SUCCESS → DocumentNotSuccessError（409）；
+                2) Milvus search 携带 expr = "page_id == {document_id}"；
+                3) 应用层最终兜底 candidate.page_id == document_id。
+            权限判断必须是 document_id + user_id 同时进入 Repository ownership check，
+            严禁仅凭 document_id 判断。
 
         Args:
             query: 用户查询文本（非空字符串）。
             limit: 最终返回结果数上限；默认 5（硬编码；.env 的 RAG_TOP_K 为未来预留配置，
                    当前不读取），范围 [1, 20]。
             document_id: 可选；指定后仅返回该 Document（page_id）的检索结果
-                （当前网页模式）；None = 全库模式（原行为）。
-            user_id: 当前用户 ID（Phase 3.4 Step D；ownership 过滤，Router 必传；
-                默认 None 仅向后兼容旧调用）。
+                （当前网页模式，需归属当前用户）；None = 全部知识库模式。
+            user_id: 当前用户 ID（Phase 3.4 Step D/E；ownership 隔离；全库模式必传，
+                None 时全库模式直接返回 []，禁止匿名访问）。
             api_key: 用户自己的百炼 API Key（Phase 3.4 Step D；None 回退测试 Key）。
 
         Returns:
@@ -168,23 +186,57 @@ class RagService:
         query_vector: list[float] = vectors[0]
 
         # ---------------------------------------------------------- Step 2: Milvus candidate retrieval
-        # Phase 3.3 Step 3：document_id 模式下扩大候选召回（max(limit*4, 40)），
-        # 确保应用层 page_id 过滤后仍有机会凑满 top-K。
+        # Phase 3.4 Step E：RAG 检索按用户隔离，构造 Milvus expr。
         if document_id is not None:
+            # 当前网页模式：document_id + user_id 一起进入 ownership check（Step C 已
+            # 实现 get_document(document_id, user_id) SQL 层归属过滤）。
+            document = self._documents.get_document(document_id, user_id)
+            if document is None:
+                raise DocumentNotFoundError(
+                    f"Document {document_id} 不存在或不属于当前用户"
+                )
+            if document.status != DocumentStatus.SUCCESS:
+                raise DocumentNotSuccessError(
+                    f"Document {document_id} 当前状态为 {document.status}，"
+                    "非 SUCCESS 不可检索"
+                )
             candidate_limit: int = max(limit * 4, 40)
+            expr: str = f"page_id == {document_id}"
         else:
+            # 全部知识库模式：禁止匿名访问——user_id 只能来自后端认证上下文，
+            # 绝不允许客户端传入。None 时直接返回 []（不查库、不调用 Milvus）。
+            if user_id is None:
+                logger.warning(
+                    "RagService.search: 全部知识库模式缺少 user_id，"
+                    "拒绝匿名访问并返回空结果"
+                )
+                return []
+            # success_ids 必须来自 Repository 的 get_success_document_ids（SQL 层
+            # user_id + SUCCESS 双条件过滤，严禁先查全部文档再 Python 过滤）。
+            success_ids: list[int] = self._documents.get_success_document_ids(user_id)
+            if not success_ids:
+                logger.info(
+                    "RagService.search: 用户 %d 无 SUCCESS document，"
+                    "返回空结果（不调用 Milvus）",
+                    user_id,
+                )
+                return []
             candidate_limit = max(limit, _MILVUS_SEARCH_CANDIDATE_LIMIT)
+            expr = f"page_id in [{','.join(map(str, success_ids))}]"
+
         candidates: list[ChunkSearchResult] = self._repo.search(
             query_vector,
             limit=candidate_limit,
+            expr=expr,
         )
         logger.info(
             "RagService.search: query=%r, document_id=%r, Milvus 候选召回数=%d, "
-            "candidate_limit=%d, 最终 limit=%d",
+            "candidate_limit=%d, expr=%r, 最终 limit=%d",
             query,
             document_id,
             len(candidates),
             candidate_limit,
+            expr,
             limit,
         )
 
@@ -221,14 +273,24 @@ class RagService:
             len(filtered),
         )
 
-        # ---------------------------------------------------------- Step 3.6: 可选 document_id 过滤（Phase 3.3 Step 3）
-        # 当前网页模式：在 SUCCESS / orphan filter 之后仅保留该 Document 的 chunk。
-        # 纯应用层过滤，不修改 Milvus Schema / MilvusRepository Protocol。
+        # ---------------------------------------------------------- Step 3.6: 用户隔离最终兜底（Phase 3.4 Step E）
+        # 应用层双保险（Milvus expr 之外的最终防线）：
+        #   - 当前网页模式：仅保留 candidate.page_id == document_id；
+        #   - 全部知识库模式：仅保留 candidate.page_id in success_ids
+        #     （即使 Milvus / MySQL 出现异常返回，也绝不允许跨用户候选泄漏）。
         if document_id is not None:
             filtered = [c for c in filtered if c.page_id == document_id]
             logger.info(
                 "RagService.search: document_id=%r 过滤后候选=%d",
                 document_id,
+                len(filtered),
+            )
+        else:
+            filtered = [c for c in filtered if c.page_id in success_ids]
+            logger.info(
+                "RagService.search: 用户 %d success_ids=%r 最终兜底后候选=%d",
+                user_id,
+                success_ids,
                 len(filtered),
             )
 

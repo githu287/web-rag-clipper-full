@@ -106,10 +106,11 @@ class DocumentIngestServiceTest(unittest.TestCase):
                 ),
             ],
         )
-        # 2) ingest_page 以 page_id=document_id 调用（Phase 3.4 Step 4：api_key 透传）
+        # 2) ingest_page 以 page_id=document_id 调用（Phase 3.4 Step 4/F6：user_id + api_key 透传）
         self.ingest_service.ingest_page.assert_called_once_with(
             page_id=1,
             chunks=["c1", "c2"],
+            user_id=1,
             api_key=None,
         )
 
@@ -276,7 +277,9 @@ class DocumentIngestServiceTest(unittest.TestCase):
         for call in self.ingest_service.ingest_page.call_args_list:
             self.assertEqual(
                 call,
-                unittest.mock.call(page_id=1, chunks=["c1", "c2"], api_key=None),
+                unittest.mock.call(
+                    page_id=1, chunks=["c1", "c2"], user_id=1, api_key=None
+                ),
             )
         # update_ingest_result 两次，chunk_count=2, status=SUCCESS
         self.assertEqual(
@@ -333,6 +336,7 @@ class DocumentIngestServiceTest(unittest.TestCase):
         self.ingest_service.ingest_page.assert_called_once_with(
             page_id=1,
             chunks=["c1"],
+            user_id=1,
             api_key=None,
         )
 
@@ -436,6 +440,28 @@ class DocumentIngestServiceTest(unittest.TestCase):
         self.document_repo.update_failure.assert_not_called()
         self.document_repo.update_ingest_result.assert_not_called()
         self.ingest_service.ingest_page.assert_not_called()
+
+    # ================================================================
+    # Phase 3.4 Step F6：user_id / api_key 透传
+    # ================================================================
+    def test_api_key_and_user_id_passed_to_ingest_page(self) -> None:
+        """F6：ingest_document 将 user_id 与 api_key 原样透传给 ingest_page。"""
+        async def scenario() -> None:
+            await self.service.ingest_document(
+                1, ["c1", "c2"], user_id=7, api_key="sk-user"
+            )
+
+        self.run_async(scenario())
+
+        # ownership 以 (document_id, user_id=7) 校验
+        self.document_repo.get_document.assert_called_once_with(1, 7)
+        # ingest_page 收到 user_id=7 + api_key="sk-user"（透传用户自己的 Key）
+        self.ingest_service.ingest_page.assert_called_once_with(
+            page_id=1,
+            chunks=["c1", "c2"],
+            user_id=7,
+            api_key="sk-user",
+        )
 
 
 if __name__ == "__main__":
