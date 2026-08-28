@@ -802,6 +802,46 @@ input, textarea {
   max-width: 96px;
 }
 
+.upload-btn {
+  padding: 6px 12px;
+  border: 1px solid var(--primary);
+  border-radius: var(--radius);
+  background: var(--primary);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+  flex: 0 0 auto;
+}
+
+.upload-btn:hover {
+  background: var(--primary-hover);
+}
+
+.upload-btn:disabled {
+  background: #9ca3af;
+  border-color: #9ca3af;
+  cursor: not-allowed;
+}
+
+.upload-status {
+  padding: 4px 12px;
+  font-size: 12px;
+  color: var(--text-sub);
+  flex: 0 0 auto;
+  word-break: break-all;
+}
+
+.upload-status:empty,
+.upload-status[hidden] {
+  display: none;
+}
+
+.upload-status.ok { color: var(--ok); }
+.upload-status.err { color: var(--danger); }
+.upload-status.warn { color: #b45309; }
+.upload-status.loading { color: var(--text-sub); font-style: italic; }
+
 .library-summary {
   padding: 4px 12px 8px;
   font-size: 12px;

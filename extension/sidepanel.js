@@ -48,6 +48,9 @@ const els = {
   libraryDeleteCancelBtn: document.getElementById("library-delete-cancel-btn"),
   libraryDeleteConfirmBtn: document.getElementById("library-delete-confirm-btn"),
   libraryDeleteStatus: document.getElementById("library-delete-status"),
+  libraryUploadBtn: document.getElementById("library-upload-btn"),
+  libraryFileInput: document.getElementById("library-file-input"),
+  uploadStatus: document.getElementById("upload-status"),
   chatArea: document.getElementById("chat-area"),
   chatEmpty: document.getElementById("chat-empty"),
   backToBottom: document.getElementById("back-to-bottom"),
@@ -77,6 +80,8 @@ const els = {
 // 需要时使用 webRagApiClient.ApiRequestError。
 const SCROLL_THRESHOLD = 120;
 const LONG_ANSWER_CHARS = 600;
+const MAX_UPLOAD_SIZE = 2 * 1024 * 1024;
+const ALLOWED_UPLOAD_EXTENSIONS = [".txt", ".md", ".markdown"];
 
 let currentTabId = null;
 let binding = null;
@@ -87,6 +92,7 @@ let clipErrorMsg = null;
 let currentView = "chat";
 let registerBusy = false;
 let apiKeyBusy = false;
+let uploadBusy = false;
 
 // ================================================================ 工具
 async function getCurrentTab() {
@@ -503,6 +509,75 @@ function openDocumentUrl(url) {
 // 因此从知识库无法直接重试，仅提示用户重新剪藏/上传（详见完成报告）。
 function retryDocument(_doc) {
   setStatus(els.librarySummary, "该文档缺少原文 chunks，无法从知识库直接重试；请重新剪藏或上传。", "warn");
+}
+
+// ================================================================ 文件上传（Phase 3.6 Step 3）
+function triggerFileInput() {
+  if (uploadBusy) return;
+  els.libraryFileInput.value = "";
+  els.libraryFileInput.click();
+}
+
+function validateUploadFile(file) {
+  if (!file) return "请选择文件";
+  var name = file.name || "";
+  var dotIndex = name.lastIndexOf(".");
+  if (dotIndex < 0) return "不支持的文件类型，仅支持 .txt / .md / .markdown";
+  var ext = name.substring(dotIndex).toLowerCase();
+  if (ALLOWED_UPLOAD_EXTENSIONS.indexOf(ext) < 0) {
+    return "不支持的文件类型（" + ext + "），仅支持 .txt / .md / .markdown";
+  }
+  if (file.size > MAX_UPLOAD_SIZE) {
+    return "文件过大（" + formatFileSize(file.size) + "），最大 2MB";
+  }
+  if (file.size === 0) return "文件为空，请选择有内容的文件";
+  return null;
+}
+
+function formatFileSize(bytes) {
+  if (bytes < 1024) return bytes + " B";
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KB";
+  return (bytes / (1024 * 1024)).toFixed(2) + " MB";
+}
+
+function setUploadStatus(text, type) {
+  els.uploadStatus.textContent = text || "";
+  els.uploadStatus.classList.remove("ok", "err", "warn", "loading");
+  if (type) els.uploadStatus.classList.add(type);
+  els.uploadStatus.hidden = !text;
+}
+
+async function handleFileUpload(file) {
+  var plugin = webRagApiClient.getPlugin();
+  if (!plugin.pluginId) {
+    renderWelcomeView();
+    return;
+  }
+  var errMsg = validateUploadFile(file);
+  if (errMsg) {
+    setUploadStatus(errMsg, "err");
+    return;
+  }
+  if (uploadBusy) return;
+  uploadBusy = true;
+  els.libraryUploadBtn.disabled = true;
+  setUploadStatus("正在上传 " + file.name + "…", "loading");
+  try {
+    var result = await webRagApiClient.documents.uploadFile(file);
+    var statusLabel = result && result.status === "SUCCESS" ? "上传成功" : "上传完成（状态：" + (result && result.status || "未知") + "）";
+    setUploadStatus(statusLabel + "：" + (file.name) + (result && result.chunk_count != null ? "（" + result.chunk_count + " 个片段）" : ""), "ok");
+    libraryState.page = 1;
+    await loadLibrary();
+  } catch (err) {
+    if (err instanceof webRagApiClient.ApiRequestError && err.code === "UNAUTHENTICATED") {
+      return;
+    }
+    setUploadStatus("上传失败：" + errorText(err), "err");
+  } finally {
+    uploadBusy = false;
+    els.libraryUploadBtn.disabled = false;
+    els.libraryFileInput.value = "";
+  }
 }
 
 // ================================================================ Plugin 注册 / 设置 / 删除
@@ -1252,6 +1327,10 @@ function errorText(err) {
         return "网络错误，请重试";
       case "BAD_CREDENTIALS":
         return "凭证错误，请重新创建插件";
+      case "FILE_TOO_LARGE":
+        return "文件过大，最大 2MB";
+      case "UNSUPPORTED_FILE_TYPE":
+        return "不支持的文件类型，仅支持 .txt / .md / .markdown";
       default:
         return err.message ? "出错了：" + err.message : "出错了，请重试";
     }
@@ -1442,6 +1521,13 @@ function bindEvents() {
   els.librarySourceFilter.addEventListener("change", onLibraryFilterChange);
   els.libraryRefreshBtn.addEventListener("click", function () {
     loadLibrary();
+  });
+  els.libraryUploadBtn.addEventListener("click", function () {
+    triggerFileInput();
+  });
+  els.libraryFileInput.addEventListener("change", function () {
+    var file = els.libraryFileInput.files && els.libraryFileInput.files[0];
+    if (file) handleFileUpload(file);
   });
   els.libraryPrevBtn.addEventListener("click", function () {
     goLibraryPage(libraryState.page - 1);
