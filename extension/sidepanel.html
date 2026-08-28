@@ -134,6 +134,8 @@
     <!-- 我的知识库（Phase 3.6 Step 2-C） -->
     <div class="view-inner" id="view-library" hidden>
       <div class="library-toolbar">
+        <button type="button" class="upload-btn" id="library-upload-btn">上传文件</button>
+        <input type="file" id="library-file-input" accept=".txt,.md,.markdown" hidden>
         <input type="text" id="library-search-input" placeholder="搜索文档…" autocomplete="off" spellcheck="false">
         <select id="library-status-filter" title="状态筛选">
           <option value="">全部状态</option>
@@ -148,6 +150,7 @@
         </select>
         <button type="button" class="icon-btn" id="library-refresh-btn" title="刷新">↻</button>
       </div>
+      <div class="upload-status" id="upload-status"></div>
       <div class="library-summary" id="library-summary"></div>
       <main class="library-list" id="library-list">
         <div class="library-state" id="library-state">正在加载知识库…</div>

@@ -181,6 +181,69 @@ const webRagApiClient = (() => {
     return { response: response, data: data };
   }
 
+  // multipart/form-data 上传（POST /documents/upload）。
+  // 与 request() 分离：FormData 需要浏览器自动生成 boundary，禁止手动设置 Content-Type。
+  // 认证 / 错误分类 / 401→clearPlugin 等逻辑与 request() 保持一致。
+  async function uploadRequest(path, formData) {
+    if (!pluginId || !pluginSecret) {
+      throw new ApiRequestError(401, "UNAUTHENTICATED", "插件凭证缺失，请重新创建插件");
+    }
+    const headers = {};
+    headers["X-Plugin-ID"] = pluginId;
+    headers["X-Plugin-Secret"] = pluginSecret;
+    let response;
+    try {
+      response = await fetch(API_BASE_URL + path, { method: "POST", headers: headers, body: formData });
+    } catch (_err) {
+      throw new ApiRequestError(0, "NETWORK", "网络连接失败，请重试");
+    }
+    if (response.status === 204) {
+      return { response: response, data: null };
+    }
+    let data = null;
+    try {
+      data = await response.json();
+    } catch (_err) {
+      data = null;
+    }
+    if (response.status === 401) {
+      const currentPluginId = pluginId;
+      await clearPlugin();
+      if (unauthenticatedHandler) {
+        await unauthenticatedHandler({ pluginId: currentPluginId });
+      }
+      throw new ApiRequestError(401, "UNAUTHENTICATED", "插件凭证已失效，请重新创建插件");
+    }
+    if (response.status === 403) {
+      if (data && data.type === "PluginDisabledError") {
+        throw new ApiRequestError(403, "PLUGIN_DISABLED", "插件已被禁用，请联系管理员");
+      }
+      throw new ApiRequestError(403, "DISABLED", "插件已被禁用，请联系管理员");
+    }
+    if (response.status === 409 && isApiKeyNotConfiguredError(data)) {
+      throw new ApiRequestError(409, "API_KEY_NOT_CONFIGURED", "请前往设置配置阿里云百炼 API Key");
+    }
+    if (response.status === 413) {
+      throw new ApiRequestError(413, "FILE_TOO_LARGE", parseErrorMessage(data, "文件过大，超出限制"));
+    }
+    if (response.status === 415) {
+      throw new ApiRequestError(415, "UNSUPPORTED_FILE_TYPE", parseErrorMessage(data, "不支持的文件类型"));
+    }
+    if (!response.ok) {
+      if (response.status === 422) {
+        throw new ApiRequestError(422, "VALIDATION", parseErrorMessage(data, "输入不合法，请检查后重试"));
+      }
+      throw new ApiRequestError(
+        response.status,
+        "HTTP",
+        data
+          ? parseErrorMessage(data, "上传失败（HTTP " + response.status + "）")
+          : "服务器返回了无法解析的响应（HTTP " + response.status + "）"
+      );
+    }
+    return { response: response, data: data };
+  }
+
   return {
     ApiRequestError: ApiRequestError,
     getPlugin: getPlugin,
@@ -287,6 +350,13 @@ const webRagApiClient = (() => {
           "/documents/" + encodeURIComponent(String(documentId)) + "/ingest",
           { method: "POST", body: { chunks: chunks } }
         );
+        return result.data;
+      },
+      // POST /documents/upload：multipart/form-data 文件上传（走 uploadRequest 独立通道）
+      async uploadFile(file) {
+        const formData = new FormData();
+        formData.append("file", file);
+        const result = await uploadRequest("/documents/upload", formData);
         return result.data;
       },
     },
