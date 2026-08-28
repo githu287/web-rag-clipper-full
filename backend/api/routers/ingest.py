@@ -22,12 +22,12 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, status
 
-from ...core.di import get_ingest_service, get_user_service
+from ...core.di import get_ingest_service, get_plugin_service
+from ...models import PluginWorkspace
 from ...models.api_schema import IngestRequest, IngestResponse
-from ...models.user import User
 from ...services.ingest import IngestService
-from ...services.user_service import UserService
-from ..deps import get_current_user
+from ...services.plugin_service import PluginService
+from ..deps import get_current_plugin
 
 # 创建 Router（prefix + tags 严格按 Phase 2.7 Step 2 要求）
 router: APIRouter = APIRouter(
@@ -45,46 +45,51 @@ router: APIRouter = APIRouter(
 )
 async def ingest_page(
     request: IngestRequest,
-    current_user: User = Depends(get_current_user),
+    current_plugin: PluginWorkspace = Depends(get_current_plugin),
     service: IngestService = Depends(get_ingest_service),
-    user_service: UserService = Depends(get_user_service),
+    plugin_service: PluginService = Depends(get_plugin_service),
 ) -> IngestResponse:
     """
     POST /ingest/page
 
     业务流程（Phase 2.2 §15 re-ingest）：
-        1) service.ingest_page(page_id, chunks, user_id, api_key) 内部执行：
+        1) service.ingest_page(page_id, chunks, plugin_id, api_key) 内部执行：
            - query old_ids
            - embedding + 构造 ChunkVector + upsert
            - delete stale_ids（差集）
 
-    身份与 API Key（Phase 3.4 Step F6）：
-        - 必须登录（未认证 → 401）；
-        - 当前用户必须已配置百炼 API Key（未配置 → 409 API_KEY_NOT_CONFIGURED）；
-        - Embedding 只使用当前用户自己的 Key，严禁回退服务器 settings.bailian_api_key。
+    身份与 API Key（Phase 3.5 Step 2-E）：
+        - 必须携带 X-Plugin-ID + X-Plugin-Secret（凭证缺失 → 401）；
+        - 当前插件工作空间必须已配置百炼 API Key（未配置 → 409
+          API_KEY_NOT_CONFIGURED）；
+        - Embedding 只使用当前插件工作空间自己的 Key，严禁回退服务器
+          settings.bailian_api_key。
 
     幂等性：
         相同 page_id + 相同 chunks 多次调用 → 结果一致（upsert 按 PK 覆盖 + delete 差集）。
 
     Args:
         request: IngestRequest（page_id > 0；chunks 非空）。
-        current_user: 当前登录用户（Depends(get_current_user) 解析）。
+        current_plugin: 当前插件工作空间（Depends(get_current_plugin) 解析）。
         service: 通过 DI 注入的 IngestService 实例。
-        user_service: 通过 DI 注入的 UserService 实例（用于解密当前用户 API Key）。
+        plugin_service: 通过 DI 注入的 PluginService 实例（用于解密插件工作空间 API Key）。
 
     Returns:
         IngestResponse: success=True + message="success"。
 
     Raises:
+        PluginCredentialsMissingError / PluginNotFoundError / PluginSecretMismatchError:
+            凭证缺失 / 无效（401）。
+        PluginDisabledError: 插件工作空间被禁用（403）。
         MilvusRepositoryError: Milvus 操作失败（由全局 handler 转 HTTPException）。
         EmbeddingClientError: 百炼 Embedding 调用失败（由全局 handler 转 HTTPException）。
-        ApiKeyNotConfiguredError: 当前用户未配置 API Key（由全局 handler 转 HTTP 409）。
+        ApiKeyNotConfiguredError: 当前插件工作空间未配置 API Key（由全局 handler 转 HTTP 409）。
     """
-    api_key: str = user_service.decrypt_api_key(current_user)
+    api_key: str = plugin_service.decrypt_api_key(current_plugin)
     await service.ingest_page(
         page_id=request.page_id,
         chunks=request.chunks,
-        user_id=current_user.id,
+        plugin_id=current_plugin.plugin_id,
         api_key=api_key,
     )
     return IngestResponse()

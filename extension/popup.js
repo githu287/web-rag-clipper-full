@@ -1,4 +1,4 @@
-// popup.js —— Web RAG Clipper 快速剪藏入口（Phase 3.4 Step F8 Step 2）
+// popup.js —— Web RAG Clipper 快速剪藏入口（Phase 3.5 Step 2-F）
 // 不再承载完整聊天，防止 Popup / Side Panel 各维护一套聊天状态导致第二套串台。
 // 复用：config.js / session-store.js / api-client.js。
 "use strict";
@@ -42,9 +42,10 @@ function errorText(err) {
   if (err instanceof webRagApiClient.ApiRequestError) {
     switch (err.code) {
       case "UNAUTHENTICATED":
-        return "登录已失效，请重新登录";
+        return "插件凭证已失效，请重新创建插件";
+      case "PLUGIN_DISABLED":
       case "DISABLED":
-        return "账号已被禁用，请联系管理员";
+        return "插件已被禁用，请联系管理员";
       case "API_KEY_NOT_CONFIGURED":
         return "请前往设置配置阿里云百炼 API Key";
       case "NETWORK":
@@ -94,8 +95,8 @@ async function extractCurrentPage() {
 // ================================================================ 剪藏
 async function clipCurrentPage() {
   if (clipBusy) return;
-  const auth = webRagApiClient.getAuth();
-  if (!auth.token) {
+  const plugin = webRagApiClient.getPlugin();
+  if (!plugin.pluginId) {
     renderNotLoggedIn();
     return;
   }
@@ -115,19 +116,16 @@ async function clipCurrentPage() {
       if (tab && tab.id != null) {
         currentTabId = tab.id;
         const b = await sessionStore.getTabBinding(tab.id);
-        if (b && b.userId === auth.userId) {
+        if (b && b.pluginId === plugin.pluginId) {
           b.documentId = documentId;
           b.stale = false;
           b.pageUrl = page.url;
           b.pageTitle = page.title;
           await sessionStore.setTabBinding(tab.id, b);
         } else {
-          const created = await sessionStore.createSession(auth.userId, {
-            title: "当前网页 · " + page.title,
-          });
+          // Phase 3.6 Step 2-H：Tab Binding 不再包含 sessionId
           await sessionStore.setTabBinding(tab.id, {
-            userId: auth.userId,
-            sessionId: created.sessionId,
+            pluginId: plugin.pluginId,
             documentId: documentId,
             pageUrl: page.url,
             pageTitle: page.title,
@@ -163,10 +161,10 @@ function renderNotLoggedIn() {
 }
 
 function renderLoggedIn() {
-  const auth = webRagApiClient.getAuth();
+  const plugin = webRagApiClient.getPlugin();
   els.viewNotLoggedIn.hidden = true;
   els.viewLoggedIn.hidden = false;
-  els.warnBanner.hidden = !(auth.token && auth.apiKeyConfigured === false);
+  els.warnBanner.hidden = !(plugin.pluginId && plugin.apiKeyConfigured === false);
   setStatus("准备中...", null, "");
 }
 
@@ -196,9 +194,9 @@ function bindEvents() {
 // ================================================================ 初始化
 async function init() {
   bindEvents();
-  await webRagApiClient.loadAuth();
-  const auth = webRagApiClient.getAuth();
-  if (!auth.token) {
+  await webRagApiClient.loadPlugin();
+  const plugin = webRagApiClient.getPlugin();
+  if (!plugin.pluginId) {
     renderNotLoggedIn();
     return;
   }

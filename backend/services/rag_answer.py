@@ -7,12 +7,12 @@ RagAnswerService：RAG 问答编排（Phase 3.3 Step 3）。
 流程（严格按照设计确认）：
     Step 1: 参数防御（query 必须非空）
     Step 2: 若指定 document_id：
-              DocumentRepository.get_document(document_id, user_id) 校验存在性
-              （不存在 → DocumentNotFoundError → HTTP 404；跨用户同 404）；
+              DocumentRepository.get_document(document_id, plugin_id) 校验存在性
+              （不存在 → DocumentNotFoundError → HTTP 404；跨 Workspace 同 404）；
               Document.status != SUCCESS → DocumentNotSuccessError → HTTP 409。
               不依赖 Milvus 中是否存在 chunk。
     Step 3: Retrieval —— 调用 rag_service.search(query, limit=top_k,
-              document_id=document_id, user_id=user_id, api_key=api_key)
+              document_id=document_id, plugin_id=plugin_id, api_key=api_key)
               （不在本 Service 直接操作 Milvus）。
     Step 4: 无 retrieval result → 不调用 LLM，返回固定 answer + 空 sources。
     Step 5: 构造 Context（[Source N] 块；最多 top_k 个；max_context_chars 默认 4000，
@@ -20,14 +20,14 @@ RagAnswerService：RAG 问答编排（Phase 3.3 Step 3）。
     Step 6: 构造 Prompt（system_prompt 固定模板 + user_prompt = Context + 用户问题）。
     Step 7: llm_client.generate(system_prompt, user_prompt, api_key=api_key)。
 
-Phase 3.4 Step D（user-aware 身份传递）：
-    ask() 新增 user_id 与 api_key 参数：
-      - user_id：身份传递 + ownership —— get_document(document_id, user_id)
-        （跨用户 → DocumentNotFoundError → 404）与 search(user_id) 一致；
-      - api_key：LLM 生成使用当前用户自己的百炼 API Key（AuthService
-        decrypt_api_key 解密后传入；Phase 3.4 Step F6：必填，严禁回退
-        settings.bailian_api_key）。
-    绝不使用服务器 Key 冒充用户 Key。
+Phase 3.5 Step 2-E（workspace-aware 身份传递）：
+    ask() 参数 user_id 已迁移为 plugin_id：
+      - plugin_id：身份传递 + ownership —— get_document(document_id, plugin_id)
+        （跨 Workspace → DocumentNotFoundError → 404）与 search(plugin_id) 一致；
+      - api_key：LLM 生成使用当前插件工作空间自己的百炼 API Key
+        （PluginService.decrypt_api_key 解密后传入；Phase 3.4 Step F6：必填，
+        严禁回退 settings.bailian_api_key）。
+    绝不使用服务器 Key 冒充插件工作空间 Key。
     Step 8: 组装 Sources（document_id / title / url / chunk_id=result.id / score=result.distance；
               不重新转换 score，当前 Milvus COSINE 语义：越大越相似）。
 
@@ -118,16 +118,16 @@ class RagAnswerService:
         query: str,
         document_id: int | None = None,
         top_k: int = 5,
-        user_id: int | None = None,
+        plugin_id: str | None = None,
         api_key: str | None = None,
     ) -> RagAskResponse:
         """
         RAG 问答：query → Retrieval → Context → LLM → Answer + Sources。
 
-        Phase 3.4 Step D：新增 user_id 与 api_key —— user_id 用于
-        get_document(document_id, user_id) ownership 校验与 search(user_id)
-        传递（Router 必传 current_user.id）；api_key 用于 LLM 生成（用户自己
-        的 Key，None 回退测试 Key）。
+        Phase 3.5 Step 2-E：参数 user_id 已迁移为 plugin_id —— plugin_id 用于
+        get_document(document_id, plugin_id) ownership 校验与 search(plugin_id)
+        传递（Router 必传 current_plugin.plugin_id）；api_key 用于 LLM 生成
+        （插件工作空间自己的 Key，None 回退测试 Key）。
 
         Args:
             query: 用户问题（非空字符串；API 层 Pydantic min_length=1 已拦截，
@@ -135,9 +135,9 @@ class RagAnswerService:
             document_id: 可选；指定后仅基于该 Document（当前网页模式）回答，
                 且该 Document 必须存在且状态为 SUCCESS；None = 全部知识库模式。
             top_k: 最终进入 Context / Sources 的 chunk 数上限（默认 5）。
-            user_id: 当前用户 ID（Phase 3.4 Step D；ownership，Router 必传；
-                默认 None 仅向后兼容旧调用）。
-            api_key: 用户自己的百炼 API Key（Phase 3.4 Step D；None 回退测试 Key）。
+            plugin_id: 当前插件工作空间 ID（Phase 3.5 Step 2-E；ownership，
+                Router 必传；默认 None 仅向后兼容旧调用）。
+            api_key: 插件工作空间自己的百炼 API Key（Phase 3.4 Step D；None 回退测试 Key）。
 
         Returns:
             RagAskResponse：
@@ -157,10 +157,10 @@ class RagAnswerService:
             raise ValueError("RagAnswerService.ask: query 必须为非空字符串")
 
         # -------------------------------------------------------- Step 2: document_id 校验
-        # Phase 3.4 Step D：get_document(document_id, user_id) 完成 ownership
-        # 校验（跨用户 → DocumentNotFoundError → 404）
+        # Phase 3.5 Step 2-E：get_document(document_id, plugin_id) 完成 ownership
+        # 校验（跨 Workspace → DocumentNotFoundError → 404）
         if document_id is not None:
-            document = self._documents.get_document(document_id, user_id)
+            document = self._documents.get_document(document_id, plugin_id)
             if document.status != DocumentStatus.SUCCESS:
                 raise DocumentNotSuccessError(
                     f"Document {document_id} 状态为 {document.status}，"
@@ -172,7 +172,7 @@ class RagAnswerService:
             query=query,
             limit=top_k,
             document_id=document_id,
-            user_id=user_id,
+            plugin_id=plugin_id,
             api_key=api_key,
         )
         logger.info(
@@ -200,7 +200,7 @@ class RagAnswerService:
         user_prompt = self._build_user_prompt(context, query)
 
         # -------------------------------------------------------- Step 7: LLM
-        # Phase 3.4 Step D：LLM 生成使用用户自己的 API Key（None 回退测试 Key）
+        # Phase 3.4 Step D：LLM 生成使用插件工作空间自己的 API Key（None 回退测试 Key）
         answer = self._llm.generate(system_prompt, user_prompt, api_key=api_key)
 
         # -------------------------------------------------------- Step 8: 组装 Sources

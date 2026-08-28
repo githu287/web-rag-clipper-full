@@ -13,8 +13,8 @@ Document API Schema（Phase 2.9 Step 3）。
    因此本文件不定义任何 embedding 字段，也不复用 models/milvus_dto.ChunkVector；
 3) 全部 Schema 使用 ConfigDict(extra="forbid")，与 api_schema.py 既有风格一致，
    拒绝未声明字段，防止契约漂移；
-4) user_id 不由客户端传入（Phase 3.4 Step 4 起由 Bearer token 决定归属；
-   POST /documents 的归属 = current_user.id）。
+4) plugin_id 不由客户端传入（Phase 3.5 Step 2-B 起由 X-Plugin-ID 头决定归属；
+   POST /documents 的归属 = current_plugin.plugin_id）。
 
 异常契约（由 main.py 全局 handler 转换）：
     - DocumentNotFoundError → 404
@@ -25,6 +25,9 @@ Document API Schema（Phase 2.9 Step 3）。
 """
 
 from __future__ import annotations
+
+from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -42,8 +45,8 @@ class DocumentCreateRequest(BaseModel):
         filename : 文件名（非空，<=255 字符）。
         file_path: 文件存储路径（非空，<=512 字符）。
 
-    归属（Phase 3.4 Step 4）：user_id 不由客户端传入，Document 归属 =
-    当前登录用户（Bearer token 解析的 current_user.id）。
+    归属（Phase 3.5 Step 2-B）：plugin_id 不由客户端传入，Document 归属 =
+    当前 Plugin（X-Plugin-ID 解析的 current_plugin.plugin_id）。
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -67,7 +70,7 @@ class DocumentResponse(BaseModel):
     POST /documents 响应体。
 
     字段与数据库 documents 表核心字段对齐；不含 created_at / updated_at /
-    user_id 等内部细节（HTTP 边界最小契约）。
+    plugin_id 等内部细节（HTTP 边界最小契约）。
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -231,3 +234,68 @@ class WebClipResponse(BaseModel):
         ...,
         description="来源类型（固定 webpage）",
     )
+
+
+# ---------------------------------------------------------------------------
+# 「我的知识库」列表 / 详情接口 Schema（Phase 3.6 Step 2-A）
+# ---------------------------------------------------------------------------
+
+
+# 查询筛选枚举（白名单 Literal，非法值由 FastAPI 直接 422）：
+# - status 刻意排除 DELETING（删除中的瞬态，不作为独立筛选项，UI 归入「处理中」）；
+# - source_type 仅 upload / webpage 两种真实来源。
+DocumentStatusFilter = Literal["PENDING", "PROCESSING", "SUCCESS", "FAILED"]
+DocumentSourceTypeFilter = Literal["upload", "webpage"]
+
+
+class DocumentSummaryResponse(BaseModel):
+    """
+    GET /documents 列表项（安全白名单，Phase 3.6 Step 2-A）。
+
+    只暴露列表业务字段；刻意不包含：plugin_id、file_path、created_at 以外的
+    内部细节，以及任何认证/加密内部字段（plugin_secret / plugin_secret_hash /
+    api_key_ciphertext / api_key_nonce / APP_MASTER_KEY）—— 白名单模型天然
+    拒绝未声明字段外泄。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: int = Field(..., description="Document 主键 ID（1:1 对应 Milvus page_id）")
+    title: str | None = Field(default=None, description="网页标题（上传文档为 None）")
+    filename: str = Field(..., description="文件名")
+    url: str | None = Field(default=None, description="来源 URL（上传文档为 None）")
+    source_type: str = Field(..., description="来源类型（upload / webpage）")
+    status: str = Field(..., description="当前状态（PENDING/PROCESSING/SUCCESS/FAILED/DELETING）")
+    chunk_count: int = Field(..., description="chunk 数量（创建时为 0）")
+    file_size: int = Field(..., description="文件字节数（网页剪藏为 0）")
+    error_message: str | None = Field(default=None, description="失败摘要（成功时为 None）")
+    created_at: datetime = Field(..., description="创建时间")
+
+
+class DocumentDetailResponse(DocumentSummaryResponse):
+    """
+    GET /documents/{document_id} 详情（Phase 3.6 Step 2-A）。
+
+    在列表白名单基础上追加详情字段：mime_type / updated_at。
+    同样刻意不包含 plugin_id / file_path 及任何认证/加密内部字段。
+    """
+
+    mime_type: str = Field(..., description="MIME 类型（未识别时为空串）")
+    updated_at: datetime = Field(..., description="更新时间")
+
+
+class DocumentListResponse(BaseModel):
+    """
+    GET /documents 分页响应（Phase 3.6 Step 2-A）。
+
+    固定结构：{items, total, page, page_size, pages}。
+    pages 由 Router 计算：ceil(total / page_size)；total=0 时 pages=0。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    items: list[DocumentSummaryResponse] = Field(..., description="当前页文档列表")
+    total: int = Field(..., description="匹配条件的文档总数")
+    page: int = Field(..., description="当前页码（>=1）")
+    page_size: int = Field(..., description="每页条数")
+    pages: int = Field(..., description="总页数（total=0 时为 0）")

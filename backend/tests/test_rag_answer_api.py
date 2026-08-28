@@ -29,9 +29,9 @@ from unittest.mock import AsyncMock, Mock, patch
 
 from fastapi.testclient import TestClient
 
-from backend.api.deps import get_current_user
+from backend.api.deps import get_current_plugin
 from backend.clients.llm import LLMClientRequestError
-from backend.core.di import get_rag_answer_service, get_user_service
+from backend.core.di import get_plugin_service, get_rag_answer_service
 from backend.core.exceptions import DocumentNotFoundError, DocumentNotSuccessError
 from backend.main import create_app
 from backend.models.api_schema import RagAnswerSource, RagAskResponse
@@ -54,15 +54,17 @@ class RagAskApiTest(unittest.TestCase):
         self.app.dependency_overrides[get_rag_answer_service] = (
             lambda: self.fake_answer_service
         )
-        # Phase 3.4 Step 4：/rag/ask 需认证 + 用户 API Key 注入
-        self.fake_user = SimpleNamespace(id=1)
-        self.fake_user_service = Mock()
-        self.fake_user_service.decrypt_api_key = Mock(return_value="sk-test")
-        self.app.dependency_overrides[get_current_user] = (
-            lambda: self.fake_user
+        # Phase 3.5 Step 2-E：/rag/ask 需插件认证 + 插件工作空间 API Key 注入
+        self.fake_plugin = SimpleNamespace(plugin_id="plugin-42")
+        self.fake_plugin_service = Mock()
+        self.fake_plugin_service.decrypt_api_key = Mock(
+            return_value="sk-plugin"
         )
-        self.app.dependency_overrides[get_user_service] = (
-            lambda: self.fake_user_service
+        self.app.dependency_overrides[get_current_plugin] = (
+            lambda: self.fake_plugin
+        )
+        self.app.dependency_overrides[get_plugin_service] = (
+            lambda: self.fake_plugin_service
         )
         # raise_server_exceptions=False：ResponseValidationError（响应契约破坏）应作为
         # 500 响应返回，而非在 TestClient 侧直接抛异常。
@@ -114,8 +116,8 @@ class RagAskApiTest(unittest.TestCase):
         self.fake_answer_service.ask.assert_awaited_once_with(
             query="问题",
             document_id=53,
-            user_id=1,  # Phase 3.4 Step 4：认证用户 + 用户 Key 注入
-            api_key="sk-test",
+            plugin_id="plugin-42",  # Phase 3.5 Step 2-E：归属 = 当前插件工作空间
+            api_key="sk-plugin",
         )
 
     def test_ask_document_id_default_none(self) -> None:
@@ -127,8 +129,8 @@ class RagAskApiTest(unittest.TestCase):
         self.fake_answer_service.ask.assert_awaited_once_with(
             query="问题",
             document_id=None,
-            user_id=1,  # Phase 3.4 Step 4：认证用户 + 用户 Key 注入
-            api_key="sk-test",
+            plugin_id="plugin-42",  # Phase 3.5 Step 2-E：归属 = 当前插件工作空间
+            api_key="sk-plugin",
         )
 
     # ----------------------------------------------------- 2. query 空 → 422

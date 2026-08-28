@@ -294,157 +294,15 @@ class SecurityDecryptionError(SecurityError):
 
 
 # ============================================================================
-# User Repository 异常族（Phase 3.4 Step 3 新增：MySQL users 表数据访问层）
+# Plugin API Key 异常（Phase 3.5 Step 2-H：从旧 Auth 异常族独立，仅服务 Plugin）
 # ============================================================================
 
 
-class UserRepositoryError(Exception):
-    """
-    User Repository 异常根类（MySQL users 表数据访问层）。
-
-    设计与 DocumentRepositoryError 族对齐：Repository 不吞异常，所有 SQLAlchemy
-    原生异常（OperationalError / IntegrityError / DBAPIError 等）由 Impl 统一
-    包装为本族异常后抛给上层，由 Service 决定重试 / 抛 API 错误。
-    """
-
-
-class UserNotFoundError(UserRepositoryError):
-    """
-    指定 user_id 的 User 不存在（update_api_key 更新 0 行）。
-
-    触发场景：update_api_key(user_id=...) 查询返回 None。
-    不可重试（重试仍是不存在），调用方应映射 404。
-
-    查询方法（get_user_by_token_hash / get_user_by_api_key_hash / get_user_by_id）
-    查不到返回 None，不抛本异常（认证/注册幂等场景由 Service 决定 401/404）。
-    """
-
-
-class UserOperationError(UserRepositoryError):
-    """
-    users 表操作类失败：SQL 执行异常（连接超时、唯一约束冲突、字段不匹配等）。
-
-    与 DocumentOperationError 语义对齐：参数合法但 DB 执行时失败。
-    典型包装场景（Impl 内 try/except 捕获后包装）：
-      - sqlalchemy.exc.OperationalError  → 连接/超时/死锁等（可重试）
-      - sqlalchemy.exc.IntegrityError    → unique(api_key_hash / token_hash) 冲突（不可重试）
-      - sqlalchemy.exc.DBAPIError        → 其他底层 DBAPI 错误
-    """
-
-
-# ============================================================================
-# Auth 异常族（Phase 3.4 Step 4 新增：认证 / 用户身份接入 / API Key 注入）
-# ============================================================================
-
-
-class AuthError(Exception):
-    """
-    认证 / 授权异常根类（backend/services/user_service.py + backend/api/deps.py）。
-
-    设计与 Security / Repository 异常族独立：
-    - Auth 异常承载「请求者身份」语义（未认证 / 未授权 / 冲突），
-      HTTP 状态码映射由 API 层（main.py 全局 handler）负责；
-    - 错误消息不包含任何明文 API Key / token。
-    """
-
-
-class AuthenticationError(AuthError):
-    """
-    认证失败：Bearer token 缺失 / 无效 / 已过期 / 用户被禁用。
-
-    触发场景（backend/api/deps.py get_current_user）：
-      - 请求头无 Authorization 或非 "Bearer <token>" 格式；
-      - token 对应的 token_hash 在 users 表查不到（无效 / 已过期）；
-      - 用户 status != ACTIVE（DISABLED，不允许使用业务 API）。
-
-    处理策略：不可重试（客户端需重新注册 / 登录获取有效 token），映射 401。
-    """
-
-
-class ApiKeyInvalidError(AuthError):
-    """
-    API Key 无效：登录（/auth/login）时该 API Key 未注册 / 已禁用。
-
-    触发场景（UserService.login）：
-      - get_user_by_api_key_hash 返回 None（未注册，应先 /auth/register）。
-
-    处理策略：不可重试（输入本身无效），映射 401；
-    与「跨用户访问他人文档 → 404」原则一致——不泄露任何已存在信息。
-    """
-
-
-class ApiKeyAlreadyRegisteredError(AuthError):
-    """
-    API Key 已注册：注册（/auth/register）时该 API Key 已存在。
-
-    触发场景（UserService.register）：
-      - get_user_by_api_key_hash 返回非 None（该 API Key 已注册过）。
-
-    处理策略：不可重试（客户端应改用 /auth/login），映射 409 Conflict；
-    提示信息引导用户直接登录，不泄露用户身份细节。
-    """
-
-
-class AuthOperationError(AuthError):
-    """
-    认证服务内部错误：UserRepository 操作失败（UserOperationError 包装转发）。
-
-    触发场景（UserService 调用 create_user / get_user_by_* / update_api_key /
-    update_token 时 UserRepository 抛出 UserOperationError）。
-
-    处理策略：外部数据服务问题（MySQL 连接 / 约束冲突），映射 503 Service
-    Unavailable，与 DocumentOperationError → 503 风格对齐。
-    """
-
-
-# ============================================================================
-# 身份重构异常族（Phase 3.4 Step F-REV3 新增：username+password 身份模型）
-#
-# 旧身份模型（API Key 即身份）相关的 ApiKeyInvalidError / ApiKeyAlreadyRegisteredError
-# 将在后续 Step（F4 重写 UserService / F5 重写 Router）完成后移除，F1 阶段先只增不改。
-# ============================================================================
-
-
-class UsernameAlreadyExistsError(AuthError):
-    """
-    注册用户名已存在：POST /auth/register 时 username 与现有用户冲突。
-
-    触发场景（UserService.register）：get_user_by_username 返回非 None。
-
-    处理策略：不可重试（客户端应改用 /auth/login 或换 username），映射 409 Conflict；
-    响应不泄露任何已有用户细节（除 username 已被占用外）。
-    """
-
-
-class InvalidCredentialsError(AuthError):
-    """
-    登录凭据无效：username 不存在或 password 错误（二者统一响应，防用户枚举）。
-
-    触发场景（UserService.login）：
-      - get_user_by_username 返回 None；
-      - verify_password 返回 False。
-
-    处理策略：不可重试（客户端需纠正输入），映射 401；
-    与「不泄露身份存在性」原则一致——不区分「用户名不存在」与「密码错误」。
-    """
-
-
-class PasswordPolicyError(AuthError):
-    """
-    密码强度不足：不符合 NIST 800-63B 最小长度策略。
-
-    触发场景（backend/core/security.py validate_password_strength）：
-      - 长度 < 8 或 > 128。
-
-    处理策略：不可重试（输入本身非法），映射 422 Unprocessable Entity。
-    """
-
-
-class ApiKeyValidationError(AuthError):
+class ApiKeyValidationError(Exception):
     """
     API Key 校验失败：格式非法或百炼实时验证未通过。
 
-    触发场景（UserService.update_api_key）：
+    触发场景（PluginService.update_api_key）：
       - 格式不符合预期（非 sk- 前缀等）；
       - 调百炼验证时服务端返回无效（401/403 等）。
 
@@ -453,27 +311,143 @@ class ApiKeyValidationError(AuthError):
     """
 
 
-class ApiKeyNotConfiguredError(AuthError):
+class ApiKeyNotConfiguredError(Exception):
     """
-    当前用户未配置模型 API Key，但请求需要模型能力。
+    当前 Plugin 未配置模型 API Key，但请求需要模型能力。
 
-    触发场景（UserService.decrypt_api_key 或业务 Service 注入 Embedding/LLM 前）：
-      - users.api_key_ciphertext IS NULL（api_key_configured=False）。
+    触发场景（PluginService.decrypt_api_key 或业务 Service 注入 Embedding/LLM 前）：
+      - plugin_workspaces.api_key_ciphertext IS NULL（api_key_configured=False）。
 
-    处理策略：不可重试（用户需前往设置配置 Key），映射 409 Conflict；
-    响应消息固定为：
-      "当前账号尚未配置阿里云百炼 API Key，请前往设置配置。"
+    处理策略：不可重试（Plugin 需前往设置配置 Key），映射 409 Conflict；
     与「认证无效 → 401」严格区分：身份有效，仅缺少模型凭证。
     """
 
 
-class DisabledUserError(AuthError):
+# ============================================================================
+# Plugin Repository 异常族（Phase 3.5 Step 2-B 新增：MySQL plugin_workspaces 表数据访问层）
+# ============================================================================
+
+
+class PluginRepositoryError(Exception):
     """
-    用户已被禁用：users.status = DISABLED 时尝试访问业务能力。
+    Plugin Repository 异常根类（MySQL plugin_workspaces 表数据访问层）。
 
-    触发场景（backend/api/deps.py get_current_user）：
-      - token 有效但用户状态为 DISABLED。
+    设计与 DocumentRepositoryError 族对齐：Repository 不吞异常，
+    所有 SQLAlchemy 原生异常（OperationalError / IntegrityError / DBAPIError 等）由
+    Impl 统一包装为本族异常后抛给上层，由 Service 决定重试 / 抛 API 错误。
+    """
 
-    处理策略：不可重试（需管理员启用），映射 403 Forbidden；
-    与 AuthenticationError（401，身份无效）语义区分。
+
+class PluginNotFoundError(PluginRepositoryError):
+    """
+    指定 plugin_id 的 Plugin Workspace 不存在（update/clear/delete 更新目标缺失）。
+
+    触发场景（PluginRepositoryImpl）：update_plugin_name / update_api_key /
+    clear_api_key / update_status / delete_plugin 按 plugin_id 查不到记录。
+    不可重试（重试仍是不存在），调用方应映射 404。
+
+    查询方法（get_by_plugin_id / get_by_plugin_name_norm / get_by_secret_hash /
+    get_by_id）查不到返回 None，不抛本异常（认证幂等场景由 Service 决定 401/404）。
+    """
+
+
+class PluginOperationError(PluginRepositoryError):
+    """
+    plugin_workspaces 表操作类失败：SQL 执行异常（连接超时、唯一约束冲突等）。
+
+    与 DocumentOperationError 语义对齐：参数合法但 DB 执行时失败。
+    典型包装场景（Impl 内 try/except 捕获后包装）：
+      - sqlalchemy.exc.OperationalError  → 连接/超时/死锁等（可重试）
+      - sqlalchemy.exc.IntegrityError    → unique(plugin_id / plugin_name_norm /
+        plugin_secret_hash) 冲突（不可重试）
+      - sqlalchemy.exc.DBAPIError        → 其他底层 DBAPI 错误
+
+    安全红线：错误消息绝不包含 plugin_secret / secret_hash 完整值 /
+    api_key_ciphertext / api_key_nonce / API Key 明文 / SQLAlchemy [parameters: ...]。
+    """
+
+
+# ============================================================================
+# Plugin 业务异常族（Phase 3.5 Step 2-C 新增：PluginService + 凭证校验）
+#
+# 与 PluginRepositoryError 族（Repository 层 DB 异常）独立：
+# - PluginError 族承载「Workspace 身份业务」语义（注册 / 认证 / 状态 / 删除确认）；
+# - HTTP 状态码映射由 API 层（main.py 全局 handler，Step 2-D / 2-E）负责；
+# - 错误消息一律不包含 plugin_id / plugin_secret / secret_hash / API Key 明文。
+# ============================================================================
+
+
+class PluginError(Exception):
+    """
+    Plugin 业务异常根类（backend/services/plugin_service.py）。
+
+    覆盖 register / authenticate / update_api_key / update_plugin_name /
+    delete_workspace / get_plugin 的全部业务失败。
+    与 Security / Repository 异常族独立：PluginError 承载「Workspace 身份与
+    配置」语义，不直接表达 DB 或密码学失败。
+    """
+
+
+class PluginCredentialsMissingError(PluginError):
+    """
+    认证凭据缺失：plugin_id 或 plugin_secret 任一为空。
+
+    触发场景（PluginService.authenticate）：请求头 X-Plugin-ID /
+    X-Plugin-Secret 缺失或空白。
+    不可重试（客户端需补齐凭据），映射 401 Unauthorized。
+    """
+
+
+class PluginSecretMismatchError(PluginError):
+    """
+    plugin_secret 与 plugin_secret_hash 不匹配（认证失败）。
+
+    触发场景（PluginService.authenticate）：hmac.compare_digest 不相等。
+    错误消息禁止回显 plugin_id / secret / hash 的任何内容。
+    不可重试（客户端需持正确 secret），映射 401 Unauthorized。
+    """
+
+
+class PluginDisabledError(PluginError):
+    """
+    Plugin Workspace 已被禁用：status != ACTIVE。
+
+    触发场景（PluginService.authenticate）：secret 正确但 workspace 为
+    DISABLED。禁止 disabled workspace 继续使用 API Key / RAG / 剪藏 /
+    Upload / Delete。
+    不可重试（需管理员启用），映射 403 Forbidden；
+    与认证失败（401，凭据无效）语义严格区分。
+    """
+
+
+class PluginNameTakenError(PluginError):
+    """
+    plugin_name 已被占用（按归一化名查重）。
+
+    触发场景（PluginService.register / update_plugin_name）：
+    get_by_plugin_name_norm 命中其他 workspace。
+    不可重试（客户端需更换名称），映射 409 Conflict。
+    """
+
+
+class PluginNameValidationError(PluginError):
+    """
+    plugin_name 非法：长度或允许字符集不满足规则。
+
+    规则（PluginService.validate_plugin_name）：
+      - trim 后长度 2 ≤ n ≤ 32；
+      - 仅允许中文 / 英文字母 / 数字 / 空格 / - / _ / .；
+      - 禁止换行、tab、控制字符及其他特殊符号。
+    不可重试（输入本身非法），映射 422 Unprocessable Entity（或 400）。
+    """
+
+
+class PluginDeleteConfirmationError(PluginError):
+    """
+    Workspace 删除确认失败：confirm=False 或 plugin_name 不匹配。
+
+    触发场景（PluginService.delete_workspace）：
+      - confirm 非 True；
+      - 提交的 plugin_name 与当前 workspace 显示名不一致。
+    不可重试（客户端需正确确认），映射 400 Bad Request。
     """

@@ -80,8 +80,8 @@ class RagSearchRequest(BaseModel):
         query       : 用户查询文本（必须非空字符串）。
         limit       : 最终返回结果数上限；默认 5；范围 1 <= limit <= 20。
         document_id : 可选；限定检索范围（当前网页模式，Phase 3.4 Step E）；
-                      None = 全部知识库模式。ownership 由后端 user_id 校验，
-                      不允许客户端通过 document_id 访问他人文档。
+                      None = 全部知识库模式。ownership 由后端 plugin_id 校验，
+                      不允许客户端通过 document_id 访问其它 Plugin 的文档。
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -268,94 +268,114 @@ class RagAskResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Auth / 用户身份 Schema —— Phase 3.4 Step 4 新增
+# Plugin Workspace Schema —— Phase 3.5 Step 2-D 新增
 # ---------------------------------------------------------------------------
 
 
-class RegisterRequest(BaseModel):
+class PluginRegisterRequest(BaseModel):
     """
-    POST /auth/register 请求体（F-REV3：注册仅需 username + password）。
-
-    注册完全不依赖百炼 API Key：账号身份与模型配置解耦，用户注册成功后
-    可随时在 PUT /users/me/api-key 配置模型 Key。
+    POST /plugins/register 请求体（注册不需要任何 Plugin Header）。
 
     字段约束：
-        - username：1-64 字符，仅允许字母数字与 _ . -（Pydantic 层 422）；
-        - password：1-128 字符；长度强度（8-128）由 Service 层
-          validate_password_strength 校验（PasswordPolicyError → 422）。
+        - plugin_name：1-64 字符（Pydantic 层宽松上限）；
+          具体规则（trim 后 2-32 字符 / 字符集 / 禁止控制字符）由
+          PluginService.validate_plugin_name 统一校验（PluginNameValidationError → 422）。
     """
 
     model_config = ConfigDict(extra="forbid")
 
-    username: str = Field(
+    plugin_name: str = Field(
         ...,
         min_length=1,
         max_length=64,
-        pattern=r"^[a-zA-Z0-9_.\-]+$",
-        description="用户名（1-64 字符；字母数字与 _ . -）",
-    )
-    password: str = Field(
-        ...,
-        min_length=1,
-        max_length=128,
-        description="登录密码（8-128 字符；强度由后端校验）",
+        description="Workspace 显示名（trim 后 2-32 字符；字符集由 PluginService 校验）",
     )
 
 
-class LoginRequest(BaseModel):
+class PluginRegisterResponse(BaseModel):
     """
-    POST /auth/login 请求体（F-REV3：登录仅需 username + password）。
+    POST /plugins/register 响应体。
 
-    username 不存在与密码错误统一 401（防用户枚举），由 Service 层保证。
+    安全红线：plugin_secret 明文只在此响应中返回一次；不写 DB / 日志 /
+    响应以外任何位置。客户端必须立即保存，后端不提供找回入口。
     """
 
     model_config = ConfigDict(extra="forbid")
 
-    username: str = Field(
+    plugin_id: str = Field(..., min_length=1, description="Workspace 唯一标识")
+    plugin_name: str = Field(
+        ..., min_length=1, max_length=64, description="Workspace 显示名"
+    )
+    plugin_secret: str = Field(
+        ..., min_length=1, description="Workspace 认证凭证（仅本次返回一次，请立即保存）"
+    )
+
+
+class PluginMeResponse(BaseModel):
+    """
+    GET /plugins/me 响应体（当前 Workspace 信息）。
+
+    安全红线：绝不返回 plugin_secret / plugin_secret_hash /
+    api_key_ciphertext / api_key_nonce / api_key 明文。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    plugin_id: str = Field(..., min_length=1, description="Workspace 唯一标识")
+    plugin_name: str = Field(
+        ..., min_length=1, max_length=64, description="Workspace 显示名"
+    )
+    status: str = Field(..., description="Workspace 状态（ACTIVE / DISABLED）")
+    api_key_configured: bool = Field(
+        ...,
+        description="是否已配置百炼 API Key（ciphertext 与 nonce 均非 NULL）",
+    )
+    created_at: datetime = Field(..., description="Workspace 创建时间（ISO 8601）")
+    updated_at: datetime = Field(
+        ..., description="Workspace 最近更新时间（ISO 8601）"
+    )
+
+
+class PluginUpdateNameRequest(BaseModel):
+    """
+    PUT /plugins/me 请求体：修改 Workspace 显示名（plugin_id 不变）。
+
+    名称规则由 PluginService.validate_plugin_name 统一校验（与 register 一致）。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    plugin_name: str = Field(
         ...,
         min_length=1,
         max_length=64,
-        pattern=r"^[a-zA-Z0-9_.\-]+$",
-        description="用户名",
-    )
-    password: str = Field(
-        ...,
-        min_length=1,
-        max_length=128,
-        description="登录密码",
+        description="新显示名（trim 后 2-32 字符；字符集由 PluginService 校验）",
     )
 
 
-class AuthResponse(BaseModel):
+class PluginUpdateNameResponse(BaseModel):
     """
-    注册 / 登录成功响应体。
+    PUT /plugins/me 响应体。
 
-    字段：
-        user_id   : users.id 主键（客户端后续无需再传，服务端以 Bearer token 识别）。
-        token     : opaque Bearer token（明文仅本次返回一次；DB 只存 SHA-256 hash）。
-        token_type: 固定 "Bearer"（客户端拼 Authorization: Bearer <token>）。
+    必须保证：plugin_id 不变 / plugin_secret_hash 不变 / API Key 不变 /
+    documents 不变。
     """
 
     model_config = ConfigDict(extra="forbid")
 
-    user_id: int = Field(..., ge=1, description="用户主键 ID")
-    token: str = Field(..., min_length=1, description="opaque Bearer token（仅返回一次）")
-    token_type: str = Field(default="Bearer", description="Token 类型（固定 Bearer）")
+    plugin_id: str = Field(..., min_length=1, description="Workspace 唯一标识（改名不变）")
+    plugin_name: str = Field(
+        ..., min_length=1, max_length=64, description="新显示名"
+    )
 
 
-class ApiKeyUpdateRequest(BaseModel):
+class PluginUpdateApiKeyRequest(BaseModel):
     """
-    PUT /users/me/api-key 请求体：已登录用户配置 / 更换自己的百炼 API Key。
-
-    更换后：
-        - api_key_ciphertext / nonce 更新为新 Key 的加密副本（AES-256-GCM）；
-        - token 不变（用户身份不变）、user_id 不变、username 不变、
-          password_hash 不变、documents 归属不变；
-        - 后续所有 embedding / LLM 调用自动使用新 Key。
+    PUT /plugins/me/api-key 请求体：配置 / 更换 Workspace 的百炼 API Key。
 
     字段约束：
         - 必须以 "sk-" 开头（百炼 DashScope Key 格式；Pydantic 层 422）；
-        - 真实有效性由 UserService 调 EmbeddingClient 最小验证（失败 400）。
+        - 真实有效性由 PluginService 调 EmbeddingClient 最小验证（失败 400）。
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -369,33 +389,38 @@ class ApiKeyUpdateRequest(BaseModel):
     )
 
 
-class ApiKeyUpdateResponse(BaseModel):
+class PluginUpdateApiKeyResponse(BaseModel):
     """
-    PUT /users/me/api-key 响应体。
+    PUT /plugins/me/api-key 响应体。
 
-    字段：
-        user_id: 被配置 Key 的用户主键（token 不变，客户端继续用原 token）。
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    user_id: int = Field(..., ge=1, description="用户主键 ID")
-
-
-class UserMeResponse(BaseModel):
-    """
-    GET /users/me 响应体（当前用户信息）。
-
-    安全红线：绝不返回 api_key / api_key_ciphertext / api_key_nonce /
-    password_hash / token_hash / APP_MASTER_KEY。
+    安全红线：不返回 api_key / api_key_ciphertext / api_key_nonce /
+    plugin_secret 任何信息。
     """
 
     model_config = ConfigDict(extra="forbid")
 
-    user_id: int = Field(..., ge=1, description="用户主键 ID")
-    username: str = Field(..., min_length=1, max_length=64, description="用户名")
+    plugin_id: str = Field(..., min_length=1, description="Workspace 唯一标识")
     api_key_configured: bool = Field(
-        ...,
-        description="是否已配置百炼 API Key（ciphertext 与 nonce 均非 NULL）",
+        ..., description="是否已配置百炼 API Key（ciphertext 与 nonce 均非 NULL）"
     )
-    created_at: datetime = Field(..., description="用户创建时间（ISO 8601）")
+
+
+class PluginDeleteRequest(BaseModel):
+    """
+    DELETE /plugins/me 请求体：危险操作双重确认。
+
+    仅删除 plugin_workspaces 行；documents / Milvus / FileStorage 的
+    级联删除属于后续 Step 2-E 的 Service 级联删除，本阶段不涉及。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    confirm: bool = Field(
+        ..., description="必须为 true 才允许删除（防误触）"
+    )
+    plugin_name: str = Field(
+        ...,
+        min_length=1,
+        max_length=64,
+        description="当前 Workspace 显示名（必须与当前名称完全一致，防误删）",
+    )

@@ -19,13 +19,13 @@
    - 装配 Settings → BailianLLMClient；不调用 generate() / 不创建 OpenAI Client。
 9) 提供 RagAnswerService 实例工厂 get_rag_answer_service()（Phase 3.3 Step 3 新增）：
    - 装配 RagService + LLMClient + DocumentRepository → RagAnswerService；不调用 ask()。
-10) 提供 UserRepository（Protocol）实例工厂 get_user_repository()（Phase 3.4 Step 4 新增）：
-    - 装配 Engine → UserRepositoryImpl；不调用 CRUD 方法。
-11) 提供 UserService 实例工厂 get_user_service()（Phase 3.4 Step 4 新增；
-    F-REV3 增配 EmbeddingClient）：
-    - 装配 UserRepository + Settings(app_master_key) + EmbeddingClient →
-      UserService；不调用 register / login / update_api_key / decrypt_api_key。
-    - EmbeddingClient 仅用于 update_api_key 时以「用户提交的 Key」做最小验证；
+10) 提供 PluginRepository（Protocol）实例工厂 get_plugin_repository()（Phase 3.5 Step 2-D 新增）：
+    - 装配 Engine → PluginRepositoryImpl；不调用 CRUD 方法。
+11) 提供 PluginService 实例工厂 get_plugin_service()（Phase 3.5 Step 2-D 新增；
+    增配 EmbeddingClient）：
+    - 装配 PluginRepository + Settings(app_master_key) + EmbeddingClient →
+      PluginService；不调用 register / authenticate / update_api_key / decrypt_api_key。
+    - EmbeddingClient 仅用于 update_api_key 时以「Plugin 提交的 Key」做最小验证；
       不在此处调用 embed()（生命周期红线）。
 
 DI 层允许装配：
@@ -37,8 +37,8 @@ DI 层允许装配：
 - RagService（业务编排）
 - RagAnswerService（业务编排，Phase 3.3 Step 3 新增）
 - DocumentRepository（MySQL documents 表 CRUD，Phase 2.9 Step 1 新增）
-- UserRepository（MySQL users 表 CRUD，Phase 3.4 Step 4 新增）
-- UserService（用户认证业务编排，Phase 3.4 Step 4 新增）
+- PluginRepository（MySQL plugin_workspaces 表 CRUD，Phase 3.5 Step 2-D 新增）
+- PluginService（Plugin Workspace 身份业务编排，Phase 3.5 Step 2-D 新增）
 
 但 DI 层禁止：
 - 建立外部连接（Milvus / 百炼 OpenAI 兼容 API / MySQL）
@@ -69,16 +69,16 @@ from ..repositories.milvus import (
 from ..repositories.mysql import (
     DocumentRepository,
     DocumentRepositoryImpl,
-    UserRepository,
-    UserRepositoryImpl,
 )
+from ..repositories.mysql.plugin_impl import PluginRepositoryImpl
+from ..repositories.mysql.plugin_protocol import PluginRepository
 from ..services.document_delete import DocumentDeleteService
 from ..services.document_ingest import DocumentIngestService
 from ..services.document_upload import DocumentUploadService
 from ..services.ingest import IngestService
 from ..services.rag import RagService
 from ..services.rag_answer import RagAnswerService
-from ..services.user_service import UserService
+from ..services.plugin_service import PluginService
 from ..services.web_clip import WebClipService
 from ..storage import FileStorage, LocalFileStorage
 from .config import Settings, get_default_settings
@@ -658,29 +658,29 @@ def get_rag_answer_service() -> RagAnswerService:
 
 
 @lru_cache(maxsize=1)
-def get_user_repository() -> UserRepository:
+def get_plugin_repository() -> PluginRepository:
     """
-    返回 UserRepository（Protocol）实例（Phase 3.4 Step 4 新增）。
+    返回 PluginRepository（Protocol）实例（Phase 3.5 Step 2-D 新增）。
 
     依赖链：
         Engine (core.db.get_engine)
             ↓
-        UserRepositoryImpl(engine)
+        PluginRepositoryImpl(engine)
             ↓
-        以 UserRepository Protocol 类型返回
+        以 PluginRepository Protocol 类型返回
 
     只负责依赖装配：
     - 通过 core.db.get_engine 获取 MySQL Engine 单例（lru_cache 进程内唯一）；
-    - 创建 UserRepositoryImpl 实例（构造函数仅保存 engine 引用 + 建 sessionmaker）。
+    - 创建 PluginRepositoryImpl 实例（构造函数仅保存 engine 引用 + 建 sessionmaker）。
 
     不执行（生命周期红线）：
-    - 任何 SQL 执行（create_user / get_user_by_* / update_token / update_api_key）；
+    - 任何 SQL 执行（create_plugin / get_by_plugin_id / update_api_key 等）；
     - MySQL TCP 连接（create_engine 本身不开连接，真实连接在首次 SQL 执行时建立）。
 
     设计要点：
     1) **返回类型为 Protocol**：上层 Service 用
-       `repo: UserRepository = Depends(get_user_repository)` 而非
-       UserRepositoryImpl，从而：
+       `repo: PluginRepository = Depends(get_plugin_repository)` 而非
+       PluginRepositoryImpl，从而：
          - 单元测试可注入 Mock 实现（同 Protocol，runtime_checkable 校验通过）；
          - 编译期约束：Service 无法访问 Impl 的私有方法/属性，避免越权。
     2) **注入 Engine（而非 Settings）**：Impl 接受 Engine，便于单元测试用
@@ -688,55 +688,56 @@ def get_user_repository() -> UserRepository:
     3) **lru_cache 单例**：进程内只构造一次 Impl 实例（内部 sessionmaker 共享）。
 
     Returns:
-        UserRepository: Protocol 类型实例（实际为 UserRepositoryImpl，
+        PluginRepository: Protocol 类型实例（实际为 PluginRepositoryImpl，
         但 Service 不感知具体类型）。
     """
     engine = get_engine()
-    return UserRepositoryImpl(engine)
+    return PluginRepositoryImpl(engine)
 
 
 @lru_cache(maxsize=1)
-def get_user_service() -> UserService:
+def get_plugin_service() -> PluginService:
     """
-    返回 UserService 单例（Phase 3.4 Step 4 新增）。
+    返回 PluginService 单例（Phase 3.5 Step 2-D 新增）。
 
     依赖链：
-        get_user_repository()  → UserRepository (Protocol)
-        get_settings()         → Settings（app_master_key）
-        get_embedding_client() → EmbeddingClient（仅 API Key 最小验证）
+        get_plugin_repository()  → PluginRepository (Protocol)
+        get_settings()           → Settings（app_master_key）
+        get_embedding_client()   → EmbeddingClient（仅 API Key 最小验证）
             ↓
-        UserService(user_repository, settings, embedding_client)
+        PluginService(plugin_repository, settings, embedding_client)
 
     只负责依赖装配：
-    - 获取已缓存的 UserRepository（Protocol）单例；
+    - 获取已缓存的 PluginRepository（Protocol）单例；
     - 获取 Settings 单例（读 app_master_key，AES-256-GCM 主密钥）；
     - 获取已缓存的 EmbeddingClient 单例（仅用于 update_api_key 时以
       用户提交的 Key 做最小 embedding 验证，不在此调用 embed()）；
-    - 创建 UserService 实例（构造函数仅保存三个依赖引用）。
+    - 创建 PluginService 实例（构造函数仅保存三个依赖引用）。
 
     不执行（生命周期红线）：
-    - register / login / update_api_key / decrypt_api_key 调用；
+    - register / authenticate / update_api_key / decrypt_api_key /
+      remove_api_key / update_plugin_name / delete_workspace / get_plugin 调用；
     - embed() / OpenAI client 创建调用；
     - 任何 MySQL 网络请求 / 加密计算。
 
     设计要点：
-    1) **lru_cache 单例**：UserService 无状态（仅持有注入依赖的引用），
+    1) **lru_cache 单例**：PluginService 无状态（仅持有注入依赖的引用），
        进程内共享一个实例安全且高效，与已有 DI 工厂风格一致。
-    2) **依赖复用**：UserRepository / EmbeddingClient 均为 lru_cache 单例，
+    2) **依赖复用**：PluginRepository / EmbeddingClient 均为 lru_cache 单例，
        不会重复创建 Engine / sessionmaker / OpenAI client。
-    3) **Protocol 注入**：user_repository 类型为 UserRepository Protocol，
-       UserService 不感知 UserRepositoryImpl 具体类型，便于单元测试 Mock。
+    3) **Protocol 注入**：plugin_repository 类型为 PluginRepository Protocol，
+       PluginService 不感知 PluginRepositoryImpl 具体类型，便于单元测试 Mock。
     4) **不调用业务方法**：DI 仅 return 对象，不触发认证链路。
 
     Returns:
-        UserService: 待调用的用户认证编排服务实例
-        （调用方需自行调用 register / login / decrypt_api_key 等）。
+        PluginService: 待调用的 Plugin Workspace 身份编排服务实例
+        （调用方需自行调用 register / authenticate / update_api_key 等）。
     """
-    user_repository = get_user_repository()
+    plugin_repository = get_plugin_repository()
     settings = get_settings()
     embedding_client = get_embedding_client()
-    return UserService(
-        user_repository=user_repository,
+    return PluginService(
+        plugin_repository=plugin_repository,
         settings=settings,
         embedding_client=embedding_client,
     )

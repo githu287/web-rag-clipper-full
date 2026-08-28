@@ -1,18 +1,28 @@
 """
 Document Repository Protocol（Phase 2.9 Step 1；Phase 2.11 Step 2 扩展；
-Phase 3.4 Step C user-aware 升级）。
+Phase 3.4 Step C user-aware 升级；Phase 3.5 Step 2-B plugin-aware 切换）。
 
-Phase 3.4 Step C 变更总览：
-- create_document：user_id 由「可选（默认 None）」升级为「必填」，Repository 不推断；
-- get_document(document_id, user_id)：SQL 层 WHERE id + user_id 双条件，
-  用户 A 查用户 B 的文档按「不存在」处理（DocumentNotFoundError，不泄露归属）；
-- get_documents_by_ids(document_ids, user_id)：SQL 层 IN + user_id 过滤；
-- 新增 get_success_document_ids(user_id)：仅返回 id 列表（供后续 RAG 全库隔离）；
-- delete_document(document_id, user_id)：SQL 层 WHERE id + user_id，
-  用户 A 删用户 B 的文档按「不存在」处理，返回被删 Document；
+Phase 3.5 Step 2-B 变更总览（user_id → plugin_id，与 migration 0007 对齐）：
+- create_document：user_id: int → plugin_id: str（**必填**，VARCHAR(64) NOT NULL，
+  Repository 不推断；禁止 plugin_id=None）；
+- get_document(document_id, plugin_id)：SQL 层 WHERE id + plugin_id 双条件，
+  Workspace A 查 B 的文档按「不存在」处理（DocumentNotFoundError，不泄露归属）；
+- get_documents_by_ids(document_ids, plugin_id)：SQL 层 IN + plugin_id 过滤，
+  禁止先查全部再 Python 过滤；
+- get_success_document_ids(plugin_id)：仅返回 id 列表（供后续 RAG 全库隔离）；
+- delete_document(document_id, plugin_id)：SQL 层 WHERE id + plugin_id，
+  A 删 B 的文档按「不存在」处理，返回被删 Document；
 - update_status / update_ingest_result / update_failure 签名不变：
-  调用方必须在前置 get_document(document_id, user_id) ownership check 成功
-  后才能操作，document_id 已通过归属校验，不再重复携带 user_id。
+  调用方必须在前置 get_document(document_id, plugin_id) ownership check 成功
+  后才能操作，document_id 已通过归属校验，不再重复携带 plugin_id
+  （最小改动原则：不重复修改已经正确工作的事务流程）。
+
+Phase 3.4 Step C 变更总览（历史，已由上述取代）：
+- create_document：user_id 由「可选（默认 None）」升级为「必填」，Repository 不推断；
+- get_document(document_id, user_id)：SQL 层 WHERE id + user_id 双条件；
+- get_documents_by_ids(document_ids, user_id)：SQL 层 IN + user_id 过滤；
+- 新增 get_success_document_ids(user_id)：仅返回 id 列表；
+- delete_document(document_id, user_id)：SQL 层 WHERE id + user_id。
 
 【严格阶段约束】
 - 仅定义接口（typing.Protocol），不含任何实现代码；
@@ -61,7 +71,7 @@ class DocumentRepository(Protocol):
         self,
         filename: str,
         file_path: str,
-        user_id: int,
+        plugin_id: str,
         file_size: int | None = None,
         mime_type: str | None = None,
         title: str | None = None,
@@ -78,8 +88,9 @@ class DocumentRepository(Protocol):
         Args:
             filename : 文件名（非空，<=255 字符）。
             file_path: 文件存储路径（非空，<=512 字符）。
-            user_id  : 所属用户 ID（**必填**，不允许默认 None；必须由上层认证
-                       上下文提供，Repository 不允许自己推断 / 生成 user_id）。
+            plugin_id: 所属 Plugin Workspace 标识（**必填**，VARCHAR(64)，
+                      不允许默认 None；必须由上层认证上下文提供，Repository
+                      不允许自己推断 / 生成 plugin_id）。
             file_size: 文件字节数（可选；Phase 2.10 Step 3 上传路径传入，
                        None 时保持 ORM 默认值 0，不覆盖既有调用行为）。
             mime_type: 文件 MIME 类型（可选；None 时保持 ORM 默认值 ""）。
@@ -99,25 +110,25 @@ class DocumentRepository(Protocol):
         """
 
     # -------------------------------------------------------------------- get
-    def get_document(self, document_id: int, user_id: int) -> Document:
+    def get_document(self, document_id: int, plugin_id: str) -> Document:
         """
-        按主键 + 归属用户查询 Document（user-aware，Phase 3.4 Step C）。
+        按主键 + 归属 Workspace 查询 Document（plugin-aware，Phase 3.5 Step 2-B）。
 
-        SQL：WHERE id = :document_id AND user_id = :user_id。
+        SQL：WHERE id = :document_id AND plugin_id = :plugin_id。
 
-        隔离语义：用户 A 查询用户 B 的 document_id 时表现为「Document 不存在」，
+        隔离语义：Workspace A 查询 B 的 document_id 时表现为「Document 不存在」，
         抛 DocumentNotFoundError；不得返回 B 的文档、不得泄露「这是别人的文档」。
 
         Args:
             document_id: Document 主键 ID。
-            user_id    : 当前用户 ID（归属过滤条件，由认证上下文提供）。
+            plugin_id  : 当前 Workspace 标识（归属过滤条件，由认证上下文提供）。
 
         Returns:
             Document ORM 对象（detached，属性可读）。
 
         Raises:
-            DocumentNotFoundError: (document_id, user_id) 组合不存在
-                （含「文档存在但属于其他用户」的等价语义）。
+            DocumentNotFoundError: (document_id, plugin_id) 组合不存在
+                （含「文档存在但属于其他 Workspace」的等价语义）。
             DocumentOperationError: SQLAlchemy 执行异常。
         """
 
@@ -125,23 +136,23 @@ class DocumentRepository(Protocol):
     def get_documents_by_ids(
         self,
         document_ids: list[int],
-        user_id: int,
+        plugin_id: str,
     ) -> list[Document]:
         """
-        按主键集合 + 归属用户批量查询 Document（user-aware，Phase 3.4 Step C；
-        Phase 2.12 Step 2 起为 RAG status post-filter 专用）。
+        按主键集合 + 归属 Workspace 批量查询 Document（plugin-aware，
+        Phase 3.5 Step 2-B；Phase 2.12 Step 2 起为 RAG status post-filter 专用）。
 
         供 RagService 在 Milvus 检索后批量反查 Document.status，实现
         「只保留 SUCCESS + 过滤 MySQL 不存在（孤儿 chunk）」的应用层过滤。
 
         Args:
             document_ids: Document 主键 ID 列表。
-            user_id    : 当前用户 ID（归属过滤条件）。
+            plugin_id   : 当前 Workspace 标识（归属过滤条件）。
 
         Returns:
             list[Document]：批量查询结果（detached，属性可读）。
             行为约定：
-            - SQL 层直接过滤：WHERE id IN (...) AND user_id = :user_id，
+            - SQL 层直接过滤：WHERE id IN (...) AND plugin_id = :plugin_id，
               不允许先查全部再 Python 过滤；
             - document_ids 为空时直接返回 []，不发 SQL；
             - 使用一次批量 IN 查询，禁止逐个调用 get_document()（不 N+1）；
@@ -153,14 +164,15 @@ class DocumentRepository(Protocol):
         """
 
     # ------------------------------------------------------- get_success_ids
-    def get_success_document_ids(self, user_id: int) -> list[int]:
+    def get_success_document_ids(self, plugin_id: str) -> list[int]:
         """
-        返回指定用户 status == SUCCESS 的 Document id 列表（Phase 3.4 Step C）。
+        返回指定 Workspace status == SUCCESS 的 Document id 列表
+        （Phase 3.5 Step 2-B 由 user-aware 切换为 plugin-aware）。
 
-        SQL：SELECT id FROM documents WHERE user_id = :user_id
+        SQL：SELECT id FROM documents WHERE plugin_id = :plugin_id
              AND status = :status_success。
 
-        用途：后续 RAG 全库 user isolation（本步骤只完成 Repository 契约，
+        用途：后续 RAG 全库 plugin isolation（本步骤只完成 Repository 契约，
         不修改 RagService）。
 
         要求：
@@ -169,10 +181,10 @@ class DocumentRepository(Protocol):
         - 不允许 Service 拉全部数据再 Python 过滤。
 
         Args:
-            user_id: 当前用户 ID。
+            plugin_id: 当前 Workspace 标识。
 
         Returns:
-            list[int]：该用户全部 SUCCESS 状态的 Document id；无结果时 []。
+            list[int]：该 Workspace 全部 SUCCESS 状态的 Document id；无结果时 []。
 
         Raises:
             DocumentOperationError: SQLAlchemy 执行异常。
@@ -277,13 +289,14 @@ class DocumentRepository(Protocol):
         """
 
     # ------------------------------------------------------------------ delete
-    def delete_document(self, document_id: int, user_id: int) -> Document:
+    def delete_document(self, document_id: int, plugin_id: str) -> Document:
         """
-        按主键 + 归属用户删除 Document 记录（user-aware，仅删 MySQL documents 行）。
+        按主键 + 归属 Workspace 删除 Document 记录（plugin-aware，
+        仅删 MySQL documents 行）。
 
-        SQL：WHERE id = :document_id AND user_id = :user_id。
+        SQL：WHERE id = :document_id AND plugin_id = :plugin_id。
 
-        隔离语义：用户 A 删除用户 B 的 document 时按「不存在」处理，抛
+        隔离语义：Workspace A 删除 B 的 document 时按「不存在」处理，抛
         DocumentNotFoundError；不得删除 B 的文档、不泄露归属信息。
 
         【范围边界】本方法只负责 MySQL 侧行删除（Repository 单一职责）；
@@ -294,12 +307,104 @@ class DocumentRepository(Protocol):
 
         Args:
             document_id: Document 主键 ID。
-            user_id    : 当前用户 ID（归属过滤条件）。
+            plugin_id  : 当前 Workspace 标识（归属过滤条件）。
 
         Returns:
             被删除的 Document ORM 对象（detached，属性可读；DB 行已删除）。
 
         Raises:
-            DocumentNotFoundError: (document_id, user_id) 组合不存在（删除 0 行）。
+            DocumentNotFoundError: (document_id, plugin_id) 组合不存在（删除 0 行）。
+            DocumentOperationError: SQLAlchemy 执行异常。
+        """
+
+    # ------------------------------------------------------------------ list
+    def list_documents(
+        self,
+        plugin_id: str,
+        *,
+        page: int = 1,
+        page_size: int = 20,
+        keyword: str | None = None,
+        status: str | None = None,
+        source_type: str | None = None,
+    ) -> list[Document]:
+        """
+        分页列出指定 Workspace 的 Document（plugin-aware，Phase 3.6 Step 2-A）。
+
+        SQL 形如：
+            SELECT ... FROM documents
+            WHERE plugin_id = :plugin_id
+              AND status = :status            -- 仅当 status 非 None
+              AND source_type = :source_type  -- 仅当 source_type 非 None
+              AND (title LIKE :kw
+                   OR filename LIKE :kw
+                   OR url LIKE :kw)           -- 仅当 keyword 非空
+            ORDER BY created_at DESC, id DESC
+            LIMIT :page_size OFFSET :offset
+
+        行为约束：
+        - plugin_id 必须参与 SQL WHERE；禁止先查全部再 Python 层过滤；
+        - status / source_type 使用精确匹配（等值）；
+        - keyword 匹配 title / filename / url 三个字段；keyword 为 None 或
+          纯空白（strip 后为空）时视为未提供，不增加 LIKE 条件；
+        - keyword 中的 LIKE 通配符（% _ \\）必须转义，避免通配符扩大匹配范围；
+        - 排序固定 created_at DESC, id DESC（id 作次级排序保证同刻文档顺序稳定）；
+        - 分页由 SQL LIMIT / OFFSET 完成，禁止 Python 层分页；
+        - 无结果返回 []（不抛异常）。
+
+        Args:
+            plugin_id : 当前 Workspace 标识（归属过滤条件，由认证上下文提供）。
+            page      : 页码（>=1；默认 1）。
+            page_size : 每页条数（>=1；默认 20）。
+            keyword   : 可选；匹配 title / filename / url（% 模糊匹配）。
+            status    : 可选；精确匹配 DocumentStatus（PENDING/PROCESSING/
+                        SUCCESS/FAILED/DELETING）。
+            source_type: 可选；精确匹配 DocumentSourceType（upload/webpage）。
+
+        Returns:
+            list[Document]：当前页 Document ORM 对象（detached，属性可读）。
+
+        Raises:
+            DocumentOperationError: SQLAlchemy 执行异常。
+        """
+
+    # ----------------------------------------------------------------- count
+    def count_documents(
+        self,
+        plugin_id: str,
+        *,
+        keyword: str | None = None,
+        status: str | None = None,
+        source_type: str | None = None,
+    ) -> int:
+        """
+        统计指定 Workspace 匹配条件的 Document 总数（plugin-aware，
+        Phase 3.6 Step 2-A）。
+
+        SQL 形如：
+            SELECT COUNT(*)
+            FROM documents
+            WHERE plugin_id = :plugin_id
+              AND status = :status            -- 仅当 status 非 None
+              AND source_type = :source_type  -- 仅当 source_type 非 None
+              AND (title LIKE :kw
+                   OR filename LIKE :kw
+                   OR url LIKE :kw)           -- 仅当 keyword 非空
+
+        行为约束：
+        - 过滤条件（plugin_id / keyword / status / source_type）必须与
+          list_documents 完全一致（共享同一条件构造逻辑，禁止两套漂移 WHERE）；
+        - 无结果返回 0（不抛异常）。
+
+        Args:
+            plugin_id : 当前 Workspace 标识（归属过滤条件）。
+            keyword   : 可选；与 list_documents 相同语义。
+            status    : 可选；与 list_documents 相同语义。
+            source_type: 可选；与 list_documents 相同语义。
+
+        Returns:
+            int：匹配条件的 Document 总数。
+
+        Raises:
             DocumentOperationError: SQLAlchemy 执行异常。
         """

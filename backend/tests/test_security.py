@@ -1,11 +1,11 @@
 """
-Security 纯工具单元测试（Phase 3.4 Step 3；F-REV3 新增 Argon2id 密码测试）。
+Security 纯工具单元测试（Phase 3.5 Step 2-H 清理后：仅 Plugin + API Key 能力）。
 
 测试策略：
 - 纯函数测试：无 DB / 无 Settings / 无 IO；
 - master key 由测试显式构造 32 bytes 字符串，不依赖 .env；
-- 覆盖：sha256 / token 生成与哈希 / AES-256-GCM round trip / 随机 nonce /
-  篡改与错误密钥失败路径 / 密钥长度校验 / Argon2id 密码哈希与强度校验。
+- 覆盖：sha256 / token 生成 / AES-256-GCM round trip / 随机 nonce /
+  篡改与错误密钥失败路径 / 密钥长度校验 / Plugin Secret hash 与生成。
 
 不依赖：
 - 真实 MySQL / Redis / Milvus；
@@ -19,19 +19,17 @@ import hashlib
 import unittest
 
 from backend.core.exceptions import (
-    PasswordPolicyError,
     SecurityConfigurationError,
     SecurityDecryptionError,
 )
 from backend.core.security import (
     decrypt_api_key,
     encrypt_api_key,
+    generate_plugin_id,
+    generate_plugin_secret,
     generate_token,
-    hash_password,
-    hash_token,
+    hash_plugin_secret,
     sha256_hex,
-    validate_password_strength,
-    verify_password,
 )
 
 # 32 bytes 的 ASCII 字符串，utf-8 编码后恰好 32 bytes（AES-256）
@@ -54,12 +52,6 @@ class SecurityUtilTest(unittest.TestCase):
         token = generate_token()
         self.assertTrue(token)
         self.assertGreater(len(token), 20)
-
-    def test_hash_token_stable(self) -> None:
-        """同一 token 的 hash 稳定，且为 64 位十六进制。"""
-        token = generate_token()
-        self.assertEqual(hash_token(token), hash_token(token))
-        self.assertEqual(len(hash_token(token)), 64)
 
     def test_encrypt_decrypt_round_trip(self) -> None:
         """AES-256-GCM 加密后能正确解密还原。"""
@@ -111,11 +103,6 @@ class SecurityUtilTest(unittest.TestCase):
         with self.assertRaises(SecurityDecryptionError):
             decrypt_api_key(tampered, nonce, _MASTER_KEY)
 
-    def test_token_plaintext_not_equal_hash(self) -> None:
-        """token 明文与 token_hash 不相等（数据库只保存 hash）。"""
-        token = generate_token()
-        self.assertNotEqual(token, hash_token(token))
-
     def test_master_key_not_32_bytes_fails(self) -> None:
         """master key 非 32 bytes 时 encrypt/decrypt 均抛配置错误。"""
         for bad_key in ("short", "k" * 31, "k" * 33):
@@ -125,59 +112,48 @@ class SecurityUtilTest(unittest.TestCase):
                 decrypt_api_key("dummy", "dummy", bad_key)
 
 
-class PasswordHashTest(unittest.TestCase):
-    """Argon2id 密码哈希与强度校验测试（Phase 3.4 Step F-REV3）。"""
+class PluginSecretTest(unittest.TestCase):
+    """Plugin Secret / Plugin ID 工具测试（Phase 3.5 Step 2-C 新增）。"""
 
-    def test_hash_password_argon2id_phc(self) -> None:
-        """hash_password 输出 $argon2id$ 前缀的 PHC 格式字符串。"""
-        h = hash_password("correct-horse-12")
-        self.assertTrue(h.startswith("$argon2id$"), f"unexpected prefix: {h[:24]}")
-        self.assertGreater(len(h), 40)
+    def test_generate_plugin_id_length(self) -> None:
+        """plugin_id 为约 43 字符（token_urlsafe(32)，256-bit 随机性）。"""
+        plugin_id = generate_plugin_id()
+        self.assertTrue(plugin_id)
+        self.assertGreaterEqual(len(plugin_id), 40)
 
-    def test_hash_password_random_salt(self) -> None:
-        """同一密码两次哈希结果不同（随机 salt），且均可验证通过。"""
-        h1 = hash_password("same-password-123")
-        h2 = hash_password("same-password-123")
-        self.assertNotEqual(h1, h2)
-        self.assertTrue(verify_password("same-password-123", h1))
-        self.assertTrue(verify_password("same-password-123", h2))
+    def test_generate_plugin_secret_length(self) -> None:
+        """plugin_secret 为约 43 字符（token_urlsafe(32)，256-bit 随机性）。"""
+        secret = generate_plugin_secret()
+        self.assertTrue(secret)
+        self.assertGreaterEqual(len(secret), 40)
 
-    def test_verify_password_correct(self) -> None:
-        """正确密码验证通过。"""
-        h = hash_password("my-secret-pass")
-        self.assertTrue(verify_password("my-secret-pass", h))
+    def test_generate_random_values_differ(self) -> None:
+        """两次生成的值应不同（随机性）。"""
+        self.assertNotEqual(generate_plugin_id(), generate_plugin_id())
+        self.assertNotEqual(generate_plugin_secret(), generate_plugin_secret())
 
-    def test_verify_password_wrong(self) -> None:
-        """错误密码验证失败。"""
-        h = hash_password("my-secret-pass")
-        self.assertFalse(verify_password("wrong-pass", h))
+    def test_hash_plugin_secret_length(self) -> None:
+        """hash_plugin_secret 输出 64 位十六进制（SHA-256）。"""
+        self.assertEqual(len(hash_plugin_secret("secret-1")), 64)
 
-    def test_verify_password_invalid_hash_returns_false(self) -> None:
-        """非法 / 损坏哈希统一返回 False，不抛异常、不泄露细节。"""
-        self.assertFalse(verify_password("any-password", "not-a-valid-hash"))
-        self.assertFalse(verify_password("any-password", ""))
-        self.assertFalse(verify_password("any-password", "$argon2id$truncated"))
+    def test_hash_plugin_secret_stable(self) -> None:
+        """相同 secret 的 hash 一致。"""
+        secret = "my-plugin-secret-123"
+        self.assertEqual(
+            hash_plugin_secret(secret), hash_plugin_secret(secret)
+        )
 
-    def test_hash_not_contain_plaintext(self) -> None:
-        """哈希字符串不包含明文密码。"""
-        pwd = "super-secret-pass-42"
-        self.assertNotIn(pwd, hash_password(pwd))
+    def test_hash_plugin_secret_differs_for_different_secrets(self) -> None:
+        """不同 secret 的 hash 不同。"""
+        self.assertNotEqual(
+            hash_plugin_secret("secret-a"), hash_plugin_secret("secret-b")
+        )
 
-    def test_validate_password_strength_ok(self) -> None:
-        """最小 8 位 / 最大 128 位边界内通过。"""
-        validate_password_strength("12345678")
-        validate_password_strength("a" * 128)
-
-    def test_validate_password_strength_too_short(self) -> None:
-        """长度 < 8（含空串）抛 PasswordPolicyError。"""
-        for bad in ("", "1234567"):
-            with self.assertRaises(PasswordPolicyError):
-                validate_password_strength(bad)
-
-    def test_validate_password_strength_too_long(self) -> None:
-        """长度 > 128 抛 PasswordPolicyError。"""
-        with self.assertRaises(PasswordPolicyError):
-            validate_password_strength("a" * 129)
+    def test_hash_plugin_secret_not_plaintext(self) -> None:
+        """hash 不含明文 secret（数据库只保存 hash）。"""
+        secret = "plain-secret-xyz"
+        self.assertNotEqual(secret, hash_plugin_secret(secret))
+        self.assertNotIn(secret, hash_plugin_secret(secret))
 
 
 if __name__ == "__main__":

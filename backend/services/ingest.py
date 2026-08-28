@@ -65,7 +65,7 @@ class IngestService:
         self,
         page_id: int,
         chunks: list[str],
-        user_id: int,
+        plugin_id: str,
         api_key: str,
     ) -> None:
         """
@@ -84,9 +84,11 @@ class IngestService:
         Args:
             page_id: 页面 ID（对应 Document.id，当前 document.id = Milvus.page_id 1:1 映射；非负整数）。
             chunks: 已切分的 chunk 文本列表（每条非空字符串）。
-            user_id: 当前登录用户 ID（Phase 3.4 Step F6：来自 current_user.id，匿名 ingest 禁止）。
-            api_key: 当前用户的百炼 API Key（Phase 3.4 Step F6：必填，由 AuthService
-                解密后经上层 Service 传入；严禁回退 settings.bailian_api_key）。
+            plugin_id: 当前插件工作空间 ID（Phase 3.5 Step 2-E：来自
+                current_plugin.plugin_id，匿名 ingest 禁止）。
+            api_key: 当前插件工作空间的百炼 API Key（Phase 3.4 Step F6：必填，
+                由 PluginService 解密后经上层 Service 传入；严禁回退
+                settings.bailian_api_key）。
 
         Raises:
             EmbeddingClientError: 百炼 Embedding 调用失败（向上传播，不吞异常）。
@@ -97,9 +99,9 @@ class IngestService:
         old_ids: list[str] = self._repo.query_page_chunks(page_id)
         old_ids_set: set[str] = set(old_ids)
         logger.info(
-            "IngestService.ingest_page: page_id=%s, user_id=%s, 查询到旧 chunk 数=%d, 新 chunk 数=%d",
+            "IngestService.ingest_page: page_id=%s, plugin_id=%s, 查询到旧 chunk 数=%d, 新 chunk 数=%d",
             page_id,
-            user_id,
+            plugin_id,
             len(old_ids_set),
             len(chunks),
         )
@@ -110,7 +112,7 @@ class IngestService:
             new_ids_set: set[str] = set()
         else:
             # 调用 EmbeddingClient 生成向量（同步调用，不 await）
-            # Phase 3.4 Step F6：必须使用当前用户自己的 API Key（调用方 decrypt 后传入）
+            # Phase 3.4 Step F6：必须使用当前插件工作空间自己的 API Key（调用方 decrypt 后传入）
             vectors: list[list[float]] = self._embedding.embed(
                 chunks, api_key=api_key
             )

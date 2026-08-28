@@ -1,16 +1,17 @@
 """
-DocumentDeleteService 单元测试（Phase 2.11 Step 2；Phase 3.4 Step C user-aware）。
+DocumentDeleteService 单元测试（Phase 2.11 Step 2；Phase 3.5 Step 2-E workspace-aware）。
 
 技术栈：unittest + unittest.mock（不引入 pytest）。
 注入方式：Mock(spec=DocumentRepository) + Mock(spec=MilvusRepository) +
 Mock(spec=FileStorage)，符合 Protocol 注入约定。
 
-Phase 3.4 Step C 变更（user-aware）：
-  - delete_document(document_id, user_id)：Step 1 get_document(document_id,
-    user_id) ownership check；Step 6 delete_document(document_id, user_id)；
-  - A delete A：完整删除流程，get_document/delete_document 均带 user_id；
-  - A delete B：get_document 抛 DocumentNotFoundError → 幂等成功（按「不存在」
-    处理，不泄露归属），后续步骤（Milvus/FileStorage/MySQL）均不执行；
+Phase 3.5 Step 2-E 变更（workspace-aware，user_id → plugin_id）：
+  - delete_document(document_id, plugin_id)：Step 1 get_document(document_id,
+    plugin_id) ownership check；Step 6 delete_document(document_id, plugin_id)；
+  - A delete A：完整删除流程，get_document/delete_document 均带 plugin_id；
+  - A delete B（跨 Workspace）：get_document 抛 DocumentNotFoundError → 幂等成功
+    （按「不存在」处理，不泄露归属），后续步骤（Milvus/FileStorage/MySQL）
+    均不执行；
   - Milvus → FileStorage → MySQL 删除顺序不变。
 
 覆盖用例：
@@ -22,7 +23,7 @@ Phase 3.4 Step C 变更（user-aware）：
   E. MySQL delete_document 抛 DocumentNotFoundError（并发删除）→ 重试收敛成功。
   F. get_document NotFound → 幂等成功（不写 DELETING、不触碰 Milvus / 文件系统）。
   G. Protocol 注入。
-  H. 回归：update_status 状态机约束不受 user-aware 影响（SQLite）。
+  H. 回归：update_status 状态机约束不受 workspace-aware 影响（SQLite）。
 """
 
 from __future__ import annotations
@@ -31,7 +32,7 @@ import asyncio
 import unittest
 from unittest.mock import Mock, call
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.pool import StaticPool
 
 from backend.core.exceptions import DocumentNotFoundError
@@ -42,6 +43,9 @@ from backend.repositories.milvus import MilvusRepository
 from backend.services.document_delete import DocumentDeleteService
 from backend.storage.protocol import FileStorage
 from backend.repositories.mysql import DocumentRepositoryImpl
+
+# Phase 3.5 Step 2-B：回归测试预置的 Plugin Workspace 标识
+_PLUGIN_ID = "plugin-r-4f0d1c2b3a99887766554433221100ffeeddccbbaa"
 
 
 class DocumentDeleteServiceTest(unittest.TestCase):
@@ -77,11 +81,11 @@ class DocumentDeleteServiceTest(unittest.TestCase):
 
     # ------------------------------------------------------------------ A. 删除顺序
     def test_delete_success_order(self) -> None:
-        """A：Milvus → FileStorage → MySQL 严格顺序（Step C：均带 user_id）。"""
+        """A：Milvus → FileStorage → MySQL 严格顺序（Step 2-E：均带 plugin_id）。"""
         self.document_repo.get_document.return_value = self.fake_document
 
         async def scenario() -> None:
-            await self.service.delete_document(7, user_id=1)
+            await self.service.delete_document(7, plugin_id=_PLUGIN_ID)
 
         self.run_async(scenario())
 
@@ -89,9 +93,9 @@ class DocumentDeleteServiceTest(unittest.TestCase):
         self.assertEqual(
             self.document_repo.mock_calls,
             [
-                call.get_document(7, 1),
+                call.get_document(7, _PLUGIN_ID),
                 call.update_status(7, DocumentStatus.DELETING),
-                call.delete_document(7, 1),
+                call.delete_document(7, _PLUGIN_ID),
             ],
         )
         # Milvus：query_page_chunks(7) → delete_chunks(chunk_ids)
@@ -110,24 +114,24 @@ class DocumentDeleteServiceTest(unittest.TestCase):
         self.fake_document.file_path = ""
 
         async def scenario() -> None:
-            await self.service.delete_document(7, user_id=1)
+            await self.service.delete_document(7, plugin_id=_PLUGIN_ID)
 
         self.run_async(scenario())
 
         # FileStorage 完全不被触碰
         self.file_storage.delete.assert_not_called()
-        # MySQL 最终提交点仍执行（带 user_id）
-        self.document_repo.delete_document.assert_called_once_with(7, 1)
+        # MySQL 最终提交点仍执行（带 plugin_id）
+        self.document_repo.delete_document.assert_called_once_with(7, _PLUGIN_ID)
 
     # ------------------------------------------------------ C. upload 删物理文件
     def test_delete_upload_still_deletes_file(self) -> None:
-        """C：upload 来源 → FileStorage.delete 以实际物理路径调用（user_id 传参不变）。"""
+        """C：upload 来源 → FileStorage.delete 以实际物理路径调用（plugin_id 传参不变）。"""
         self.document_repo.get_document.return_value = self.fake_document
         self.fake_document.source_type = "upload"
         self.fake_document.file_path = "/data/upload.pdf"
 
         async def scenario() -> None:
-            await self.service.delete_document(7, user_id=1)
+            await self.service.delete_document(7, plugin_id=_PLUGIN_ID)
 
         self.run_async(scenario())
 
@@ -144,14 +148,14 @@ class DocumentDeleteServiceTest(unittest.TestCase):
         self.file_storage.delete.side_effect = RuntimeError("should not be called")
 
         async def scenario() -> None:
-            await self.service.delete_document(7, user_id=1)
+            await self.service.delete_document(7, plugin_id=_PLUGIN_ID)
 
         self.run_async(scenario())
 
         # 不触发 FileStorage.delete（没有误删网页文档）
         self.file_storage.delete.assert_not_called()
         # MySQL 最终提交点执行
-        self.document_repo.delete_document.assert_called_once_with(7, 1)
+        self.document_repo.delete_document.assert_called_once_with(7, _PLUGIN_ID)
 
     # ------------------------------------------------- E. MySQL 删除失败重试收敛
     def test_delete_mysql_failure_retry_converges(self) -> None:
@@ -164,16 +168,16 @@ class DocumentDeleteServiceTest(unittest.TestCase):
         ]
 
         async def scenario() -> None:
-            await self.service.delete_document(7, user_id=1)
+            await self.service.delete_document(7, plugin_id=_PLUGIN_ID)
             # 第二次调用（幂等重试）成功
-            await self.service.delete_document(7, user_id=1)
+            await self.service.delete_document(7, plugin_id=_PLUGIN_ID)
 
         self.run_async(scenario())
 
-        # delete_document 被调用两次，均带 user_id
+        # delete_document 被调用两次，均带 plugin_id
         self.assertEqual(
             self.document_repo.delete_document.call_args_list,
-            [call(7, 1), call(7, 1)],
+            [call(7, _PLUGIN_ID), call(7, _PLUGIN_ID)],
         )
 
     # ------------------------------------------------------------ F. 幂等 NotFound
@@ -184,7 +188,7 @@ class DocumentDeleteServiceTest(unittest.TestCase):
         )
 
         async def scenario() -> None:
-            await self.service.delete_document(7, user_id=1)
+            await self.service.delete_document(7, plugin_id=_PLUGIN_ID)
 
         self.run_async(scenario())
 
@@ -218,27 +222,27 @@ class DocumentDeleteServiceTest(unittest.TestCase):
         self.assertIs(self.service._file_storage, self.file_storage)
 
     # ================================================================
-    # Phase 3.4 Step C：user-aware ownership
+    # Phase 3.5 Step 2-E：workspace-aware ownership
     # ================================================================
     def test_delete_own_document_success(self) -> None:
-        """Step C：A(1) 删除自己的文档 → 完整删除流程，get/delete 均带 user_id。"""
+        """Step 2-E：A 删除自己的文档 → 完整删除流程，get/delete 均带 plugin_id。"""
         self.document_repo.get_document.return_value = self.fake_document
 
         async def scenario() -> None:
-            await self.service.delete_document(7, user_id=1)
+            await self.service.delete_document(7, plugin_id=_PLUGIN_ID)
 
         self.run_async(scenario())
 
-        # ownership check + 最终删除均 user-aware
-        self.document_repo.get_document.assert_called_once_with(7, 1)
-        self.document_repo.delete_document.assert_called_once_with(7, 1)
+        # ownership check + 最终删除均 workspace-aware
+        self.document_repo.get_document.assert_called_once_with(7, _PLUGIN_ID)
+        self.document_repo.delete_document.assert_called_once_with(7, _PLUGIN_ID)
         # 顺序不变：get → DELETING → delete
         self.assertEqual(
             self.document_repo.mock_calls,
             [
-                call.get_document(7, 1),
+                call.get_document(7, _PLUGIN_ID),
                 call.update_status(7, DocumentStatus.DELETING),
-                call.delete_document(7, 1),
+                call.delete_document(7, _PLUGIN_ID),
             ],
         )
         # Milvus → FileStorage 顺序不变
@@ -251,20 +255,20 @@ class DocumentDeleteServiceTest(unittest.TestCase):
         )
         self.file_storage.delete.assert_called_once_with("/data/upload.pdf")
 
-    def test_delete_cross_user_document_not_found(self) -> None:
-        """Step C：A(1) 删除 B(2) 的文档（id=8）→ 按「不存在」幂等处理，不泄露归属。"""
-        # A 视角：get_document(8, user_id=1) → NotFound（文档 8 属于 B）
+    def test_delete_cross_workspace_document_not_found(self) -> None:
+        """Step 2-E：A 删除 B（另一插件工作空间）的文档（id=8）→ 按「不存在」幂等处理，不泄露归属。"""
+        # A 视角：get_document(8, plugin_id=_PLUGIN_ID) → NotFound（文档 8 属于 B）
         self.document_repo.get_document.side_effect = (
             DocumentNotFoundError("document not found: id=8")
         )
 
         async def scenario() -> None:
-            await self.service.delete_document(8, user_id=1)
+            await self.service.delete_document(8, plugin_id=_PLUGIN_ID)
 
         self.run_async(scenario())
 
-        # ownership check 以 (8, user_id=1) 调用
-        self.document_repo.get_document.assert_called_once_with(8, 1)
+        # ownership check 以 (8, plugin_id=_PLUGIN_ID) 调用
+        self.document_repo.get_document.assert_called_once_with(8, _PLUGIN_ID)
         # 幂等成功：不写 DELETING、不触碰 Milvus/FileStorage/MySQL
         self.document_repo.update_status.assert_not_called()
         self.milvus_repo.query_page_chunks.assert_not_called()
@@ -275,7 +279,8 @@ class DocumentDeleteServiceTest(unittest.TestCase):
 
 class DocumentDeleteRepositoryRegressionTest(unittest.TestCase):
     """
-    DocumentDeleteRepository 回归测试（Phase 2.11 Step 2；Phase 3.4 Step C）。
+    DocumentDeleteRepository 回归测试（Phase 2.11 Step 2；Phase 3.4 Step C；
+    Phase 3.5 Step 2-B plugin-aware 适配）。
 
     用 SQLite in-memory + StaticPool 验证真实 DB 行为：
     - delete_document 只删目标行、不影响其他文档；
@@ -289,6 +294,22 @@ class DocumentDeleteRepositoryRegressionTest(unittest.TestCase):
             poolclass=StaticPool,
         )
         Base.metadata.create_all(self.engine)
+        # Phase 3.5 Step 2-B：documents.plugin_id FK → plugin_workspaces.plugin_id，
+        # 预置一个 Workspace 保持真实 MySQL 语义
+        with self.engine.begin() as conn:
+            conn.execute(
+                text(
+                    "INSERT INTO plugin_workspaces"
+                    " (plugin_id, plugin_name, plugin_name_norm, plugin_secret_hash, status)"
+                    " VALUES (:pid, :pname, :pnorm, :shash, 'ACTIVE')"
+                ),
+                {
+                    "pid": _PLUGIN_ID,
+                    "pname": "Regression Plugin",
+                    "pnorm": "regression plugin",
+                    "shash": "e" * 64,
+                },
+            )
         self.repo: DocumentRepositoryImpl = DocumentRepositoryImpl(self.engine)
 
     def tearDown(self) -> None:
@@ -296,26 +317,26 @@ class DocumentDeleteRepositoryRegressionTest(unittest.TestCase):
         self.engine.dispose()
 
     def test_delete_document_only_target_row(self) -> None:
-        """回归：delete_document 只删目标行，不影响其他文档（user-aware）。"""
+        """回归：delete_document 只删目标行，不影响其他文档（plugin-aware）。"""
         doc_a = self.repo.create_document(
-            filename="a.txt", file_path="/data/a.txt", user_id=1
+            filename="a.txt", file_path="/data/a.txt", plugin_id=_PLUGIN_ID
         )
         doc_b = self.repo.create_document(
-            filename="b.txt", file_path="/data/b.txt", user_id=1
+            filename="b.txt", file_path="/data/b.txt", plugin_id=_PLUGIN_ID
         )
 
-        self.repo.delete_document(doc_a.id, user_id=1)
+        self.repo.delete_document(doc_a.id, plugin_id=_PLUGIN_ID)
 
         # doc_a 已删除；doc_b 仍在
         with self.assertRaises(DocumentNotFoundError):
-            self.repo.get_document(doc_a.id, user_id=1)
-        fetched_b = self.repo.get_document(doc_b.id, user_id=1)
+            self.repo.get_document(doc_a.id, plugin_id=_PLUGIN_ID)
+        fetched_b = self.repo.get_document(doc_b.id, plugin_id=_PLUGIN_ID)
         self.assertEqual(fetched_b.id, doc_b.id)
 
     def test_update_status_deleting_allowed(self) -> None:
         """回归：update_status(DELETING) 是合法状态（不抛异常）。"""
         doc = self.repo.create_document(
-            filename="del.txt", file_path="/data/del.txt", user_id=1
+            filename="del.txt", file_path="/data/del.txt", plugin_id=_PLUGIN_ID
         )
 
         updated = self.repo.update_status(doc.id, DocumentStatus.DELETING)

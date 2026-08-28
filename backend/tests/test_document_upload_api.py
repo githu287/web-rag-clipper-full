@@ -29,9 +29,9 @@ from unittest.mock import AsyncMock, Mock, patch
 
 from fastapi.testclient import TestClient
 
-from backend.api.deps import get_current_user
+from backend.api.deps import get_current_plugin
 from backend.clients.embedding import EmbeddingClientError
-from backend.core.di import get_document_upload_service, get_user_service
+from backend.core.di import get_document_upload_service, get_plugin_service
 from backend.core.exceptions import (
     DocumentChunkingError,
     DocumentFileEmptyError,
@@ -61,15 +61,17 @@ class DocumentUploadApiTest(unittest.TestCase):
         self.app.dependency_overrides[get_document_upload_service] = (
             lambda: self.fake_upload_service
         )
-        # Phase 3.4 Step 4：upload 端点需认证 + 用户 API Key 注入
-        self.fake_user = SimpleNamespace(id=1)
-        self.fake_user_service = Mock()
-        self.fake_user_service.decrypt_api_key = Mock(return_value="sk-test")
-        self.app.dependency_overrides[get_current_user] = (
-            lambda: self.fake_user
+        # Phase 3.5 Step 2-E：upload 端点需插件认证 + 插件工作空间 API Key 注入
+        self.fake_plugin = SimpleNamespace(plugin_id="plugin-42")
+        self.fake_plugin_service = Mock()
+        self.fake_plugin_service.decrypt_api_key = Mock(
+            return_value="sk-plugin"
         )
-        self.app.dependency_overrides[get_user_service] = (
-            lambda: self.fake_user_service
+        self.app.dependency_overrides[get_current_plugin] = (
+            lambda: self.fake_plugin
+        )
+        self.app.dependency_overrides[get_plugin_service] = (
+            lambda: self.fake_plugin_service
         )
         self.client = TestClient(self.app)
 
@@ -165,22 +167,21 @@ class DocumentUploadApiTest(unittest.TestCase):
 
     # ------------------------------------------- 5. .txt 参数透传正确
     def test_upload_txt_passthrough(self) -> None:
-        """5：.txt 上传 → upload(filename, content, user_id, mime_type) 透传正确。"""
+        """5：.txt 上传 → upload(filename, content, plugin_id, mime_type) 透传正确。"""
         self.fake_upload_service.upload.return_value = self._make_document()
 
         response = self.client.post(
             "/documents/upload",
             files={"file": ("notes.txt", b"line1\nline2", "text/plain")},
-            data={"user_id": "42"},
         )
 
         self.assertEqual(response.status_code, 201)
         self.fake_upload_service.upload.assert_awaited_once_with(
             filename="notes.txt",
             content=b"line1\nline2",
-            user_id=1,  # Phase 3.4 Step 4：归属 = current_user.id + 用户 Key 注入
+            plugin_id="plugin-42",  # Phase 3.5 Step 2-E：归属 = 当前插件工作空间
             mime_type="text/plain",
-            api_key="sk-test",
+            api_key="sk-plugin",
         )
 
     # ------------------------------------------------------- 6. .md 成功

@@ -1,11 +1,11 @@
 """
-DocumentUploadService 单元测试（Phase 2.10 Step 3；Phase 3.4 Step C user-aware）。
+DocumentUploadService 单元测试（Phase 2.10 Step 3；Phase 3.5 Step 2-E workspace-aware）。
 
-Phase 3.4 Step C 变更：
-  - upload(..., user_id) 必填（签名由 int | None 升级为 int）；
-  - create_document 必须显式带 user_id（不再允许 None）；
-  - ingest_document(document.id, chunks, user_id=user_id)；
-  - get_document(document.id, user_id)。
+Phase 3.5 Step 2-E 变更（user_id → plugin_id）：
+  - upload(..., plugin_id) 必填（归属字段，由认证上下文 / 测试显式传入）；
+  - create_document 必须显式带 plugin_id；
+  - ingest_document(document.id, chunks, plugin_id=plugin_id)；
+  - get_document(document.id, plugin_id)。
 
 技术栈：unittest + unittest.mock（不引入 pytest；不依赖真实 MySQL/Milvus/百炼/磁盘）。
 注入方式：Mock(spec=...) 覆盖 Protocol 与 Service，保证：
@@ -149,7 +149,7 @@ class DocumentUploadServiceTest(unittest.TestCase):
             self.service.upload(
                 filename="test.txt",
                 content=b"hello world",
-                user_id=1,
+                plugin_id="plugin-a",
                 mime_type="text/plain",
             )
         )
@@ -161,7 +161,7 @@ class DocumentUploadServiceTest(unittest.TestCase):
         self.document_repo.create_document.assert_called_once_with(
             filename="test.txt",
             file_path="abc.txt",
-            user_id=1,
+            plugin_id="plugin-a",
             file_size=11,
             mime_type="text/plain",
         )
@@ -178,10 +178,10 @@ class DocumentUploadServiceTest(unittest.TestCase):
         )
         self.chunker.split.assert_called_once_with("hello world")
         self.ingest_service.ingest_document.assert_awaited_once_with(
-            1, ["hello world"], user_id=1, api_key=None
+            1, ["hello world"], plugin_id="plugin-a", api_key=None
         )
-        # 2) 终态读取（user-aware）
-        self.document_repo.get_document.assert_called_once_with(1, 1)
+        # 2) 终态读取（workspace-aware）
+        self.document_repo.get_document.assert_called_once_with(1, "plugin-a")
         # 3) 返回 SUCCESS 对象（error_message=None）
         self.assertIs(result, success)
         self.assertEqual(result.status, DocumentStatus.SUCCESS)
@@ -208,7 +208,7 @@ class DocumentUploadServiceTest(unittest.TestCase):
             self.service.upload(
                 filename="note.md",
                 content=b"# title\n\nbody",
-                user_id=7,
+                plugin_id="plugin-7",
                 mime_type="text/markdown",
             )
         )
@@ -219,7 +219,7 @@ class DocumentUploadServiceTest(unittest.TestCase):
         self.document_repo.create_document.assert_called_once_with(
             filename="note.md",
             file_path="abc.txt",
-            user_id=7,
+            plugin_id="plugin-7",
             file_size=13,
             mime_type="text/markdown",
         )
@@ -243,7 +243,7 @@ class DocumentUploadServiceTest(unittest.TestCase):
             self.service.upload(
                 filename="README.markdown",
                 content=b"# readme",
-                user_id=1,
+                plugin_id="plugin-a",
                 mime_type=None,
             )
         )
@@ -263,7 +263,7 @@ class DocumentUploadServiceTest(unittest.TestCase):
                 self.service.upload(
                     filename="big.txt",
                     content=b"x" * 101,
-                    user_id=1,
+                    plugin_id="plugin-a",
                     mime_type=None,
                 )
             )
@@ -281,7 +281,7 @@ class DocumentUploadServiceTest(unittest.TestCase):
                 self.service.upload(
                     filename="empty.txt",
                     content=b"",
-                    user_id=1,
+                    plugin_id="plugin-a",
                     mime_type=None,
                 )
             )
@@ -296,7 +296,7 @@ class DocumentUploadServiceTest(unittest.TestCase):
                 self.service.upload(
                     filename="report.pdf",
                     content=b"%PDF-1.4",
-                    user_id=1,
+                    plugin_id="plugin-a",
                     mime_type="application/pdf",
                 )
             )
@@ -310,7 +310,7 @@ class DocumentUploadServiceTest(unittest.TestCase):
                 self.service.upload(
                     filename="doc.docx",
                     content=b"PK",
-                    user_id=1,
+                    plugin_id="plugin-a",
                     mime_type=None,
                 )
             )
@@ -324,7 +324,7 @@ class DocumentUploadServiceTest(unittest.TestCase):
                 self.service.upload(
                     filename="",
                     content=b"hello",
-                    user_id=1,
+                    plugin_id="plugin-a",
                     mime_type=None,
                 )
             )
@@ -339,7 +339,7 @@ class DocumentUploadServiceTest(unittest.TestCase):
                         self.service.upload(
                             filename=bad_name,
                             content=b"hello",
-                            user_id=1,
+                            plugin_id="plugin-a",
                             mime_type=None,
                         )
                     )
@@ -356,7 +356,7 @@ class DocumentUploadServiceTest(unittest.TestCase):
                 self.service.upload(
                     filename="test.txt",
                     content=b"hello",
-                    user_id=1,
+                    plugin_id="plugin-a",
                     mime_type=None,
                 )
             )
@@ -380,7 +380,7 @@ class DocumentUploadServiceTest(unittest.TestCase):
                 self.service.upload(
                     filename="test.txt",
                     content=b"hello world",
-                    user_id=1,
+                    plugin_id="plugin-a",
                     mime_type=None,
                 )
             )
@@ -401,7 +401,7 @@ class DocumentUploadServiceTest(unittest.TestCase):
                 self.service.upload(
                     filename="test.txt",
                     content=b"hello world",
-                    user_id=1,
+                    plugin_id="plugin-a",
                     mime_type=None,
                 )
             )
@@ -420,7 +420,7 @@ class DocumentUploadServiceTest(unittest.TestCase):
                 self.service.upload(
                     filename="blank.txt",
                     content=b"   ",
-                    user_id=1,
+                    plugin_id="plugin-a",
                     mime_type=None,
                 )
             )
@@ -443,7 +443,7 @@ class DocumentUploadServiceTest(unittest.TestCase):
                 self.service.upload(
                     filename="test.txt",
                     content=b"hello world",
-                    user_id=1,
+                    plugin_id="plugin-a",
                     mime_type=None,
                 )
             )
@@ -463,7 +463,7 @@ class DocumentUploadServiceTest(unittest.TestCase):
                 self.service.upload(
                     filename="test.txt",
                     content=b"hello world",
-                    user_id=1,
+                    plugin_id="plugin-a",
                     mime_type=None,
                 )
             )
@@ -480,7 +480,7 @@ class DocumentUploadServiceTest(unittest.TestCase):
                 self.service.upload(
                     filename="test.txt",
                     content=b"hello world",
-                    user_id=1,
+                    plugin_id="plugin-a",
                     mime_type=None,
                 )
             )
@@ -498,7 +498,7 @@ class DocumentUploadServiceTest(unittest.TestCase):
                 self.service.upload(
                     filename="test.txt",
                     content=b"hello world",
-                    user_id=1,
+                    plugin_id="plugin-a",
                     mime_type=None,
                 )
             )
@@ -523,7 +523,7 @@ class DocumentUploadServiceTest(unittest.TestCase):
                 self.service.upload(
                     filename="test.txt",
                     content=b"hello world",
-                    user_id=1,
+                    plugin_id="plugin-a",
                     mime_type=None,
                 )
             )
@@ -574,7 +574,7 @@ class DocumentUploadServiceTest(unittest.TestCase):
                 self.service.upload(
                     filename="test.txt",
                     content=b"hello world",
-                    user_id=1,
+                    plugin_id="plugin-a",
                     mime_type=None,
                 )
             )
@@ -612,7 +612,7 @@ class DocumentUploadServiceTest(unittest.TestCase):
                 self.service.upload(
                     filename="test.txt",
                     content=b"hello world",
-                    user_id=1,
+                    plugin_id="plugin-a",
                     mime_type=None,
                 )
             )
@@ -643,7 +643,7 @@ class DocumentUploadServiceTest(unittest.TestCase):
                 self.service.upload(
                     filename="blank.txt",
                     content=b"   ",
-                    user_id=1,
+                    plugin_id="plugin-a",
                     mime_type=None,
                 )
             )
@@ -663,7 +663,7 @@ class DocumentUploadServiceTest(unittest.TestCase):
         async def failing_ingest(
             document_id: int,
             chunks: list[str],
-            user_id: int,
+            plugin_id: str,
             api_key: str | None = None,  # Phase 3.4 Step 4：api_key 透传
         ) -> None:
             # 顺序哨兵：PROCESSING 置位必须已经发生
@@ -682,7 +682,7 @@ class DocumentUploadServiceTest(unittest.TestCase):
                 self.service.upload(
                     filename="test.txt",
                     content=b"hello world",
-                    user_id=1,
+                    plugin_id="plugin-a",
                     mime_type=None,
                 )
             )
@@ -716,7 +716,7 @@ class DocumentUploadServiceTest(unittest.TestCase):
             self.service.upload(
                 filename="test.txt",
                 content=b"hello world",
-                user_id=1,
+                plugin_id="plugin-a",
                 mime_type="text/plain",
             )
         )
@@ -742,7 +742,7 @@ class DocumentUploadServiceTest(unittest.TestCase):
                 self.service.upload(
                     filename="test.txt",
                     content=b"hello world",
-                    user_id=1,
+                    plugin_id="plugin-a",
                     mime_type=None,
                 )
             )

@@ -50,7 +50,7 @@ def _make_document(
 ) -> Document:
     return Document(
         id=doc_id,
-        user_id=None,
+        plugin_id="plugin-53",
         filename="clip.html",
         file_path="/tmp/clip.html",
         status=status,
@@ -242,7 +242,7 @@ class RagAnswerServiceTest(unittest.TestCase):
             query="问题",
             limit=5,
             document_id=53,
-            user_id=None,  # Phase 3.4 Step 4：user_id/api_key 透传（Service 层可选）
+            plugin_id=None,  # Phase 3.5 Step 2-E：plugin_id/api_key 透传（Service 层可选）
             api_key=None,
         )
 
@@ -258,7 +258,7 @@ class RagAnswerServiceTest(unittest.TestCase):
             query="问题",
             limit=5,
             document_id=None,
-            user_id=None,  # Phase 3.4 Step 4：user_id/api_key 透传（Service 层可选）
+            plugin_id=None,  # Phase 3.5 Step 2-E：plugin_id/api_key 透传（Service 层可选）
             api_key=None,
         )
 
@@ -304,7 +304,7 @@ class RagAnswerServiceTest(unittest.TestCase):
         query: str,
         document_id: int | None = None,
         top_k: int = 5,
-        user_id: int | None = None,
+        plugin_id: str | None = None,
         api_key: str | None = None,
     ) -> RagAskResponse:
         """同步测试入口：包装 async ask()。"""
@@ -315,7 +315,7 @@ class RagAnswerServiceTest(unittest.TestCase):
                 query=query,
                 document_id=document_id,
                 top_k=top_k,
-                user_id=user_id,
+                plugin_id=plugin_id,
                 api_key=api_key,
             )
         )
@@ -328,49 +328,49 @@ class RagAnswerServiceTest(unittest.TestCase):
         self.rag_service.search.assert_not_awaited()
         self.llm_client.generate.assert_not_called()
 
-    # ----------------------------------------------------- Phase 3.4 Step E：用户隔离链路
-    def test_ask_passes_user_id_and_api_key(self) -> None:
-        """11：user_id / api_key 正确透传给 rag_service.search（隔离检索前提）。"""
+    # ----------------------------------------------------- Phase 3.5 Step 2-E：Workspace 隔离链路
+    def test_ask_passes_plugin_id_and_api_key(self) -> None:
+        """11：plugin_id / api_key 正确透传给 rag_service.search（隔离检索前提）。"""
         self.rag_service.search.return_value = [_make_result()]
         self.document_repository.get_document.return_value = _make_document()
 
-        self.ask("问题", document_id=53, user_id=1, api_key="sk-user-1")
+        self.ask("问题", document_id=53, plugin_id="plugin-1", api_key="sk-plugin-1")
 
         self.rag_service.search.assert_awaited_once_with(
             query="问题",
             limit=5,
             document_id=53,
-            user_id=1,
-            api_key="sk-user-1",
+            plugin_id="plugin-1",
+            api_key="sk-plugin-1",
         )
-        # ownership check 也收到 user_id（document_id + user_id 一起判定）
-        self.document_repository.get_document.assert_called_once_with(53, 1)
+        # ownership check 也收到 plugin_id（document_id + plugin_id 一起判定）
+        self.document_repository.get_document.assert_called_once_with(53, "plugin-1")
 
-    def test_ask_document_owned_by_other_user_404(self) -> None:
-        """12：document 归属其他用户 → DocumentNotFoundError（404），不调 LLM。"""
+    def test_ask_document_owned_by_other_workspace_404(self) -> None:
+        """12：document 归属其他 Workspace → DocumentNotFoundError（404），不调 LLM。"""
         self.document_repository.get_document.side_effect = DocumentNotFoundError(
-            "Document 53 不存在或不属于当前用户"
+            "Document 53 不存在或不属于当前插件工作空间"
         )
 
         with self.assertRaises(DocumentNotFoundError):
-            self.ask("问题", document_id=53, user_id=1)
+            self.ask("问题", document_id=53, plugin_id="plugin-1")
 
         self.rag_service.search.assert_not_awaited()
         self.llm_client.generate.assert_not_called()
 
-    def test_ask_full_knowledge_mode_uses_current_user_retrieval(self) -> None:
-        """13：全库模式只通过当前用户的 retrieval（user_id 透传 + 无 Document 前置检查）。"""
+    def test_ask_full_knowledge_mode_uses_current_plugin_retrieval(self) -> None:
+        """13：全库模式只通过当前插件工作空间的 retrieval（plugin_id 透传 + 无 Document 前置检查）。"""
         self.rag_service.search.return_value = [_make_result()]
 
-        self.ask("问题", document_id=None, user_id=7, api_key="sk-user-7")
+        self.ask("问题", document_id=None, plugin_id="plugin-7", api_key="sk-plugin-7")
 
         self.document_repository.get_document.assert_not_called()
         self.rag_service.search.assert_awaited_once_with(
             query="问题",
             limit=5,
             document_id=None,
-            user_id=7,
-            api_key="sk-user-7",
+            plugin_id="plugin-7",
+            api_key="sk-plugin-7",
         )
 
     def test_ask_empty_knowledge_base_skips_llm(self) -> None:
@@ -378,38 +378,40 @@ class RagAnswerServiceTest(unittest.TestCase):
         self.rag_service.search.return_value = []
 
         response = self.ask(
-            "问题", document_id=None, user_id=1, api_key="sk-user-1"
+            "问题", document_id=None, plugin_id="plugin-1", api_key="sk-plugin-1"
         )
 
         self.assertEqual(response.answer, "当前内容中没有足够信息回答该问题。")
         self.assertEqual(response.sources, [])
         self.llm_client.generate.assert_not_called()
 
-    def test_ask_sources_only_from_current_user_retrieval(self) -> None:
-        """15：sources 只来自当前用户 retrieval（search 已隔离 → source 不含他人文档）。"""
-        # search 被隔离后只返回当前用户 document_id=53 的结果
+    def test_ask_sources_only_from_current_plugin_retrieval(self) -> None:
+        """15：sources 只来自当前插件工作空间 retrieval（search 已隔离 → source 不含他人文档）。"""
+        # search 被隔离后只返回当前插件工作空间 document_id=53 的结果
         self.rag_service.search.return_value = [_make_result(document_id=53)]
         self.document_repository.get_document.return_value = _make_document()
 
-        response = self.ask("问题", document_id=53, user_id=1)
+        response = self.ask("问题", document_id=53, plugin_id="plugin-1")
 
         self.assertEqual([s.document_id for s in response.sources], [53])
-        # 检索确实以当前用户身份执行（隔离前提）
-        self.assertEqual(self.rag_service.search.await_args.kwargs["user_id"], 1)
+        # 检索确实以当前插件工作空间身份执行（隔离前提）
+        self.assertEqual(
+            self.rag_service.search.await_args.kwargs["plugin_id"], "plugin-1"
+        )
 
-    def test_ask_context_excludes_other_users_chunks(self) -> None:
-        """16：context 不包含其他用户 chunk（search 已隔离 → prompt 只含当前用户内容）。"""
+    def test_ask_context_excludes_other_workspace_chunks(self) -> None:
+        """16：context 不包含其他 Workspace chunk（search 已隔离 → prompt 只含当前插件工作空间内容）。"""
         self.rag_service.search.return_value = [
-            _make_result(chunk_text="A 用户独有内容，其他用户不可见。")
+            _make_result(chunk_text="plugin-a 独有内容，其他插件不可见。")
         ]
         self.document_repository.get_document.return_value = _make_document()
 
-        self.ask("问题", document_id=53, user_id=1)
+        self.ask("问题", document_id=53, plugin_id="plugin-1")
 
         call_args = self.llm_client.generate.call_args
         user_prompt = call_args.kwargs.get("user_prompt") or call_args.args[1]
-        self.assertIn("A 用户独有内容", user_prompt)
-        self.assertNotIn("B 用户独有内容", user_prompt)
+        self.assertIn("plugin-a 独有内容", user_prompt)
+        self.assertNotIn("plugin-b 独有内容", user_prompt)
 
 
 if __name__ == "__main__":

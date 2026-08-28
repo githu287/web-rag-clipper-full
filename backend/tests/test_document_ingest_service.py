@@ -1,20 +1,20 @@
 """
 DocumentIngestService 单元测试（Phase 2.9 Step 2；Phase 2.11 Step 2 扩展；
-Phase 3.4 Step C user-aware）。
+Phase 3.5 Step 2-E workspace-aware）。
 
 技术栈：unittest + unittest.mock（不引入 pytest；不依赖真实 MySQL/Milvus/百炼）。
 注入方式：Mock(spec=DocumentRepository) + Mock(spec=IngestService)，保证：
   - 通过 Protocol runtime_checkable 校验（H. Protocol 注入）；
   - 断言调用顺序与方法签名，防止实现回归。
 
-Phase 3.4 Step C 变更（user-aware）：
-  - ingest_document(document_id, chunks, user_id)：Step 1 ownership check 使用
-    get_document(document_id, user_id)；
-  - A ingest A：成功，get_document 以 (document_id, user_id) 调用；
-  - A ingest B：get_document 抛 DocumentNotFoundError → 直接传播，
+Phase 3.5 Step 2-E 变更（workspace-aware）：
+  - ingest_document(document_id, chunks, plugin_id)：Step 1 ownership check 使用
+    get_document(document_id, plugin_id)；
+  - A ingest A：成功，get_document 以 (document_id, plugin_id) 调用；
+  - A ingest B（跨 Workspace）：get_document 抛 DocumentNotFoundError → 直接传播，
     无任何状态写入（不泄露归属）。
 
-覆盖用例（A~H + Phase 2.11 Step 2 扩展 I + Step C user-aware）：
+覆盖用例（A~H + Phase 2.11 Step 2 扩展 I + Step 2-E workspace-aware）：
   A. 成功路径：get_document → update_status(PROCESSING, error_message=None)
      → ingest_page → update_ingest_result(chunk_count=len(chunks),
        status=SUCCESS, error_message=None)；
@@ -33,7 +33,7 @@ Phase 3.4 Step C 变更（user-aware）：
   I. DELETING gate（Phase 2.11 Step 2）：status == DELETING → 抛
      DocumentOperationError，不调用 update_status(PROCESSING)、不触碰 Milvus、
      不调用 embedding；原状态保持 DELETING。
-  J. Step C：A ingest A 成功（get_document 带 user_id）；A ingest B → NotFound。
+  J. Step 2-E：A ingest A 成功（get_document 带 plugin_id）；A ingest B → NotFound。
 """
 
 from __future__ import annotations
@@ -86,15 +86,15 @@ class DocumentIngestServiceTest(unittest.TestCase):
         """A：成功路径严格按 get→PROCESSING→ingest_page→update_ingest_result 顺序。"""
 
         async def scenario() -> None:
-            await self.service.ingest_document(1, ["c1", "c2"], user_id=1)
+            await self.service.ingest_document(1, ["c1", "c2"], plugin_id="plugin-a")
 
         self.run_async(scenario())
 
-        # 1) 调用顺序（Step C：get_document 带 user_id=1）
+        # 1) 调用顺序（Step 2-E：get_document 带 plugin_id）
         self.assertEqual(
             self.document_repo.mock_calls,
             [
-                unittest.mock.call.get_document(1, 1),
+                unittest.mock.call.get_document(1, "plugin-a"),
                 unittest.mock.call.update_status(
                     1, DocumentStatus.PROCESSING, error_message=None
                 ),
@@ -106,18 +106,18 @@ class DocumentIngestServiceTest(unittest.TestCase):
                 ),
             ],
         )
-        # 2) ingest_page 以 page_id=document_id 调用（Phase 3.4 Step 4/F6：user_id + api_key 透传）
+        # 2) ingest_page 以 page_id=document_id 调用（Phase 3.4 Step 4/F6：plugin_id + api_key 透传）
         self.ingest_service.ingest_page.assert_called_once_with(
             page_id=1,
             chunks=["c1", "c2"],
-            user_id=1,
+            plugin_id="plugin-a",
             api_key=None,
         )
 
     def test_success_path_no_extra_update_status_success(self) -> None:
         """A：明确断言不允许单独出现 update_status(SUCCESS)。"""
         async def scenario() -> None:
-            await self.service.ingest_document(1, ["c1"], user_id=1)
+            await self.service.ingest_document(1, ["c1"], plugin_id="plugin-a")
 
         self.run_async(scenario())
 
@@ -149,7 +149,7 @@ class DocumentIngestServiceTest(unittest.TestCase):
         async def scenario() -> None:
             self.ingest_service.ingest_page.side_effect = original_error
             with self.assertRaises(RuntimeError) as cm:
-                await self.service.ingest_document(1, ["c1"], user_id=1)
+                await self.service.ingest_document(1, ["c1"], plugin_id="plugin-a")
             self.assertIs(cm.exception, original_error)
 
         self.run_async(scenario())
@@ -166,7 +166,7 @@ class DocumentIngestServiceTest(unittest.TestCase):
         async def scenario() -> None:
             self.ingest_service.ingest_page.side_effect = RuntimeError("fail")
             with self.assertRaises(RuntimeError):
-                await self.service.ingest_document(1, ["c1"], user_id=1)
+                await self.service.ingest_document(1, ["c1"], plugin_id="plugin-a")
 
         self.run_async(scenario())
 
@@ -201,7 +201,7 @@ class DocumentIngestServiceTest(unittest.TestCase):
         async def scenario() -> None:
             self.ingest_service.ingest_page.side_effect = milvus_error
             with self.assertRaises(FakeMilvusError) as cm:
-                await self.service.ingest_document(1, ["c1"], user_id=1)
+                await self.service.ingest_document(1, ["c1"], plugin_id="plugin-a")
             self.assertIs(cm.exception, milvus_error)
 
         self.run_async(scenario())
@@ -219,7 +219,7 @@ class DocumentIngestServiceTest(unittest.TestCase):
                 DocumentNotFoundError("document not found: id=999")
             )
             with self.assertRaises(DocumentNotFoundError):
-                await self.service.ingest_document(999, ["c1"], user_id=1)
+                await self.service.ingest_document(999, ["c1"], plugin_id="plugin-a")
 
         self.run_async(scenario())
 
@@ -237,7 +237,7 @@ class DocumentIngestServiceTest(unittest.TestCase):
         chunks = ["c1", "c2", "c3"]
 
         async def scenario() -> None:
-            await self.service.ingest_document(7, chunks, user_id=1)
+            await self.service.ingest_document(7, chunks, plugin_id="plugin-a")
 
         self.run_async(scenario())
 
@@ -252,18 +252,21 @@ class DocumentIngestServiceTest(unittest.TestCase):
     def test_idempotent_double_ingest(self) -> None:
         """G：同一 document_id 连续调用两次，两次均完整走成功流程。"""
         async def scenario() -> None:
-            await self.service.ingest_document(1, ["c1", "c2"], user_id=1)
-            await self.service.ingest_document(1, ["c1", "c2"], user_id=1)
+            await self.service.ingest_document(1, ["c1", "c2"], plugin_id="plugin-a")
+            await self.service.ingest_document(1, ["c1", "c2"], plugin_id="plugin-a")
 
         self.run_async(scenario())
 
-        # get_document 被调用两次（每次均带 user_id）
+        # get_document 被调用两次（每次均带 plugin_id）
         self.assertEqual(
             self.document_repo.get_document.call_count, 2
         )
         self.assertEqual(
             self.document_repo.get_document.call_args_list,
-            [unittest.mock.call(1, 1), unittest.mock.call(1, 1)],
+            [
+                unittest.mock.call(1, "plugin-a"),
+                unittest.mock.call(1, "plugin-a"),
+            ],
         )
         # PROCESSING 两次
         processing_calls = [
@@ -278,7 +281,7 @@ class DocumentIngestServiceTest(unittest.TestCase):
             self.assertEqual(
                 call,
                 unittest.mock.call(
-                    page_id=1, chunks=["c1", "c2"], user_id=1, api_key=None
+                    page_id=1, chunks=["c1", "c2"], plugin_id="plugin-a", api_key=None
                 ),
             )
         # update_ingest_result 两次，chunk_count=2, status=SUCCESS
@@ -312,16 +315,16 @@ class DocumentIngestServiceTest(unittest.TestCase):
         async def scenario() -> None:
             self.document_repo.update_ingest_result.side_effect = original_error
             with self.assertRaises(RuntimeError) as cm:
-                await self.service.ingest_document(1, ["c1"], user_id=1)
+                await self.service.ingest_document(1, ["c1"], plugin_id="plugin-a")
             self.assertIs(cm.exception, original_error)
 
         self.run_async(scenario())
 
-        # 1) 调用顺序：get(带 user_id) → PROCESSING → ingest_page → update_ingest_result(失败)
+        # 1) 调用顺序：get(带 plugin_id) → PROCESSING → ingest_page → update_ingest_result(失败)
         self.assertEqual(
             self.document_repo.mock_calls,
             [
-                unittest.mock.call.get_document(1, 1),
+                unittest.mock.call.get_document(1, "plugin-a"),
                 unittest.mock.call.update_status(
                     1, DocumentStatus.PROCESSING, error_message=None
                 ),
@@ -336,7 +339,7 @@ class DocumentIngestServiceTest(unittest.TestCase):
         self.ingest_service.ingest_page.assert_called_once_with(
             page_id=1,
             chunks=["c1"],
-            user_id=1,
+            plugin_id="plugin-a",
             api_key=None,
         )
 
@@ -369,7 +372,7 @@ class DocumentIngestServiceTest(unittest.TestCase):
 
         async def scenario() -> None:
             with self.assertRaises(DocumentOperationError):
-                await self.service.ingest_document(1, ["c1"], user_id=1)
+                await self.service.ingest_document(1, ["c1"], plugin_id="plugin-a")
 
         self.run_async(scenario())
 
@@ -399,17 +402,17 @@ class DocumentIngestServiceTest(unittest.TestCase):
         self.assertIs(self.service._ingest_service, self.ingest_service)
 
     # ================================================================
-    # Phase 3.4 Step C：user-aware ownership
+    # Phase 3.5 Step 2-E：workspace-aware ownership
     # ================================================================
-    def test_ingest_own_document_with_user_id(self) -> None:
-        """Step C：A(1) ingest 自己的文档 → 成功，get_document 以 (1, 1) 调用。"""
+    def test_ingest_own_document_with_plugin_id(self) -> None:
+        """Step 2-E：plugin-a ingest 自己的文档 → 成功，get_document 以 (1, "plugin-a") 调用。"""
         async def scenario() -> None:
-            await self.service.ingest_document(1, ["c1", "c2"], user_id=1)
+            await self.service.ingest_document(1, ["c1", "c2"], plugin_id="plugin-a")
 
         self.run_async(scenario())
 
-        # ownership check：get_document(document_id, user_id)
-        self.document_repo.get_document.assert_called_once_with(1, 1)
+        # ownership check：get_document(document_id, plugin_id)
+        self.document_repo.get_document.assert_called_once_with(1, "plugin-a")
         # 成功流程照常（PROCESSING → ingest_page → SUCCESS）
         self.document_repo.update_status.assert_called_once_with(
             1, DocumentStatus.PROCESSING, error_message=None
@@ -422,19 +425,19 @@ class DocumentIngestServiceTest(unittest.TestCase):
         )
         self.document_repo.update_failure.assert_not_called()
 
-    def test_ingest_cross_user_not_found(self) -> None:
-        """Step C：A(1) ingest B(2) 的文档（id=8）→ NotFound，无任何状态写入。"""
+    def test_ingest_cross_workspace_not_found(self) -> None:
+        """Step 2-E：plugin-a  ingest 其他工作空间的文档（id=8）→ NotFound，无任何状态写入。"""
         async def scenario() -> None:
             self.document_repo.get_document.side_effect = DocumentNotFoundError(
                 "document not found: id=8"
             )
             with self.assertRaises(DocumentNotFoundError):
-                await self.service.ingest_document(8, ["c1"], user_id=1)
+                await self.service.ingest_document(8, ["c1"], plugin_id="plugin-a")
 
         self.run_async(scenario())
 
-        # ownership check 以 (8, user_id=1) 调用（A 视角文档 8 不存在）
-        self.document_repo.get_document.assert_called_once_with(8, 1)
+        # ownership check 以 (8, plugin_id="plugin-a") 调用（plugin-a 视角文档 8 不存在）
+        self.document_repo.get_document.assert_called_once_with(8, "plugin-a")
         # 不写 PROCESSING / FAILED / SUCCESS、不触碰 Milvus
         self.document_repo.update_status.assert_not_called()
         self.document_repo.update_failure.assert_not_called()
@@ -442,25 +445,25 @@ class DocumentIngestServiceTest(unittest.TestCase):
         self.ingest_service.ingest_page.assert_not_called()
 
     # ================================================================
-    # Phase 3.4 Step F6：user_id / api_key 透传
+    # Phase 3.4 Step F6：plugin_id / api_key 透传
     # ================================================================
-    def test_api_key_and_user_id_passed_to_ingest_page(self) -> None:
-        """F6：ingest_document 将 user_id 与 api_key 原样透传给 ingest_page。"""
+    def test_api_key_and_plugin_id_passed_to_ingest_page(self) -> None:
+        """F6：ingest_document 将 plugin_id 与 api_key 原样透传给 ingest_page。"""
         async def scenario() -> None:
             await self.service.ingest_document(
-                1, ["c1", "c2"], user_id=7, api_key="sk-user"
+                1, ["c1", "c2"], plugin_id="plugin-7", api_key="sk-plugin"
             )
 
         self.run_async(scenario())
 
-        # ownership 以 (document_id, user_id=7) 校验
-        self.document_repo.get_document.assert_called_once_with(1, 7)
-        # ingest_page 收到 user_id=7 + api_key="sk-user"（透传用户自己的 Key）
+        # ownership 以 (document_id, plugin_id="plugin-7") 校验
+        self.document_repo.get_document.assert_called_once_with(1, "plugin-7")
+        # ingest_page 收到 plugin_id="plugin-7" + api_key="sk-plugin"（透传插件工作空间自己的 Key）
         self.ingest_service.ingest_page.assert_called_once_with(
             page_id=1,
             chunks=["c1", "c2"],
-            user_id=7,
-            api_key="sk-user",
+            plugin_id="plugin-7",
+            api_key="sk-plugin",
         )
 
 

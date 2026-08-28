@@ -1,7 +1,8 @@
-// api-client.js —— Web RAG Clipper 统一 API Client（Phase 3.4 Step F8 Step 2）
-// 将 popup.js 中原有的认证请求逻辑统一抽离，Popup / Side Panel 共用。
-// 职责：统一 auth（Bearer token）、统一错误分类、统一 JSON/204/非 JSON 处理。
-// 禁止：自动 retry（clips/upload/ask/search 可能产生重复请求）；保存 API Key / password。
+// api-client.js —— Web RAG Clipper 统一 API Client（Phase 3.5 Step 2-F）
+// 职责：统一 Plugin Workspace 双凭证认证（X-Plugin-ID / X-Plugin-Secret）、
+//       统一错误分类、统一 JSON/204/非 JSON 处理。
+// 禁止：自动 retry（clips/upload/ask/search 可能产生重复请求）；
+//       保存 API Key / password；plugin_secret 落日志 / URL / DOM / 会话。
 "use strict";
 
 const API_BASE_URL = WEB_RAG_CLIPPER_CONFIG.API_BASE_URL;
@@ -32,52 +33,67 @@ function parseErrorMessage(data, fallback) {
 }
 
 const webRagApiClient = (() => {
-  let authToken = null;
-  let authUserId = null;
-  let authUsername = null;
-  let apiKeyConfigured = false;
+  // 内存态身份：仅 X-Plugin-ID / X-Plugin-Secret 参与请求认证，
+  // plugin_secret 严禁 console.log / 拼 URL / 渲染到 DOM / 写入会话。
+  let pluginId = null;
+  let pluginSecret = null;
+  let pluginName = null;
+  let apiKeyConfigured = false; // 以 GET /plugins/me 返回为准，不持久化
   let unauthenticatedHandler = null;
 
-  async function loadAuth() {
-    await chrome.storage.local.remove([STORAGE_KEYS.LEGACY_TOKEN, STORAGE_KEYS.LEGACY_USER_ID]);
-    const stored = await chrome.storage.local.get([STORAGE_KEYS.AUTH, STORAGE_KEYS.API_KEY_CONFIGURED]);
-    const auth = stored && stored[STORAGE_KEYS.AUTH];
-    if (auth && typeof auth.token === "string" && auth.token) {
-      authToken = auth.token;
-      authUserId = auth.user_id != null ? Number(auth.user_id) : null;
-      authUsername = typeof auth.username === "string" ? auth.username : null;
+  // 读取 webRagPlugin（唯一身份来源）。
+  async function loadPlugin() {
+    const stored = await chrome.storage.local.get(STORAGE_KEYS.PLUGIN);
+    const plugin = stored && stored[STORAGE_KEYS.PLUGIN];
+    if (plugin && typeof plugin.plugin_id === "string" && plugin.plugin_id) {
+      pluginId = plugin.plugin_id;
+      pluginSecret = typeof plugin.plugin_secret === "string" ? plugin.plugin_secret : null;
+      pluginName = typeof plugin.plugin_name === "string" ? plugin.plugin_name : null;
     } else {
-      authToken = null;
-      authUserId = null;
-      authUsername = null;
+      pluginId = null;
+      pluginSecret = null;
+      pluginName = null;
     }
-    apiKeyConfigured = !!(stored && stored[STORAGE_KEYS.API_KEY_CONFIGURED]);
-  }
-
-  async function persistAuth() {
-    await chrome.storage.local.set({
-      [STORAGE_KEYS.AUTH]: { token: authToken, user_id: authUserId, username: authUsername },
-      [STORAGE_KEYS.API_KEY_CONFIGURED]: apiKeyConfigured,
-    });
-  }
-
-  async function clearAuth() {
-    authToken = null;
-    authUserId = null;
-    authUsername = null;
     apiKeyConfigured = false;
-    await chrome.storage.local.remove([STORAGE_KEYS.AUTH, STORAGE_KEYS.API_KEY_CONFIGURED]);
+    return getPlugin();
   }
 
-  function getAuth() {
-    return { token: authToken, userId: authUserId, username: authUsername, apiKeyConfigured: apiKeyConfigured };
+  // 仅持久化 { plugin_id, plugin_secret, plugin_name }（webRagPlugin）
+  async function persistPlugin() {
+    if (!pluginId || !pluginSecret) return false;
+    await chrome.storage.local.set({
+      [STORAGE_KEYS.PLUGIN]: {
+        plugin_id: pluginId,
+        plugin_secret: pluginSecret,
+        plugin_name: pluginName,
+      },
+    });
+    return true;
   }
 
-  function setAuthDetails(partial) {
+  // 清除插件身份（不触碰 sessions；调用方负责清 tabBindings）
+  async function clearPlugin() {
+    pluginId = null;
+    pluginSecret = null;
+    pluginName = null;
+    apiKeyConfigured = false;
+    await chrome.storage.local.remove(STORAGE_KEYS.PLUGIN);
+  }
+
+  function getPlugin() {
+    return {
+      pluginId: pluginId,
+      pluginSecret: pluginSecret,
+      pluginName: pluginName,
+      apiKeyConfigured: apiKeyConfigured,
+    };
+  }
+
+  function setPluginDetails(partial) {
     if (!partial) return;
-    if (partial.token != null) authToken = partial.token;
-    if (partial.userId != null) authUserId = Number(partial.userId);
-    if (typeof partial.username === "string") authUsername = partial.username;
+    if (typeof partial.pluginId === "string" && partial.pluginId) pluginId = partial.pluginId;
+    if (typeof partial.pluginSecret === "string" && partial.pluginSecret) pluginSecret = partial.pluginSecret;
+    if (typeof partial.pluginName === "string") pluginName = partial.pluginName;
     if (typeof partial.apiKeyConfigured === "boolean") apiKeyConfigured = partial.apiKeyConfigured;
   }
 
@@ -95,10 +111,12 @@ const webRagApiClient = (() => {
       if (typeof body !== "string") body = JSON.stringify(body);
     }
     if (opts.auth !== false) {
-      if (!authToken) {
-        throw new ApiRequestError(401, "UNAUTHENTICATED", "登录已失效，请重新登录");
+      if (!pluginId || !pluginSecret) {
+        throw new ApiRequestError(401, "UNAUTHENTICATED", "插件凭证缺失，请重新创建插件");
       }
-      headers["Authorization"] = "Bearer " + authToken;
+      // 双凭证：X-Plugin-ID + X-Plugin-Secret（唯一认证来源）
+      headers["X-Plugin-ID"] = pluginId;
+      headers["X-Plugin-Secret"] = pluginSecret;
     }
     let response;
     try {
@@ -115,26 +133,39 @@ const webRagApiClient = (() => {
     } catch (_err) {
       data = null;
     }
+    // 401：凭证失效 → 清除本地插件身份，回到 Welcome
     if (opts.auth !== false && response.status === 401) {
-      const userId = authUserId;
-      await clearAuth();
+      const currentPluginId = pluginId;
+      await clearPlugin();
       if (unauthenticatedHandler) {
-        await unauthenticatedHandler({ userId: userId });
+        await unauthenticatedHandler({ pluginId: currentPluginId });
       }
-      throw new ApiRequestError(401, "UNAUTHENTICATED", "登录已失效，请重新登录");
+      throw new ApiRequestError(401, "UNAUTHENTICATED", "插件凭证已失效，请重新创建插件");
     }
+    // 403：插件被禁用 → 不清理 secret、不创建新 workspace
     if (response.status === 403) {
-      throw new ApiRequestError(403, "DISABLED", "账号已被禁用，请联系管理员");
+      if (data && data.type === "PluginDisabledError") {
+        throw new ApiRequestError(403, "PLUGIN_DISABLED", "插件已被禁用，请联系管理员");
+      }
+      throw new ApiRequestError(403, "DISABLED", "插件已被禁用，请联系管理员");
     }
+    // 409 + API Key 文案 → API Key 未配置
     if (response.status === 409 && isApiKeyNotConfiguredError(data)) {
       throw new ApiRequestError(409, "API_KEY_NOT_CONFIGURED", "请前往设置配置阿里云百炼 API Key");
     }
     if (!response.ok) {
       if (response.status === 401) {
-        throw new ApiRequestError(401, "BAD_CREDENTIALS", "用户名或密码错误");
+        throw new ApiRequestError(401, "UNAUTHENTICATED", "插件凭证已失效，请重新创建插件");
       }
       if (response.status === 409) {
-        throw new ApiRequestError(409, "USERNAME_EXISTS", "用户名已存在，请直接登录");
+        if (data && data.type === "PluginNameTakenError") {
+          throw new ApiRequestError(409, "PLUGIN_NAME_TAKEN", "这个插件名称已经被使用，请换一个名称");
+        }
+        throw new ApiRequestError(
+          response.status,
+          "HTTP",
+          data ? parseErrorMessage(data, "请求冲突（HTTP 409）") : "请求冲突（HTTP 409）"
+        );
       }
       if (response.status === 422) {
         throw new ApiRequestError(422, "VALIDATION", parseErrorMessage(data, "输入不合法，请检查后重试"));
@@ -152,36 +183,48 @@ const webRagApiClient = (() => {
 
   return {
     ApiRequestError: ApiRequestError,
-    getAuth: getAuth,
-    setAuthDetails: setAuthDetails,
-    loadAuth: loadAuth,
-    persistAuth: persistAuth,
-    clearAuth: clearAuth,
+    getPlugin: getPlugin,
+    setPluginDetails: setPluginDetails,
+    loadPlugin: loadPlugin,
+    persistPlugin: persistPlugin,
+    clearPlugin: clearPlugin,
     setUnauthenticatedHandler: setUnauthenticatedHandler,
     request: request,
-    auth: {
-      async login(username, password) {
-        const result = await request("/auth/login", { method: "POST", body: { username: username, password: password }, auth: false });
+    plugins: {
+      // POST /plugins/register：创建插件 workspace（无需凭证）
+      async register(pluginName) {
+        const result = await request("/plugins/register", {
+          method: "POST",
+          body: { plugin_name: pluginName },
+          auth: false,
+        });
         return result.data;
       },
-      async register(username, password) {
-        const result = await request("/auth/register", { method: "POST", body: { username: username, password: password }, auth: false });
-        return result.data;
-      },
-      async logout() {
-        await request("/auth/logout", { method: "POST" });
-      },
-    },
-    users: {
+      // GET /plugins/me：启动校验 + 获取 api_key_configured
       async me() {
-        const result = await request("/users/me", { method: "GET" });
+        const result = await request("/plugins/me", { method: "GET" });
         return result.data;
       },
-      async updateApiKey(apiKey) {
-        await request("/users/me/api-key", { method: "PUT", body: { api_key: apiKey } });
+      // PUT /plugins/me：修改插件名称（plugin_id / plugin_secret / 知识库不变）
+      async updateName(pluginName) {
+        const result = await request("/plugins/me", { method: "PUT", body: { plugin_name: pluginName } });
+        return result.data;
       },
+      // PUT /plugins/me/api-key：保存并校验阿里云百炼 API Key
+      async updateApiKey(apiKey) {
+        const result = await request("/plugins/me/api-key", { method: "PUT", body: { api_key: apiKey } });
+        return result.data;
+      },
+      // DELETE /plugins/me/api-key：移除 API Key
       async removeApiKey() {
-        await request("/users/me/api-key", { method: "DELETE" });
+        await request("/plugins/me/api-key", { method: "DELETE" });
+      },
+      // DELETE /plugins/me：删除插件 workspace（需 confirm + plugin_name）
+      async delete(pluginName) {
+        await request("/plugins/me", {
+          method: "DELETE",
+          body: { confirm: true, plugin_name: pluginName },
+        });
       },
     },
     clips: {
@@ -191,7 +234,7 @@ const webRagApiClient = (() => {
       },
     },
     rag: {
-      // 全部知识库模式：不传 document_id（后端按 Bearer token → users.id → SUCCESS documents）
+      // 全部知识库模式：不传 document_id（后端按 X-Plugin-ID → plugin_id → SUCCESS documents）
       // 当前网页模式：传 document_id（仅当前 tab 的有效绑定）
       async ask(queryObj) {
         const body = { query: queryObj.query };
@@ -204,6 +247,46 @@ const webRagApiClient = (() => {
         if (queryObj.limit != null) body.limit = queryObj.limit;
         if (queryObj.document_id != null) body.document_id = queryObj.document_id;
         const result = await request("/rag/search", { method: "POST", body: body });
+        return result.data;
+      },
+    },
+    documents: {
+      // GET /documents：分页列出当前 Plugin 的知识库（「我的知识库」）
+      // 归属唯一来自后端 current_plugin.plugin_id；禁止前端传 plugin_id / user_id。
+      async list(params) {
+        const p = params || {};
+        const query = [];
+        if (p.page != null) query.push("page=" + encodeURIComponent(String(p.page)));
+        if (p.page_size != null) query.push("page_size=" + encodeURIComponent(String(p.page_size)));
+        if (p.keyword) query.push("keyword=" + encodeURIComponent(p.keyword));
+        if (p.status) query.push("status=" + encodeURIComponent(p.status));
+        if (p.source_type) query.push("source_type=" + encodeURIComponent(p.source_type));
+        const qs = query.length > 0 ? "?" + query.join("&") : "";
+        const result = await request("/documents" + qs, { method: "GET" });
+        return result.data;
+      },
+      // GET /documents/{id}：文档详情（跨 Workspace 后端统一 404）
+      async get(documentId) {
+        const result = await request(
+          "/documents/" + encodeURIComponent(String(documentId)),
+          { method: "GET" }
+        );
+        return result.data;
+      },
+      // DELETE /documents/{id}：删除文档（幂等 204；走统一双凭证认证）
+      async delete(documentId) {
+        await request(
+          "/documents/" + encodeURIComponent(String(documentId)),
+          { method: "DELETE" }
+        );
+      },
+      // POST /documents/{id}/ingest：重试 ingest（chunks 由调用方提供，
+      // 与现有剪藏/上传链路共用同一契约；走统一双凭证认证）
+      async ingest(documentId, chunks) {
+        const result = await request(
+          "/documents/" + encodeURIComponent(String(documentId)) + "/ingest",
+          { method: "POST", body: { chunks: chunks } }
+        );
         return result.data;
       },
     },

@@ -108,7 +108,7 @@ class DocumentUploadService:
         self,
         filename: str,
         content: bytes,
-        user_id: int,
+        plugin_id: str,
         mime_type: str | None,
         api_key: str | None = None,
     ) -> Document:
@@ -121,18 +121,18 @@ class DocumentUploadService:
             3. len(content) <= max_content_bytes（超限直接拒绝，不落盘）；
             4. 扩展名 ∈ {.txt, .md, .markdown}（.pdf / .docx 等返回明确异常）。
 
-        Phase 3.4 Step D：新增 api_key 参数 —— 当前用户的百炼 API Key
-        （AuthService 解密后传入），透传至 Embedding；
+        Phase 3.4 Step D：新增 api_key 参数 —— 当前插件工作空间的百炼 API Key
+        （PluginService 解密后传入），透传至 Embedding；
         Phase 3.4 Step F6：api_key 必填（Client 层已强制），
         严禁回退 settings.bailian_api_key。
 
         Args:
             filename: 上传文件名（来自 UploadFile.filename，可为空串）。
             content : 文件完整字节内容。
-            user_id : 所属用户 ID（**必填**，Phase 3.4 Step C：由认证上下文 /
-                      测试显式传入，不允许 None）。
+            plugin_id : 所属插件工作空间 ID（**必填**，Phase 3.5 Step 2-E：
+                        由认证上下文 / 测试显式传入，不允许 None）。
             mime_type: 文件 MIME 类型（来自 UploadFile.content_type，可为 None）。
-            api_key: 用户自己的百炼 API Key（Phase 3.4 Step D/F6；必填透传）。
+            api_key: 插件工作空间自己的百炼 API Key（Phase 3.4 Step D/F6；必填透传）。
 
         Returns:
             Document: 终态对象（SUCCESS，chunk_count = 实际入库数，
@@ -183,7 +183,7 @@ class DocumentUploadService:
         document = self._document_repository.create_document(
             filename=filename,
             file_path=file_path,
-            user_id=user_id,
+            plugin_id=plugin_id,
             file_size=len(content),
             mime_type=mime_type or "",
         )
@@ -214,7 +214,7 @@ class DocumentUploadService:
             await self._document_ingest_service.ingest_document(
                 document.id,
                 chunks,
-                user_id=user_id,
+                plugin_id=plugin_id,
                 api_key=api_key,
             )
         except Exception as exc:
@@ -224,7 +224,7 @@ class DocumentUploadService:
         # ------------------------------------------------------------------
         # 5) 返回终态（SUCCESS，error_message=None）
         # ------------------------------------------------------------------
-        return self._document_repository.get_document(document.id, user_id)
+        return self._document_repository.get_document(document.id, plugin_id)
 
     def _mark_failed(self, document_id: int, exc: Exception) -> None:
         """

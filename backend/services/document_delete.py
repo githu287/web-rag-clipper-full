@@ -1,14 +1,14 @@
 """
-DocumentDeleteService：Document 删除编排层（Phase 2.11 Step 2；Phase 3.4 Step C
-增加 user_id 参数，实现 user-aware 删除）。
+DocumentDeleteService：Document 删除编排层（Phase 2.11 Step 2；Phase 3.5 Step 2-E
+增加 plugin_id 参数，实现 workspace-aware 删除）。
 
 职责：
     将「Milvus chunks 删除 → FileStorage 物理文件删除 → MySQL document 行删除」
     串联为一条最终一致的删除链路，MySQL document 行删除为最终提交点。
 
 流程（严格顺序）：
-      Step 1: get_document(document_id, user_id)
-              （Phase 3.4 Step C：user-aware —— 用户 A 删除用户 B 的文档按
+      Step 1: get_document(document_id, plugin_id)
+              （Phase 3.5 Step 2-E：workspace-aware —— 插件 A 删除插件 B 的文档按
                「不存在」处理，不泄露归属）
               不存在（DocumentNotFoundError）→ 幂等成功，直接返回
               （目标态「文档不存在」已达成，Router 返回 204）。
@@ -27,8 +27,8 @@ DocumentDeleteService：Document 删除编排层（Phase 2.11 Step 2；Phase 3.4
               文件已不存在视为成功）。
               失败 → 尝试恢复 original_status → 原异常继续传播（HTTP 5xx）；
               MySQL document 行必须保留。
-      Step 6: MySQL：delete_document(document_id, user_id)（最终提交点，
-              Phase 3.4 Step C 同样 user-aware：跨用户按「不存在」处理）。
+      Step 6: MySQL：delete_document(document_id, plugin_id)（最终提交点，
+              Phase 3.5 Step 2-E 同样 workspace-aware：跨 Workspace 按「不存在」处理）。
               DocumentNotFoundError → 并发请求已删除，幂等成功，返回。
               其他异常 → 保持 DELETING（不回滚），原异常继续传播（HTTP 503）；
               下一次 DELETE 走 Step 4 重新 query → 收敛。
@@ -92,20 +92,20 @@ class DocumentDeleteService:
         self._file_storage: FileStorage = file_storage
 
     # ------------------------------------------------------------------ 对外入口
-    async def delete_document(self, document_id: int, user_id: int) -> None:
+    async def delete_document(self, document_id: int, plugin_id: str) -> None:
         """
         执行一次完整的 Document 删除（Milvus → FileStorage → MySQL，幂等）。
 
         不存在 / 已删除（DocumentNotFoundError）视为目标态已达成，静默成功。
 
-        Phase 3.4 Step C：user_id 用于 Step 1 ownership check（get_document
-        (document_id, user_id)）与 Step 6 的 delete_document(document_id, user_id)。
-        用户 A 删除用户 B 的文档按「不存在」处理（不泄露归属）。
+        Phase 3.5 Step 2-E：plugin_id 用于 Step 1 ownership check（get_document
+        (document_id, plugin_id)）与 Step 6 的 delete_document(document_id, plugin_id)。
+        插件 A 删除插件 B 的文档按「不存在」处理（不泄露归属）。
         Milvus → FileStorage → MySQL 的删除顺序不变。
 
         Args:
             document_id: Document 主键 ID（1:1 对应 Milvus page_id）。
-            user_id: 当前用户 ID（归属校验，由认证上下文 / 测试显式传入）。
+            plugin_id: 当前插件工作空间 ID（归属校验，由认证上下文 / 测试显式传入）。
 
         Raises:
             DocumentOperationError: status == PROCESSING（ingest 进行中拒绝删除）
@@ -114,9 +114,9 @@ class DocumentDeleteService:
             DocumentStorageError: FileStorage 删除失败（状态已尝试恢复后继续传播）。
         """
         # ---------------------------------------------------------- Step 1: 存在性校验
-        # Phase 3.4 Step C：user-aware ownership check（跨用户 → 不存在）
+        # Phase 3.5 Step 2-E：workspace-aware ownership check（跨 Workspace → 不存在）
         try:
-            document = self._document_repo.get_document(document_id, user_id)
+            document = self._document_repo.get_document(document_id, plugin_id)
         except DocumentNotFoundError:
             # 幂等：目标态「文档不存在」已达成
             logger.info(
@@ -181,8 +181,8 @@ class DocumentDeleteService:
 
         # ------------------------------------------------------ Step 6: MySQL 删除（提交点）
         try:
-            # Phase 3.4 Step C：user-aware（WHERE id + user_id）
-            self._document_repo.delete_document(document_id, user_id)
+            # Phase 3.5 Step 2-E：workspace-aware（WHERE id + plugin_id）
+            self._document_repo.delete_document(document_id, plugin_id)
         except DocumentNotFoundError:
             # 并发请求已删除 → 幂等成功
             logger.info(

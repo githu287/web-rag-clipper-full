@@ -1,6 +1,6 @@
-// background.js —— Web RAG Clipper 浏览器事件协调层（Phase 3.4 Step F8 Step 2）
+// background.js —— Web RAG Clipper 浏览器事件协调层（Phase 3.5 Step 2-F）
 // 职责：sidePanel 行为 + tabs 事件 + 向 Side Panel 广播。
-// 禁止：发送任何业务请求（/clips /rag/* /auth/*）；保存/解密凭证。
+// 禁止：发送任何业务请求（/clips /rag/* /plugins/register）；保存/解密凭证。
 "use strict";
 
 importScripts("config.js", "session-store.js");

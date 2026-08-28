@@ -85,28 +85,28 @@ class WebClipService:
         self,
         url: str,
         raw_text: str,
-        user_id: int,
+        plugin_id: str,
         title: str | None = None,
         api_key: str | None = None,
     ) -> Document:
         """
         执行完整网页剪藏链路，返回最终 Document（成功为 SUCCESS，失败抛原异常）。
 
-        Phase 3.4 Step C：新增必填 user_id 参数 —— create_document 以
-        user_id=user_id 落库；本服务不生成 / 不推断 user_id，由认证上下文 /
+        Phase 3.5 Step 2-E：新增必填 plugin_id 参数 —— create_document 以
+        plugin_id=plugin_id 落库；本服务不生成 / 不推断 plugin_id，由认证上下文 /
         测试显式传入。
 
-        Phase 3.4 Step D：新增 api_key 参数 —— 当前用户的百炼 API Key
-        （AuthService 解密后传入），透传至 Embedding；
+        Phase 3.4 Step D：新增 api_key 参数 —— 当前插件工作空间的百炼 API Key
+        （PluginService 解密后传入），透传至 Embedding；
         Phase 3.4 Step F6：api_key 必填（Client 层已强制），
         严禁回退 settings.bailian_api_key。
 
         Args:
             url: 网页来源 URL（非空，由 API 层 WebClipRequest 校验）。
             raw_text: 网页正文纯文本（非空，由 API 层 WebClipRequest 校验）。
-            user_id: 当前用户 ID（归属字段，必填）。
+            plugin_id: 当前插件工作空间 ID（归属字段，必填）。
             title: 网页标题（可选；None 时写入 NULL）。
-            api_key: 用户自己的百炼 API Key（Phase 3.4 Step D/F6；必填透传）。
+            api_key: 插件工作空间自己的百炼 API Key（Phase 3.4 Step D/F6；必填透传）。
 
         Returns:
             Document: 终态对象（SUCCESS，chunk_count = 实际入库数，
@@ -125,7 +125,7 @@ class WebClipService:
         document = self._document_repository.create_document(
             filename=_WEB_CLIP_FILENAME,
             file_path=_WEB_CLIP_FILE_PATH,
-            user_id=user_id,
+            plugin_id=plugin_id,
             title=title,
             url=url,
             source_type=DocumentSourceType.WEBPAGE,
@@ -159,14 +159,14 @@ class WebClipService:
         await self._document_ingest_service.ingest_document(
             document.id,
             chunks,
-            user_id=user_id,
+            plugin_id=plugin_id,
             api_key=api_key,
         )
 
         # ------------------------------------------------------------------
         # 5) 返回终态（SUCCESS，error_message=None）
         # ------------------------------------------------------------------
-        return self._document_repository.get_document(document.id, user_id)
+        return self._document_repository.get_document(document.id, plugin_id)
 
     def _mark_failed(self, document_id: int, exc: Exception) -> None:
         """

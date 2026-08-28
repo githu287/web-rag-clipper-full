@@ -71,8 +71,8 @@ class RagServiceStatusFilterTest(unittest.TestCase):
         self.embedding.embed.return_value = [_QUERY_VECTOR]
         self.milvus = Mock(spec=MilvusRepository)
         self.documents = Mock(spec=DocumentRepository)
-        # Phase 3.4 Step E：全库模式先取当前用户 SUCCESS document ids
-        # （单测默认用户有 doc 1、2；特殊用例按需覆盖）。
+        # Phase 3.5 Step 2-E：全库模式先取当前插件工作空间 SUCCESS document ids
+        # （单测默认 plugin-a 有 doc 1、2；特殊用例按需覆盖）。
         self.documents.get_success_document_ids.return_value = [1, 2]
         self.service = RagService(
             embedding_client=self.embedding,
@@ -99,8 +99,8 @@ class RagServiceStatusFilterTest(unittest.TestCase):
         )
 
     def _search(self, query: str = "hello", limit: int = 5) -> list[ChunkSearchResult]:
-        # Phase 3.4 Step E：全库模式要求 user_id（匿名返回 []）。
-        return asyncio.run(self.service.search(query=query, limit=limit, user_id=1))
+        # Phase 3.5 Step 2-E：全库模式要求 plugin_id（匿名返回 []）。
+        return asyncio.run(self.service.search(query=query, limit=limit, plugin_id="plugin-a"))
 
     # ------------------------------------------------------------- A. SUCCESS 放行
     def test_a_success_passthrough(self) -> None:
@@ -114,7 +114,7 @@ class RagServiceStatusFilterTest(unittest.TestCase):
         results = self._search()
 
         self.assertEqual([c.id for c in results], ["1_0", "2_0"])
-        self.documents.get_documents_by_ids.assert_called_once_with([1, 2], 1)
+        self.documents.get_documents_by_ids.assert_called_once_with([1, 2], "plugin-a")
 
     # ------------------------------------------------------------- B. FAILED 过滤
     def test_b_failed_filtered(self) -> None:
@@ -172,7 +172,7 @@ class RagServiceStatusFilterTest(unittest.TestCase):
     def test_f_orphan_chunk_filtered(self) -> None:
         candidates = [self._chunk("1_0", 1), self._chunk("999_0", 999)]
         self.milvus.search.return_value = candidates
-        # 999 属于当前用户 SUCCESS 集合（否则会被 Step E 兜底提前剔除，
+        # 999 属于当前插件工作空间 SUCCESS 集合（否则会被隔离兜底提前剔除，
         # 无法单独验证 orphan 过滤）；MySQL 层只有 id=1，999 → 孤儿被过滤。
         self.documents.get_success_document_ids.return_value = [1, 999]
         # MySQL 只有 id=1；999 不存在 → 应被当作孤儿过滤。
@@ -183,7 +183,7 @@ class RagServiceStatusFilterTest(unittest.TestCase):
         results = self._search()
 
         self.assertEqual([c.id for c in results], ["1_0"])
-        self.documents.get_documents_by_ids.assert_called_once_with([1, 999], 1)
+        self.documents.get_documents_by_ids.assert_called_once_with([1, 999], "plugin-a")
 
     # ---------------------------------------------------------------- G. limit=1
     def test_g_limit_1_search_10(self) -> None:
@@ -196,7 +196,7 @@ class RagServiceStatusFilterTest(unittest.TestCase):
 
         results = self._search(limit=1)
 
-        # Step E：全库模式 Milvus 检索携带用户隔离 expr（success_ids=[1, 2]）
+        # Step 2-E：全库模式 Milvus 检索携带 Workspace 隔离 expr（success_ids=[1, 2]）
         self.milvus.search.assert_called_once_with(
             _QUERY_VECTOR, limit=10, expr="page_id in [1,2]"
         )
@@ -207,7 +207,7 @@ class RagServiceStatusFilterTest(unittest.TestCase):
     def test_h_limit_10_search_10(self) -> None:
         candidates = [self._chunk(f"{i}_0", i) for i in range(1, 11)]
         self.milvus.search.return_value = candidates
-        # 当前用户 SUCCESS 集合覆盖全部候选 page_id（避免 Step E 兜底误过滤）
+        # 当前插件工作空间 SUCCESS 集合覆盖全部候选 page_id（避免隔离兜底误过滤）
         self.documents.get_success_document_ids.return_value = list(range(1, 11))
         self.documents.get_documents_by_ids.return_value = [
             self._doc(i, DocumentStatus.SUCCESS) for i in range(1, 11)
@@ -215,7 +215,7 @@ class RagServiceStatusFilterTest(unittest.TestCase):
 
         results = self._search(limit=10)
 
-        # Step E：expr 覆盖当前用户全部 SUCCESS ids（1..10）
+        # Step 2-E：expr 覆盖当前插件工作空间全部 SUCCESS ids（1..10）
         self.milvus.search.assert_called_once_with(
             _QUERY_VECTOR,
             limit=10,
@@ -227,7 +227,7 @@ class RagServiceStatusFilterTest(unittest.TestCase):
     def test_i_limit_20_search_20(self) -> None:
         candidates = [self._chunk(f"{i}_0", i) for i in range(1, 21)]
         self.milvus.search.return_value = candidates
-        # 当前用户 SUCCESS 集合覆盖全部候选 page_id（避免 Step E 兜底误过滤）
+        # 当前插件工作空间 SUCCESS 集合覆盖全部候选 page_id（避免隔离兜底误过滤）
         self.documents.get_success_document_ids.return_value = list(range(1, 21))
         self.documents.get_documents_by_ids.return_value = [
             self._doc(i, DocumentStatus.SUCCESS) for i in range(1, 21)
@@ -235,7 +235,7 @@ class RagServiceStatusFilterTest(unittest.TestCase):
 
         results = self._search(limit=20)
 
-        # Step E：expr 覆盖当前用户全部 SUCCESS ids（1..20）
+        # Step 2-E：expr 覆盖当前插件工作空间全部 SUCCESS ids（1..20）
         self.milvus.search.assert_called_once_with(
             _QUERY_VECTOR,
             limit=20,
@@ -282,7 +282,7 @@ class RagServiceStatusFilterTest(unittest.TestCase):
         results = self._search()
 
         # 去重后 [1, 2]，只调用一次；不能传 [1, 1, 1, 2]。
-        self.documents.get_documents_by_ids.assert_called_once_with([1, 2], 1)
+        self.documents.get_documents_by_ids.assert_called_once_with([1, 2], "plugin-a")
         self.assertEqual([c.id for c in results], ["1_0", "1_1", "1_2", "2_0"])
 
 
@@ -301,7 +301,7 @@ class RagServiceMetadataTest(unittest.TestCase):
         self.embedding.embed.return_value = [_QUERY_VECTOR]
         self.milvus = Mock(spec=MilvusRepository)
         self.documents = Mock(spec=DocumentRepository)
-        # Phase 3.4 Step E：全库模式先取当前用户 SUCCESS document ids
+        # 全库模式先取当前 Plugin 的 SUCCESS document ids
         self.documents.get_success_document_ids.return_value = [1, 2]
         self.service = RagService(
             embedding_client=self.embedding,
@@ -344,8 +344,8 @@ class RagServiceMetadataTest(unittest.TestCase):
         query: str = "hello",
         limit: int = 5,
     ) -> list[RagSearchResult]:
-        # Phase 3.4 Step E：全库模式要求 user_id（匿名返回 []）。
-        return asyncio.run(self.service.search(query=query, limit=limit, user_id=1))
+        # Phase 3.5 Step 2-E：全库模式要求 plugin_id（匿名返回 []）。
+        return asyncio.run(self.service.search(query=query, limit=limit, plugin_id="plugin-a"))
 
     # ------------------------------------- A. SUCCESS chunk 附带完整 metadata
     def test_a_success_chunk_attaches_metadata(self) -> None:
@@ -412,7 +412,7 @@ class RagServiceMetadataTest(unittest.TestCase):
     def test_e_document_id_equals_page_id(self) -> None:
         candidates = [self._chunk("7_0", 7)]
         self.milvus.search.return_value = candidates
-        # page 7 属于当前用户 SUCCESS 集合（避免 Step E 兜底误过滤）
+        # page 7 属于当前插件工作空间 SUCCESS 集合（避免隔离兜底误过滤）
         self.documents.get_success_document_ids.return_value = [7]
         self.documents.get_documents_by_ids.return_value = [
             self._doc(7, DocumentStatus.SUCCESS),
@@ -435,7 +435,7 @@ class RagServiceMetadataTest(unittest.TestCase):
         results = self._search()
 
         self.assertEqual([r.id for r in results], ["1_0"])
-        self.documents.get_documents_by_ids.assert_called_once_with([1, 999], 1)
+        self.documents.get_documents_by_ids.assert_called_once_with([1, 999], "plugin-a")
 
     # ------------------------------ G. 非 SUCCESS 状态仍然被过滤
     def test_g_non_success_statuses_still_filtered(self) -> None:
@@ -468,7 +468,7 @@ class RagServiceMetadataTest(unittest.TestCase):
 
         results = self._search()
 
-        self.documents.get_documents_by_ids.assert_called_once_with([1], 1)
+        self.documents.get_documents_by_ids.assert_called_once_with([1], "plugin-a")
         self.assertEqual(len(results), 3)
         self.assertTrue(all(r.document_id == 1 for r in results))
         self.assertEqual({r.filename for r in results}, {"file-1.txt"})
@@ -501,7 +501,7 @@ class RagServiceMetadataTest(unittest.TestCase):
     def test_j_limit_20_unchanged(self) -> None:
         candidates = [self._chunk(f"{i}_0", i) for i in range(1, 21)]
         self.milvus.search.return_value = candidates
-        # 当前用户 SUCCESS 集合覆盖全部候选 page_id（避免 Step E 兜底误过滤）
+        # 当前插件工作空间 SUCCESS 集合覆盖全部候选 page_id（避免隔离兜底误过滤）
         self.documents.get_success_document_ids.return_value = list(range(1, 21))
         self.documents.get_documents_by_ids.return_value = [
             self._doc(i, DocumentStatus.SUCCESS) for i in range(1, 21)
@@ -509,7 +509,7 @@ class RagServiceMetadataTest(unittest.TestCase):
 
         results = self._search(limit=20)
 
-        # Step E：expr 覆盖当前用户全部 SUCCESS ids（1..20）
+        # Step 2-E：expr 覆盖当前插件工作空间全部 SUCCESS ids（1..20）
         self.milvus.search.assert_called_once_with(
             _QUERY_VECTOR,
             limit=20,
@@ -636,20 +636,20 @@ class RagServiceMetadataTest(unittest.TestCase):
         results = self._search()
 
         self.assertEqual([r.id for r in results], ["1_0"])
-        self.documents.get_documents_by_ids.assert_called_once_with([1, 999], 1)
+        self.documents.get_documents_by_ids.assert_called_once_with([1, 999], "plugin-a")
 
 
 class RagServiceUserIsolationTest(unittest.TestCase):
     """
-    Phase 3.4 Step E：RAG 检索按用户隔离（全部知识库模式 + 当前网页模式）。
+    Phase 3.5 Step 2-E：RAG 检索按插件工作空间隔离（全部知识库模式 + 当前网页模式）。
 
-    覆盖 Step E §十一 1-10：
-      1. A 全库只检索 A（success_ids=[1]；混入 page_id=999 → 剔除）
-      2. B 全库只检索 B（success_ids=[2]；混入 page_id=1 → 剔除）
+    覆盖隔离用例 1-10（user 隔离迁移为 plugin 隔离）：
+      1. plugin-a 全库只检索 plugin-a（success_ids=[1]；混入 page_id=999 → 剔除）
+      2. plugin-b 全库只检索 plugin-b（success_ids=[2]；混入 page_id=1 → 剔除）
       3. success_ids 正确构造 Milvus expr（expr="page_id in [1,2]"）
-      4. 混入其他用户 page_id → 应用层 post-filter 删除（双保险）
+      4. 混入其他 Workspace page_id → 应用层 post-filter 删除（双保险）
       5. 当前网页模式 expr == "page_id == {document_id}"
-      6. 当前网页模式 ownership 失败（跨用户）→ DocumentNotFoundError
+      6. 当前网页模式 ownership 失败（跨 Workspace）→ DocumentNotFoundError
       7. 非 SUCCESS → DocumentNotSuccessError
       8. success_ids=[] → 不调用 Milvus，直接返回 []
       9. limit 仍正确
@@ -689,19 +689,19 @@ class RagServiceUserIsolationTest(unittest.TestCase):
         query: str = "hello",
         limit: int = 5,
         document_id: int | None = None,
-        user_id: int | None = 1,
+        plugin_id: str | None = "plugin-a",
     ) -> list[RagSearchResult]:
         return asyncio.run(
             self.service.search(
                 query=query,
                 limit=limit,
                 document_id=document_id,
-                user_id=user_id,
+                plugin_id=plugin_id,
             )
         )
 
-    # 1. A 全库只检索 A（Milvus 混入其他用户 page_id=999，双保险剔除）
-    def test_user_a_full_knowledge_only_sees_a(self) -> None:
+    # 1. plugin-a 全库只检索 plugin-a（Milvus 混入其他 Workspace page_id=999，双保险剔除）
+    def test_plugin_a_full_knowledge_only_sees_a(self) -> None:
         self.documents.get_success_document_ids.return_value = [1]
         self.milvus.search.return_value = [
             self._chunk("1_0", 1),
@@ -713,15 +713,15 @@ class RagServiceUserIsolationTest(unittest.TestCase):
 
         results = self._search()
 
-        # 应用层兜底：999 不属于 A 的 success_ids → 被剔除
+        # 应用层兜底：999 不属于 plugin-a 的 success_ids → 被剔除
         self.assertEqual([r.id for r in results], ["1_0"])
-        self.documents.get_success_document_ids.assert_called_once_with(1)
+        self.documents.get_success_document_ids.assert_called_once_with("plugin-a")
         self.milvus.search.assert_called_once_with(
             _QUERY_VECTOR, limit=10, expr="page_id in [1]"
         )
 
-    # 2. B 全库只检索 B
-    def test_user_b_full_knowledge_only_sees_b(self) -> None:
+    # 2. plugin-b 全库只检索 plugin-b
+    def test_plugin_b_full_knowledge_only_sees_b(self) -> None:
         self.documents.get_success_document_ids.return_value = [2]
         self.milvus.search.return_value = [
             self._chunk("1_0", 1),
@@ -732,12 +732,12 @@ class RagServiceUserIsolationTest(unittest.TestCase):
             self._doc(2, DocumentStatus.SUCCESS),
         ]
 
-        results = self._search(user_id=2)
+        results = self._search(plugin_id="plugin-b")
 
         # 即使 SQL 层（mock）返回了两份 SUCCESS 文档，post-filter 仍以
-        # user B 的 success_ids=[2] 为唯一允许集合 → 剔除 page 1。
+        # plugin-b 的 success_ids=[2] 为唯一允许集合 → 剔除 page 1。
         self.assertEqual([r.id for r in results], ["2_0"])
-        self.documents.get_success_document_ids.assert_called_once_with(2)
+        self.documents.get_success_document_ids.assert_called_once_with("plugin-b")
         self.milvus.search.assert_called_once_with(
             _QUERY_VECTOR, limit=10, expr="page_id in [2]"
         )
@@ -760,10 +760,10 @@ class RagServiceUserIsolationTest(unittest.TestCase):
             _QUERY_VECTOR, limit=10, expr="page_id in [1,2]"
         )
 
-    # 4. 混入其他用户 page_id → post-filter 删除（即使下游全放行也兜底）
-    def test_post_filter_removes_other_users_page(self) -> None:
+    # 4. 混入其他 Workspace page_id → post-filter 删除（即使下游全放行也兜底）
+    def test_post_filter_removes_other_workspace_page(self) -> None:
         self.documents.get_success_document_ids.return_value = [1, 2]
-        # Milvus 异常返回三个候选（含其他用户 page 999）
+        # Milvus 异常返回三个候选（含其他 Workspace page 999）
         self.milvus.search.return_value = [
             self._chunk("1_0", 1),
             self._chunk("2_0", 2),
@@ -795,19 +795,19 @@ class RagServiceUserIsolationTest(unittest.TestCase):
         results = self._search(document_id=1, limit=5)
 
         self.assertEqual([r.id for r in results], ["1_0"])
-        self.documents.get_document.assert_called_once_with(1, 1)
+        self.documents.get_document.assert_called_once_with(1, "plugin-a")
         # candidate_limit = max(5*4, 40) = 40
         self.milvus.search.assert_called_once_with(
             _QUERY_VECTOR, limit=40, expr="page_id == 1"
         )
 
-    # 6. 当前网页模式 ownership 失败（跨用户 / 不存在）→ DocumentNotFoundError
-    def test_current_page_mode_other_users_document_raises(self) -> None:
-        # get_document(document_id, user_id) 带归属过滤：他人文档返回 None
+    # 6. 当前网页模式 ownership 失败（跨 Workspace / 不存在）→ DocumentNotFoundError
+    def test_current_page_mode_other_workspace_document_raises(self) -> None:
+        # get_document(document_id, plugin_id) 带归属过滤：他人文档返回 None
         self.documents.get_document.return_value = None
 
         with self.assertRaises(DocumentNotFoundError):
-            self._search(document_id=999, user_id=1)
+            self._search(document_id=999, plugin_id="plugin-a")
 
         self.milvus.search.assert_not_called()
 
@@ -818,7 +818,7 @@ class RagServiceUserIsolationTest(unittest.TestCase):
         )
 
         with self.assertRaises(DocumentNotSuccessError):
-            self._search(document_id=1, user_id=1)
+            self._search(document_id=1, plugin_id="plugin-a")
 
         self.milvus.search.assert_not_called()
 
@@ -868,10 +868,10 @@ class RagServiceUserIsolationTest(unittest.TestCase):
             _QUERY_VECTOR, limit=40, expr="page_id == 1"
         )
 
-    # 全库模式匿名（user_id=None）→ 拒绝并返回 []（不调用 Milvus / MySQL）
+    # 全库模式匿名（plugin_id=None）→ 拒绝并返回 []（不调用 Milvus / MySQL）
     def test_anonymous_full_knowledge_rejected(self) -> None:
         results = asyncio.run(
-            self.service.search(query="hello", limit=5, user_id=None)
+            self.service.search(query="hello", limit=5, plugin_id=None)
         )
 
         self.assertEqual(results, [])

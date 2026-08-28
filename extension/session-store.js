@@ -1,4 +1,4 @@
-// session-store.js —— Session 与 TabBinding 存储层（Phase 3.4 Step F8 Step 2）
+// session-store.js —— Session 与 TabBinding 存储层（Phase 3.5 Step 2-F）
 // 职责：webRagSessions / webRagSession_<id> / webRagTabBindings 的读写与配额。
 // 禁止：Side Panel / Popup / Background 直接操作上述 storage key。
 "use strict";
@@ -6,7 +6,7 @@
 // STORAGE_KEYS 已在 config.js 全局声明，禁止重复声明（避免页面/SW 解析失败）。
 const SESSION_PREFIX = STORAGE_KEYS.SESSION_PREFIX;
 const MAX_MESSAGES_PER_SESSION = WEB_RAG_CLIPPER_CONFIG.LIMITS.MAX_MESSAGES_PER_SESSION;
-const MAX_SESSIONS_PER_USER = WEB_RAG_CLIPPER_CONFIG.LIMITS.MAX_SESSIONS_PER_USER;
+const MAX_SESSIONS_PER_PLUGIN = WEB_RAG_CLIPPER_CONFIG.LIMITS.MAX_SESSIONS_PER_PLUGIN;
 
 function newId() {
   return Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 10);
@@ -38,11 +38,11 @@ const sessionStore = (() => {
       await setTabBindingsMap(map);
     }
   }
-  async function clearTabBindingsByUser(userId) {
+  async function clearTabBindingsByPlugin(pluginId) {
     const map = await getTabBindingsMap();
     let changed = false;
     for (const key of Object.keys(map)) {
-      if (map[key] && map[key].userId === userId) {
+      if (map[key] && map[key].pluginId === pluginId) {
         delete map[key];
         changed = true;
       }
@@ -63,11 +63,11 @@ const sessionStore = (() => {
     const stored = await chrome.storage.local.get(SESSION_PREFIX + sessionId);
     return stored[SESSION_PREFIX + sessionId] || null;
   }
-  async function createSession(userId, metadata) {
+  async function createSession(pluginId, metadata) {
     const now = Date.now();
     const session = {
       sessionId: newId(),
-      userId: userId,
+      pluginId: pluginId,
       title: (metadata && metadata.title) || "新会话",
       createdAt: now,
       updatedAt: now,
@@ -86,7 +86,7 @@ const sessionStore = (() => {
       await chrome.storage.local.set({ [SESSION_PREFIX + session.sessionId]: session });
       const index = await getSessionIndex();
       index[session.sessionId] = {
-        userId: session.userId,
+        pluginId: session.pluginId,
         title: session.title,
         createdAt: session.createdAt,
         updatedAt: session.updatedAt,
@@ -108,27 +108,28 @@ const sessionStore = (() => {
       await setSessionIndex(index);
     }
   }
-  async function getSessionsByUser(userId) {
+  async function getSessionsByPlugin(pluginId) {
     const index = await getSessionIndex();
-    const ids = Object.keys(index).filter((id) => index[id] && index[id].userId === userId);
+    const ids = Object.keys(index).filter((id) => index[id] && index[id].pluginId === pluginId);
     const sessions = [];
     for (const id of ids) {
       const s = await getSession(id);
-      if (s && s.userId === userId) sessions.push(s);
+      // 旧版（Phase 3.4）session 只有 userId 无 pluginId → 视为 legacy，不加载到任何 Plugin Workspace
+      if (s && s.pluginId === pluginId) sessions.push(s);
     }
     sessions.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
     return sessions;
   }
-  // 每用户最多 MAX_SESSIONS_PER_USER；超过删除 updatedAt 最小的旧 session（跳过 keepSessionId）
-  async function enforceSessionLimit(userId, keepSessionId) {
+  // 每插件最多 MAX_SESSIONS_PER_PLUGIN；超过删除 updatedAt 最小的旧 session（跳过 keepSessionId）
+  async function enforceSessionLimit(pluginId, keepSessionId) {
     const index = await getSessionIndex();
-    const userSessions = Object.keys(index)
-      .filter((id) => index[id] && index[id].userId === userId)
+    const pluginSessions = Object.keys(index)
+      .filter((id) => index[id] && index[id].pluginId === pluginId)
       .sort((a, b) => (index[a].updatedAt || 0) - (index[b].updatedAt || 0));
-    const excess = userSessions.length - MAX_SESSIONS_PER_USER;
+    const excess = pluginSessions.length - MAX_SESSIONS_PER_PLUGIN;
     if (excess <= 0) return;
     let removed = 0;
-    for (const id of userSessions) {
+    for (const id of pluginSessions) {
       if (removed >= excess) break;
       if (id === keepSessionId) continue;
       await deleteSession(id);
@@ -136,17 +137,45 @@ const sessionStore = (() => {
     }
   }
 
+  // ------------------------------------------------------------ current session (Phase 3.6 Step 2-H)
+  // 每个 Plugin Workspace 只有一个当前 Session（全局聊天）。
+  // Tab 切换不改变 currentSessionId，只有用户点击"+"才创建新 Session。
+  async function getCurrentSessionMap() {
+    const stored = await chrome.storage.local.get(STORAGE_KEYS.CURRENT_SESSION);
+    return stored[STORAGE_KEYS.CURRENT_SESSION] || {};
+  }
+  async function getCurrentSessionId(pluginId) {
+    if (!pluginId) return null;
+    const map = await getCurrentSessionMap();
+    return map[pluginId] || null;
+  }
+  async function setCurrentSessionId(pluginId, sessionId) {
+    if (!pluginId) return;
+    const map = await getCurrentSessionMap();
+    map[pluginId] = sessionId;
+    await chrome.storage.local.set({ [STORAGE_KEYS.CURRENT_SESSION]: map });
+  }
+  async function clearCurrentSessionId(pluginId) {
+    if (!pluginId) return;
+    const map = await getCurrentSessionMap();
+    delete map[pluginId];
+    await chrome.storage.local.set({ [STORAGE_KEYS.CURRENT_SESSION]: map });
+  }
+
   return {
     newId,
     getTabBinding,
     setTabBinding,
     removeTabBinding,
-    clearTabBindingsByUser,
+    clearTabBindingsByPlugin,
     getSession,
     createSession,
     saveSession,
     deleteSession,
-    getSessionsByUser,
+    getSessionsByPlugin,
     enforceSessionLimit,
+    getCurrentSessionId,
+    setCurrentSessionId,
+    clearCurrentSessionId,
   };
 })();

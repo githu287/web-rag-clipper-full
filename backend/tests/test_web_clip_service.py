@@ -1,11 +1,11 @@
 """
-WebClipService 单元测试（Phase 3.1 Step 3；Phase 3.4 Step C user-aware）。
+WebClipService 单元测试（Phase 3.1 Step 3；Phase 3.5 Step 2-E workspace-aware）。
 
-Phase 3.4 Step C 变更：
-  - clip(url, raw_text, user_id, title=None)：user_id 必填（显式传入，服务内不生成）；
-  - create_document 以 user_id=user_id 落库；
-  - ingest_document(document.id, chunks, user_id=user_id)；
-  - get_document(document.id, user_id)。
+Phase 3.5 Step 2-E 变更（user_id → plugin_id）：
+  - clip(url, raw_text, plugin_id, title=None)：plugin_id 必填（显式传入，服务内不生成）；
+  - create_document 以 plugin_id=plugin_id 落库；
+  - ingest_document(document.id, chunks, plugin_id=plugin_id)；
+  - get_document(document.id, plugin_id)。
 
 技术栈：unittest + unittest.mock（Mock(spec=...)），不依赖真实 MySQL/Milvus/百炼。
 
@@ -119,7 +119,7 @@ class WebClipServiceTest(unittest.TestCase):
             self.service.clip(
                 url="https://example.com/article/1",
                 raw_text="网页正文纯文本",
-                user_id=1,
+                plugin_id="plugin-a",
                 title="示例文章",
             )
         )
@@ -128,7 +128,7 @@ class WebClipServiceTest(unittest.TestCase):
         self.document_repo.create_document.assert_called_once_with(
             filename=_WEB_CLIP_FILENAME,
             file_path=_WEB_CLIP_FILE_PATH,
-            user_id=1,
+            plugin_id="plugin-a",
             title="示例文章",
             url="https://example.com/article/1",
             source_type=DocumentSourceType.WEBPAGE,
@@ -139,10 +139,10 @@ class WebClipServiceTest(unittest.TestCase):
         )
         self.chunker.split.assert_called_once_with("网页正文纯文本")
         self.ingest_service.ingest_document.assert_awaited_once_with(
-            1, ["chunk-1", "chunk-2"], user_id=1, api_key=None
+            1, ["chunk-1", "chunk-2"], plugin_id="plugin-a", api_key=None
         )
-        # 3) 终态读取（user-aware）
-        self.document_repo.get_document.assert_called_once_with(1, 1)
+        # 3) 终态读取（workspace-aware）
+        self.document_repo.get_document.assert_called_once_with(1, "plugin-a")
         self.assertIs(result, success)
         # 4) 失败路径未触发
         self.document_repo.update_failure.assert_not_called()
@@ -169,7 +169,7 @@ class WebClipServiceTest(unittest.TestCase):
             self.service.clip(
                 url="https://example.com/a",
                 raw_text="hello world",
-                user_id=1,
+                plugin_id="plugin-a",
             )
         )
 
@@ -180,7 +180,7 @@ class WebClipServiceTest(unittest.TestCase):
         )
         self.document_repo.create_document.assert_called_once()
         self.ingest_service.ingest_document.assert_awaited_once_with(
-            1, ["chunk-1", "chunk-2"], user_id=1, api_key=None
+            1, ["chunk-1", "chunk-2"], plugin_id="plugin-a", api_key=None
         )
 
     # ---------------------------------------------- 3. Chunker 失败（状态机回归）
@@ -197,7 +197,7 @@ class WebClipServiceTest(unittest.TestCase):
                 self.service.clip(
                     url="https://example.com/a",
                     raw_text="hello world",
-                    user_id=1,
+                    plugin_id="plugin-a",
                 )
             )
 
@@ -227,7 +227,7 @@ class WebClipServiceTest(unittest.TestCase):
                 self.service.clip(
                     url="https://example.com/a",
                     raw_text="hello world",
-                    user_id=1,
+                    plugin_id="plugin-a",
                 )
             )
 
@@ -245,7 +245,7 @@ class WebClipServiceTest(unittest.TestCase):
                 self.service.clip(
                     url="https://example.com/a",
                     raw_text="hello world",
-                    user_id=1,
+                    plugin_id="plugin-a",
                 )
             )
 
@@ -265,7 +265,7 @@ class WebClipServiceTest(unittest.TestCase):
             self.service.clip(
                 url="https://example.com/a",
                 raw_text="hello",
-                user_id=1,
+                plugin_id="plugin-a",
             )
         )
 
@@ -289,7 +289,7 @@ class WebClipServiceTest(unittest.TestCase):
             self.service.clip(
                 url="https://example.com/article/123",
                 raw_text="hello",
-                user_id=1,
+                plugin_id="plugin-a",
                 title="我的文章标题",
             )
         )
@@ -319,7 +319,7 @@ class WebClipServiceTest(unittest.TestCase):
             self.service.clip(
                 url="https://example.com/a",
                 raw_text="hello",
-                user_id=1,
+                plugin_id="plugin-a",
             )
         )
         self.assertEqual(
@@ -335,7 +335,7 @@ class WebClipServiceTest(unittest.TestCase):
             self.service.clip(
                 url="https://example.com/a",
                 raw_text="hello",
-                user_id=1,
+                plugin_id="plugin-a",
                 title=None,
             )
         )
@@ -356,7 +356,7 @@ class WebClipServiceTest(unittest.TestCase):
                 self.service.clip(
                     url="https://example.com/a",
                     raw_text="hello world",
-                    user_id=1,
+                    plugin_id="plugin-a",
                 )
             )
         # 抛出的仍是原始 Chunker 异常（不被 update_failure 覆盖）
@@ -373,7 +373,7 @@ class WebClipServiceTest(unittest.TestCase):
                 self.service.clip(
                     url="https://example.com/a",
                     raw_text="hello world",
-                    user_id=1,
+                    plugin_id="plugin-a",
                 )
             )
         self.assertIs(cm.exception, original_error)

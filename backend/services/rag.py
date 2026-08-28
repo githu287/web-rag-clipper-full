@@ -22,16 +22,15 @@ Phase 3.1 Step 3（WebClip metadata）：
     RagService 已持有的 document_map[page_id] Document 对象，不新增 SQL / N+1；
     RAG filtering / candidate_limit / orphan filter 均未改动。
 
-Phase 3.4 Step D（user-aware 身份传递）：
-    search() 新增 user_id 与 api_key 参数：
-      - user_id：ownership 约束 —— get_documents_by_ids(page_ids, user_id)
-        在 SQL 层完成用户归属过滤（Step C 已实现），跨用户候选不会进入
-        SUCCESS 集合；Router 层必传 current_user.id。
-      - api_key：query embedding 使用当前用户自己的百炼 API Key（AuthService
-        decrypt_api_key 解密后传入；Phase 3.4 Step F6：必填，严禁回退
-        settings.bailian_api_key）。
-    本步骤只完成身份传递与 ownership 约束；「get_success_document_ids +
-    Milvus expr user 过滤」属后续 RAG 隔离步骤，本步骤不做 Milvus user isolation。
+Phase 3.5 Step 2-E（workspace-aware 身份传递）：
+    search() 参数 user_id 已迁移为 plugin_id（与 DocumentRepository
+    plugin_id 化一致）：
+      - plugin_id：ownership 约束 —— get_documents_by_ids(page_ids, plugin_id)
+        在 SQL 层完成 Workspace 归属过滤，跨 Workspace 候选不会进入
+        SUCCESS 集合；Router 层必传 current_plugin.plugin_id。
+      - api_key：query embedding 使用当前插件工作空间自己的百炼 API Key
+        （PluginService.decrypt_api_key 解密后传入；Phase 3.4 Step F6：
+        必填，严禁回退 settings.bailian_api_key）。
 
 依赖注入：
     - EmbeddingClient：query 文本 → embedding 向量
@@ -104,7 +103,7 @@ class RagService:
         query: str,
         limit: int = 5,
         document_id: int | None = None,
-        user_id: int | None = None,
+        plugin_id: str | None = None,
         api_key: str | None = None,
     ) -> list[RagSearchResult]:
         """
@@ -135,25 +134,25 @@ class RagService:
                   5 个检索字段 + document_id / filename / status / created_at）。
                   过滤后不足 limit 时直接返回，不二次召回。
 
-        Phase 3.4 Step D：新增 user_id 与 api_key —— user_id 用于
-        get_documents_by_ids(page_ids, user_id) 的 SQL 层归属过滤（ownership
-        约束，Router 必传）；api_key 用于 query embedding（用户自己的 Key，
-        None 回退测试 Key）。
+        Phase 3.5 Step 2-E：参数 user_id 已迁移为 plugin_id（与 DocumentRepository
+        契约一致）——plugin_id 用于 get_documents_by_ids(page_ids, plugin_id) 的
+        SQL 层归属过滤（workspace ownership 约束，Router 必传）；api_key 用于
+        query embedding（当前插件工作空间自己的 Key，None 回退测试 Key）。
 
-        Phase 3.4 Step E（RAG 检索用户隔离）：
+        RAG 检索 Workspace 隔离（Phase 3.4 Step E 的 user 隔离迁移为 plugin 隔离）：
             - 全部知识库模式（document_id is None）：
-                1) user_id 为 None → 禁止匿名访问，直接返回 []（绝不查库）；
-                2) success_ids = DocumentRepository.get_success_document_ids(user_id)
-                   （SQL 层 user_id + SUCCESS 双条件过滤；严禁先查全部文档再 Python 过滤）；
+                1) plugin_id 为 None → 禁止匿名访问，直接返回 []（绝不查库）；
+                2) success_ids = DocumentRepository.get_success_document_ids(plugin_id)
+                   （SQL 层 plugin_id + SUCCESS 双条件过滤；严禁先查全部文档再 Python 过滤）；
                 3) success_ids 为空 → 返回 []，不调用 Milvus；
                 4) Milvus search 携带 expr = "page_id in [...]"（Milvus 侧收敛召回）；
                 5) 应用层最终兜底 candidate.page_id in success_ids（双保险）。
             - 当前网页模式（document_id is not None）：
-                1) get_document(document_id, user_id) 前置校验：不存在 / 跨用户 →
-                   DocumentNotFoundError（404）；非 SUCCESS → DocumentNotSuccessError（409）；
+                1) get_document(document_id, plugin_id) 前置校验：不存在 / 跨 Workspace
+                   → DocumentNotFoundError（404）；非 SUCCESS → DocumentNotSuccessError（409）；
                 2) Milvus search 携带 expr = "page_id == {document_id}"；
                 3) 应用层最终兜底 candidate.page_id == document_id。
-            权限判断必须是 document_id + user_id 同时进入 Repository ownership check，
+            权限判断必须是 document_id + plugin_id 同时进入 Repository ownership check，
             严禁仅凭 document_id 判断。
 
         Args:
@@ -161,10 +160,10 @@ class RagService:
             limit: 最终返回结果数上限；默认 5（硬编码；.env 的 RAG_TOP_K 为未来预留配置，
                    当前不读取），范围 [1, 20]。
             document_id: 可选；指定后仅返回该 Document（page_id）的检索结果
-                （当前网页模式，需归属当前用户）；None = 全部知识库模式。
-            user_id: 当前用户 ID（Phase 3.4 Step D/E；ownership 隔离；全库模式必传，
-                None 时全库模式直接返回 []，禁止匿名访问）。
-            api_key: 用户自己的百炼 API Key（Phase 3.4 Step D；None 回退测试 Key）。
+                （当前网页模式，需归属当前插件工作空间）；None = 全部知识库模式。
+            plugin_id: 当前插件工作空间 ID（Phase 3.5 Step 2-E；workspace 隔离；
+                全库模式必传，None 时全库模式直接返回 []，禁止匿名访问）。
+            api_key: 插件工作空间自己的百炼 API Key（Phase 3.4 Step D；None 回退测试 Key）。
 
         Returns:
             按 COSINE similarity 降序（最相似在前；保持 Milvus 返回顺序，不做二次排序）
@@ -188,12 +187,12 @@ class RagService:
         # ---------------------------------------------------------- Step 2: Milvus candidate retrieval
         # Phase 3.4 Step E：RAG 检索按用户隔离，构造 Milvus expr。
         if document_id is not None:
-            # 当前网页模式：document_id + user_id 一起进入 ownership check（Step C 已
-            # 实现 get_document(document_id, user_id) SQL 层归属过滤）。
-            document = self._documents.get_document(document_id, user_id)
+            # 当前网页模式：document_id + plugin_id 一起进入 ownership check（Step C 已
+            # 实现 get_document(document_id, plugin_id) SQL 层归属过滤）。
+            document = self._documents.get_document(document_id, plugin_id)
             if document is None:
                 raise DocumentNotFoundError(
-                    f"Document {document_id} 不存在或不属于当前用户"
+                    f"Document {document_id} 不存在或不属于当前插件工作空间"
                 )
             if document.status != DocumentStatus.SUCCESS:
                 raise DocumentNotSuccessError(
@@ -203,22 +202,22 @@ class RagService:
             candidate_limit: int = max(limit * 4, 40)
             expr: str = f"page_id == {document_id}"
         else:
-            # 全部知识库模式：禁止匿名访问——user_id 只能来自后端认证上下文，
+            # 全部知识库模式：禁止匿名访问——plugin_id 只能来自后端认证上下文，
             # 绝不允许客户端传入。None 时直接返回 []（不查库、不调用 Milvus）。
-            if user_id is None:
+            if plugin_id is None:
                 logger.warning(
-                    "RagService.search: 全部知识库模式缺少 user_id，"
+                    "RagService.search: 全部知识库模式缺少 plugin_id，"
                     "拒绝匿名访问并返回空结果"
                 )
                 return []
             # success_ids 必须来自 Repository 的 get_success_document_ids（SQL 层
-            # user_id + SUCCESS 双条件过滤，严禁先查全部文档再 Python 过滤）。
-            success_ids: list[int] = self._documents.get_success_document_ids(user_id)
+            # plugin_id + SUCCESS 双条件过滤，严禁先查全部文档再 Python 过滤）。
+            success_ids: list[int] = self._documents.get_success_document_ids(plugin_id)
             if not success_ids:
                 logger.info(
-                    "RagService.search: 用户 %d 无 SUCCESS document，"
+                    "RagService.search: 插件工作空间 %s 无 SUCCESS document，"
                     "返回空结果（不调用 Milvus）",
-                    user_id,
+                    plugin_id,
                 )
                 return []
             candidate_limit = max(limit, _MILVUS_SEARCH_CANDIDATE_LIMIT)
@@ -248,8 +247,8 @@ class RagService:
         page_ids: list[int] = list(dict.fromkeys(c.page_id for c in candidates))
 
         # 3.2 一次批量反查 Document（空 page_ids 已被上方 candidates 空判断短路）。
-        # Phase 3.4 Step D：SQL 层 user_id 归属过滤（Step C 已实现契约）。
-        documents = self._documents.get_documents_by_ids(page_ids, user_id)
+        # Phase 3.5 Step 2-E：SQL 层 plugin_id 归属过滤（契约已 plugin_id 化）。
+        documents = self._documents.get_documents_by_ids(page_ids, plugin_id)
 
         # 3.3 只保留 SUCCESS；FAILED / DELETING / PENDING / PROCESSING 全部过滤；
         #     不存在的 Document（孤儿 chunk）因不在 success 集合中也被过滤。
@@ -273,11 +272,11 @@ class RagService:
             len(filtered),
         )
 
-        # ---------------------------------------------------------- Step 3.6: 用户隔离最终兜底（Phase 3.4 Step E）
+        # ---------------------------------------------------------- Step 3.6: Workspace 隔离最终兜底（Phase 3.5 Step 2-E）
         # 应用层双保险（Milvus expr 之外的最终防线）：
         #   - 当前网页模式：仅保留 candidate.page_id == document_id；
         #   - 全部知识库模式：仅保留 candidate.page_id in success_ids
-        #     （即使 Milvus / MySQL 出现异常返回，也绝不允许跨用户候选泄漏）。
+        #     （即使 Milvus / MySQL 出现异常返回，也绝不允许跨 Workspace 候选泄漏）。
         if document_id is not None:
             filtered = [c for c in filtered if c.page_id == document_id]
             logger.info(
@@ -288,8 +287,8 @@ class RagService:
         else:
             filtered = [c for c in filtered if c.page_id in success_ids]
             logger.info(
-                "RagService.search: 用户 %d success_ids=%r 最终兜底后候选=%d",
-                user_id,
+                "RagService.search: 插件工作空间 %s success_ids=%r 最终兜底后候选=%d",
+                plugin_id,
                 success_ids,
                 len(filtered),
             )

@@ -28,31 +28,21 @@ import logging
 from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from .api.routers import auth as auth_router_module
 from .api.routers import clips as clips_router_module
 from .api.routers import documents as documents_router_module
 from .api.routers import ingest as ingest_router_module
+from .api.routers import plugins as plugins_router_module
 from .api.routers import rag as rag_router_module
-from .api.routers import users as users_router_module
 from .clients.embedding import EmbeddingClientError
 from .clients.llm import LLMClientError
 from .core.di import get_milvus_initializer
 from .core.exceptions import (
-    ApiKeyAlreadyRegisteredError,
-    ApiKeyInvalidError,
     ApiKeyNotConfiguredError,
     ApiKeyValidationError,
-    AuthenticationError,
-    AuthOperationError,
-    DisabledUserError,
-    InvalidCredentialsError,
-    PasswordPolicyError,
-    UsernameAlreadyExistsError,
     DocumentChunkingError,
-    DocumentFileEmptyError,
     DocumentFileTooLargeError,
     DocumentNotFoundError,
     DocumentNotSuccessError,
@@ -66,8 +56,13 @@ from .core.exceptions import (
     MilvusRepositoryError,
     SecurityConfigurationError,
     SecurityDecryptionError,
-    UserNotFoundError,
-    UserOperationError,
+    PluginDeleteConfirmationError,
+    PluginDisabledError,
+    PluginError,
+    PluginNameTakenError,
+    PluginNameValidationError,
+    PluginNotFoundError,
+    PluginRepositoryError,
 )
 
 logger: logging.Logger = logging.getLogger(__name__)
@@ -116,9 +111,9 @@ def create_app() -> FastAPI:
     装配步骤：
         1) 创建 FastAPI 实例（绑定 lifespan）；
         2) 注册全局异常处理器（MilvusRepositoryError / EmbeddingClientError → HTTPException；
-           Phase 3.4 Step 4 新增 Auth / User / Security 异常 handler）；
-        3) include_router 注册 ingest + rag + documents + clips + auth + users
-           （Phase 3.4 Step 4 认证 / 用户 / API Key 配置）路由器。
+           Plugin 异常 handler 与 Security 异常 handler）；
+        3) include_router 注册 ingest + rag + documents + clips + plugins
+           （Phase 3.5 Step 2-D Plugin Workspace 身份体系）路由器。
 
     严格不执行：
         - 不在 import 阶段创建 FastAPI 实例（由调用方 / uvicorn 显式调用 create_app()）；
@@ -143,8 +138,7 @@ def create_app() -> FastAPI:
     app.include_router(rag_router_module.router)
     app.include_router(documents_router_module.router)
     app.include_router(clips_router_module.router)
-    app.include_router(auth_router_module.router)  # Phase 3.4 Step 4：认证体系
-    app.include_router(users_router_module.router)  # Phase 3.4 Step 4：用户信息 / API Key 配置
+    app.include_router(plugins_router_module.router)  # Phase 3.5 Step 2-D：Plugin Workspace 身份体系
 
     return app
 
@@ -167,18 +161,13 @@ def _register_exception_handlers(app: FastAPI) -> None:
         - DocumentStorageError 族 → 400（路径穿越）/ 500（存储 IO 失败）
         - DocumentParserError 族 → 400（不支持扩展名，防御）/ 500（读取失败）
         - DocumentChunkingError 族 → 500（切分内部错误）
-        - AuthenticationError → 401（token 无效 / 缺失，Phase 3.4 Step 4）
-        - ApiKeyInvalidError → 401 / ApiKeyAlreadyRegisteredError → 409（旧 API Key
-          身份模型；F-REV3 后不再被新代码抛出，F5 清理阶段统一移除）
-        - InvalidCredentialsError → 401（username 不存在 / 密码错误，统一语义，F-REV3）
-        - DisabledUserError → 403（账号被禁用，F-REV3）
-        - UsernameAlreadyExistsError → 409（注册重名，F-REV3）
-        - PasswordPolicyError → 422（密码强度不满足，F-REV3）
-        - ApiKeyValidationError → 400（API Key 验证失败，F-REV3）
-        - ApiKeyNotConfiguredError → 409（未配置 API Key，F-REV3）
-        - AuthOperationError / UserOperationError → 503（用户数据服务问题，Phase 3.4 Step 4）
-        - UserNotFoundError → 404（用户不存在，Phase 3.4 Step 4）
+        - ApiKeyValidationError → 400（API Key 验证失败，PluginService 抛出）
+        - ApiKeyNotConfiguredError → 409（未配置 API Key，PluginService 抛出）
         - SecurityConfigurationError / SecurityDecryptionError → 500（安全配置 / 解密失败）
+        - PluginError 族 → 401 / 403 / 409 / 422 / 400（Plugin 业务错误，
+          Phase 3.5 Step 2-D 新增）
+        - PluginNotFoundError → 401（Plugin 认证语义）/ PluginOperationError → 503
+          （Plugin 数据服务问题，Phase 3.5 Step 2-D 新增）
 
     严格不吞未知异常：
         - 其他 Exception 不在本处理器范围内，由 FastAPI 默认机制转 500 Internal Server Error；
@@ -444,241 +433,17 @@ def _register_exception_handlers(app: FastAPI) -> None:
             },
         )
 
-    @app.exception_handler(AuthenticationError)
-    async def handle_authentication_error(
-        request: Request,
-        exc: AuthenticationError,
-    ) -> JSONResponse:
-        """
-        AuthenticationError → 401 Unauthorized（Phase 3.4 Step 4 新增）。
-
-        触发场景（backend/api/deps.py get_current_user）：
-            - Authorization 头缺失 / 非 "Bearer <token>" 格式 / token 为空；
-            - token 无效 / 已过期 / 已轮换（users.token_hash 查不到）；
-            - 用户被禁用（status != ACTIVE）。
-
-        处理策略：不可重试（客户端需重新登录获取有效 token）。
-        错误消息不含任何 token 片段。
-        """
-        logger.warning("AuthenticationError -> 401: %s", exc)
-        return JSONResponse(
-            status_code=401,
-            content={
-                "detail": f"认证失败：{exc}",
-                "type": type(exc).__name__,
-            },
-        )
-
-    @app.exception_handler(ApiKeyInvalidError)
-    async def handle_api_key_invalid_error(
-        request: Request,
-        exc: ApiKeyInvalidError,
-    ) -> JSONResponse:
-        """
-        ApiKeyInvalidError → 401 Unauthorized（Phase 3.4 Step 4 新增）。
-
-        触发场景（UserService.login / register / update_api_key）：
-            - api_key 为空 / 全空白；
-            - login 时该 API Key 未注册；
-            - 用户被禁用（DISABLED）。
-
-        处理策略：不可重试（输入凭据本身无效），客户端应检查 API Key 后重试。
-        不泄露「该 Key 是否存在」之外的信息。
-        """
-        logger.warning("ApiKeyInvalidError -> 401: %s", exc)
-        return JSONResponse(
-            status_code=401,
-            content={
-                "detail": f"API Key 无效：{exc}",
-                "type": type(exc).__name__,
-            },
-        )
-
-    @app.exception_handler(ApiKeyAlreadyRegisteredError)
-    async def handle_api_key_already_registered_error(
-        request: Request,
-        exc: ApiKeyAlreadyRegisteredError,
-    ) -> JSONResponse:
-        """
-        ApiKeyAlreadyRegisteredError → 409 Conflict（Phase 3.4 Step 4 新增）。
-
-        触发场景（UserService.register）：
-            - 该 API Key 已注册（客户端应改用 POST /auth/login）。
-
-        处理策略：不可重试；409 语义明确引导客户端切换登录流程。
-        """
-        logger.warning("ApiKeyAlreadyRegisteredError -> 409: %s", exc)
-        return JSONResponse(
-            status_code=409,
-            content={
-                "detail": f"注册冲突：{exc}",
-                "type": type(exc).__name__,
-            },
-        )
-
-    @app.exception_handler(AuthOperationError)
-    async def handle_auth_operation_error(
-        request: Request,
-        exc: AuthOperationError,
-    ) -> JSONResponse:
-        """
-        AuthOperationError → 503 Service Unavailable（Phase 3.4 Step 4 新增）。
-
-        触发场景（UserService 包装转发 UserOperationError）：
-            - users 表 SQL 执行异常（连接 / 超时 / 唯一约束冲突）。
-
-        与 DocumentOperationError → 503 风格对齐（外部数据服务问题）。
-        """
-        logger.exception("AuthOperationError: %s", exc)
-        return JSONResponse(
-            status_code=503,
-            content={
-                "detail": f"认证服务异常：{exc}",
-                "type": type(exc).__name__,
-            },
-        )
-
-    @app.exception_handler(UserNotFoundError)
-    async def handle_user_not_found(
-        request: Request,
-        exc: UserNotFoundError,
-    ) -> JSONResponse:
-        """
-        UserNotFoundError → 404 Not Found（Phase 3.4 Step 4 新增）。
-
-        触发场景：
-            - update_api_key / update_token 时 user_id 不存在。
-              （get_current_user 已保证 user 存在，正常流程不可达；防御兜底）
-
-        处理策略：不可重试（重试仍不存在）。
-        """
-        logger.exception("UserNotFoundError: %s", exc)
-        return JSONResponse(
-            status_code=404,
-            content={
-                "detail": f"用户不存在：{exc}",
-                "type": type(exc).__name__,
-            },
-        )
-
-    @app.exception_handler(UserOperationError)
-    async def handle_user_operation_error(
-        request: Request,
-        exc: UserOperationError,
-    ) -> JSONResponse:
-        """
-        UserOperationError → 503 Service Unavailable（Phase 3.4 Step 4 新增）。
-
-        与 DocumentOperationError → 503 风格对齐（users 表外部数据服务问题）。
-        """
-        logger.exception("UserOperationError: %s", exc)
-        return JSONResponse(
-            status_code=503,
-            content={
-                "detail": f"用户数据服务异常：{exc}",
-                "type": type(exc).__name__,
-            },
-        )
-
-    @app.exception_handler(UsernameAlreadyExistsError)
-    async def handle_username_already_exists_error(
-        request: Request,
-        exc: UsernameAlreadyExistsError,
-    ) -> JSONResponse:
-        """
-        UsernameAlreadyExistsError → 409 Conflict（F-REV3 新增）。
-
-        触发场景（UserService.register）：username 已被注册
-        （客户端应改用 POST /auth/login）。
-        处理策略：不可重试；错误消息只含 username（不含任何凭据）。
-        """
-        logger.warning("UsernameAlreadyExistsError -> 409: %s", exc)
-        return JSONResponse(
-            status_code=409,
-            content={
-                "detail": f"用户名已存在：{exc}",
-                "type": type(exc).__name__,
-            },
-        )
-
-    @app.exception_handler(InvalidCredentialsError)
-    async def handle_invalid_credentials_error(
-        request: Request,
-        exc: InvalidCredentialsError,
-    ) -> JSONResponse:
-        """
-        InvalidCredentialsError → 401 Unauthorized（F-REV3 新增）。
-
-        触发场景（UserService.login）：
-            - username 不存在；
-            - password 错误。
-        两者返回完全相同的语义（防用户枚举），错误消息统一
-        "invalid username or password"，不含具体差异。
-        """
-        logger.warning("InvalidCredentialsError -> 401: %s", exc)
-        return JSONResponse(
-            status_code=401,
-            content={
-                "detail": f"登录失败：{exc}",
-                "type": type(exc).__name__,
-            },
-        )
-
-    @app.exception_handler(DisabledUserError)
-    async def handle_disabled_user_error(
-        request: Request,
-        exc: DisabledUserError,
-    ) -> JSONResponse:
-        """
-        DisabledUserError → 403 Forbidden（F-REV3 新增）。
-
-        触发场景：
-            - login 时用户 status != ACTIVE；
-            - 已登录用户 token 对应账号被禁用。
-        处理策略：不可重试；客户端应提示账号状态异常（联系管理员 / 重新注册）。
-        """
-        logger.warning("DisabledUserError -> 403: %s", exc)
-        return JSONResponse(
-            status_code=403,
-            content={
-                "detail": f"账号已被禁用：{exc}",
-                "type": type(exc).__name__,
-            },
-        )
-
-    @app.exception_handler(PasswordPolicyError)
-    async def handle_password_policy_error(
-        request: Request,
-        exc: PasswordPolicyError,
-    ) -> JSONResponse:
-        """
-        PasswordPolicyError → 422 Unprocessable Entity（F-REV3 新增）。
-
-        触发场景（UserService.register）：
-            - 密码长度 < 8 / > 128；
-            - 未包含大写 / 小写 / 数字等强度要求。
-        处理策略：不可重试；客户端按规则提示后重试。
-        """
-        logger.warning("PasswordPolicyError -> 422: %s", exc)
-        return JSONResponse(
-            status_code=422,
-            content={
-                "detail": f"密码不符合要求：{exc}",
-                "type": type(exc).__name__,
-            },
-        )
-
     @app.exception_handler(ApiKeyValidationError)
     async def handle_api_key_validation_error(
         request: Request,
         exc: ApiKeyValidationError,
     ) -> JSONResponse:
         """
-        ApiKeyValidationError → 400 Bad Request（F-REV3 新增）。
+        ApiKeyValidationError → 400 Bad Request。
 
-        触发场景（UserService.update_api_key）：
+        触发场景（PluginService.update_api_key）：
             - api_key 为空；
-            - 用「用户提交的 Key」调百炼最小 embedding 验证失败。
+            - 用「Plugin 提交的 Key」调百炼最小 embedding 验证失败。
         处理策略：不可重试；客户端应检查 Key 后重试。
         错误消息不含 API Key 明文 / 片段。
         """
@@ -697,13 +462,12 @@ def _register_exception_handlers(app: FastAPI) -> None:
         exc: ApiKeyNotConfiguredError,
     ) -> JSONResponse:
         """
-        ApiKeyNotConfiguredError → 409 Conflict（F-REV3 新增）。
+        ApiKeyNotConfiguredError → 409 Conflict。
 
-        触发场景（UserService.decrypt_api_key）：
-            - 账号未配置百炼 API Key（ciphertext / nonce 为 NULL），
-              业务链路（Embedding / LLM）需要用户 Key 时返回。
-        处理策略：不可重试；客户端应引导用户前往 PUT /users/me/api-key 配置。
-        消息固定为「当前账号尚未配置阿里云百炼 API Key，请前往设置配置。」
+        触发场景（PluginService.decrypt_api_key）：
+            - Plugin 未配置百炼 API Key（ciphertext / nonce 为 NULL），
+              业务链路（Embedding / LLM）需要该 Key 时返回。
+        处理策略：不可重试；客户端应引导用户前往 PUT /plugins/me/api-key 配置。
         """
         logger.warning("ApiKeyNotConfiguredError -> 409: %s", exc)
         return JSONResponse(
@@ -750,6 +514,85 @@ def _register_exception_handlers(app: FastAPI) -> None:
             status_code=500,
             content={
                 "detail": f"API Key 解密异常：{exc}",
+                "type": type(exc).__name__,
+            },
+        )
+
+    @app.exception_handler(PluginError)
+    async def handle_plugin_error(
+        request: Request,
+        exc: PluginError,
+    ) -> JSONResponse:
+        """
+        PluginError 业务族 → 401 / 403 / 409 / 422 / 400（Phase 3.5 Step 2-D 新增）。
+
+        子类映射（统一由 PluginService 抛出）：
+            - PluginCredentialsMissingError → 401 Unauthorized
+              （X-Plugin-ID / X-Plugin-Secret 缺失）
+            - PluginSecretMismatchError     → 401 Unauthorized
+              （plugin_secret 与 plugin_secret_hash 不匹配）
+            - PluginDisabledError           → 403 Forbidden
+              （workspace status != ACTIVE）
+            - PluginNameTakenError          → 409 Conflict
+              （归一化 plugin_name 已被其他 workspace 占用）
+            - PluginNameValidationError     → 422 Unprocessable Entity
+              （名称非法：空 / 控制字符 / 字符集 / 长度）
+            - PluginDeleteConfirmationError → 400 Bad Request
+              （删除双重确认失败：confirm=False 或 plugin_name 不匹配）
+
+        4xx 属客户端错误，仅记录 warning（不产生堆栈噪音）。
+        安全：错误消息不含 plugin_id / plugin_secret 任何片段。
+        """
+        if isinstance(exc, PluginDisabledError):
+            status_code = 403
+        elif isinstance(exc, PluginNameTakenError):
+            status_code = 409
+        elif isinstance(exc, PluginNameValidationError):
+            status_code = 422
+        elif isinstance(exc, PluginDeleteConfirmationError):
+            status_code = 400
+        else:
+            status_code = 401  # PluginCredentialsMissingError / PluginSecretMismatchError
+        logger.warning("PluginError -> %s: %s", status_code, exc)
+        return JSONResponse(
+            status_code=status_code,
+            content={
+                "detail": f"插件请求失败：{exc}",
+                "type": type(exc).__name__,
+            },
+        )
+
+    @app.exception_handler(PluginRepositoryError)
+    async def handle_plugin_repository_error(
+        request: Request,
+        exc: PluginRepositoryError,
+    ) -> JSONResponse:
+        """
+        PluginRepositoryError 族 → 401 / 503（Phase 3.5 Step 2-D 新增）。
+
+        子类映射：
+            - PluginNotFoundError → 401 Unauthorized
+              （plugin_id 在 plugin_workspaces 表查不到；认证语义——
+               与 secret 不匹配同样 401，不泄露「该 plugin_id 是否存在」差异）
+            - PluginOperationError → 503 Service Unavailable
+              （plugin_workspaces 表 SQL 执行异常：连接 / 超时 / 约束冲突；
+               与 DocumentOperationError → 503 风格对齐）
+
+        401 记录 warning；503 记录 exception 完整堆栈。
+        安全：错误消息不含 plugin_id / plugin_secret 任何片段。
+        """
+        if isinstance(exc, PluginNotFoundError):
+            logger.warning("PluginNotFoundError -> 401: %s", exc)
+            status_code = 401
+            detail_prefix = "插件认证失败"
+        else:
+            logger.exception("PluginOperationError -> 503: %s", exc)
+            status_code = 503
+            detail_prefix = "插件数据服务异常"
+        return JSONResponse(
+            status_code=status_code,
+            content={
+                "detail": f"{detail_prefix}：{exc}",
                 "type": type(exc).__name__,
             },
         )

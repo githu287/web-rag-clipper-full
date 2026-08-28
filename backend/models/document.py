@@ -1,6 +1,6 @@
 """
 Document ORM 模型与状态常量（Phase 2.9 Step 1；Phase 2.11 Step 2 增 DELETING 状态；
-Phase 3.4 Step 3 user_id 升级 NOT NULL）。
+Phase 3.4 Step 3 user_id 升级 NOT NULL；Phase 3.5 Step 2-B user_id → plugin_id）。
 
 职责：
     定义 documents 表的 SQLAlchemy 2.0 ORM 映射 + DocumentStatus 状态常量集。
@@ -11,7 +11,16 @@ Phase 3.4 Step 3 user_id 升级 NOT NULL）。
       DocumentDeleteService（Phase 2.11 Step 2）编排 query_page_chunks(page_id) +
       delete_chunks(ids) 完成 Milvus 侧联动，不依赖新增 document_id 标量字段、
       不修改 Milvus Schema。
-    - 不定义 relationship（当前无外键关联表）。
+    - 不定义 relationship（当前无外键关联表；documents.plugin_id 的 FK 在 migration
+      0007 已建，ORM 仅声明 ForeignKey 约束、不声明 relationship，避免隐式查询副作用）。
+
+设计要点（Phase 3.5 Step 2-B 归属改造）：
+- 归属字段由 user_id（Integer NOT NULL）切换为 plugin_id（VARCHAR(64) NOT NULL），
+  与 migration 0007（documents.plugin_id 已回填 + NOT NULL + FK + 复合索引
+  ix_documents_plugin_id_status）严格一致；
+- plugin_id 不加单列 index（migration 0007 只建 (plugin_id, status) 复合索引）；
+- user_id 列仍在数据库保留（migration 0007 回滚安全），但 ORM 不再映射，
+  功能层归属边界一律以 plugin_id 为准。
 
 设计要点：
 1) status 字段同时给 default（Python 层）与 server_default（DB 层），保证 ORM 创建
@@ -28,7 +37,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Final
 
-from sqlalchemy import DateTime, Index, Integer, String, Text, func, text
+from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, Text, func, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .base import Base
@@ -66,17 +75,26 @@ class Document(Base):
     """documents 表 ORM：文档级元数据 source of truth。"""
 
     __tablename__ = "documents"
-    # Phase 3.4 Step 3：全库 RAG 高频路径 (user_id, status) 复合索引；与 migration 0005 对齐
+    # Phase 3.5 Step 2-B：全库 RAG 高频路径 (plugin_id, status) 复合索引；
+    # 与 migration 0007（ix_documents_plugin_id_status）对齐
     __table_args__ = (
-        Index("ix_documents_user_id_status", "user_id", "status"),
+        Index("ix_documents_plugin_id_status", "plugin_id", "status"),
     )
 
     # 主键
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
 
-    # 所属用户（Phase 3.4 Step 3：NOT NULL；存量 NULL 历史数据在 migration 0005 归并到
-    # DISABLED migration user（id=1），真实业务 user_id 一律来自 current_user.id）
-    user_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    # 所属 Plugin Workspace（Phase 3.5 Step 2-B：user_id → plugin_id；
+    # VARCHAR(64) NOT NULL，FK → plugin_workspaces.plugin_id（migration 0007 已建）；
+    # 归属边界：A 查询 B document 一律 DocumentNotFoundError，不泄漏归属信息）
+    plugin_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey(
+            "plugin_workspaces.plugin_id",
+            name="fk_documents_plugin_id_plugin_workspaces",
+        ),
+        nullable=False,
+    )
 
     # 文件名与存储路径
     filename: Mapped[str] = mapped_column(String(255), nullable=False)

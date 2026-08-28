@@ -1,75 +1,63 @@
 """
-FastAPI 依赖（Phase 3.4 Step 4 新增；F-REV3 身份重构：当前用户身份解析）。
+FastAPI 依赖（Phase 3.5 Step 2-D 新增 Plugin 身份；Step 2-H 移除旧 User 身份）。
 
-get_current_user：
-    `Authorization: Bearer <token>` → hash_token(token) → users.token_hash
-    精确查询 → 返回 User ORM。
+身份体系唯一来源：
+    get_current_plugin（Phase 3.5 Step 2-D）：
+        `X-Plugin-ID` + `X-Plugin-Secret` → PluginService.authenticate()
+        → PluginWorkspace ORM。
 
 设计要点：
-    1) 当前用户身份唯一来源：token → token_hash → users.id；
-       API Key 完全退出身份认证（不允许从 API Key 推断 user_id、
-       不允许前端传 user_id、不允许 username 作为业务权限依据）。
+    1) 当前 Plugin 身份唯一来源：X-Plugin-ID + X-Plugin-Secret；
+       API Key 完全退出身份认证（不允许从 API Key 推断 plugin_id、
+       不允许前端传 plugin_id、不允许 plugin_name 作为业务权限依据）。
     2) 只负责「请求者是谁」：API Key 解密由业务链路显式调用
-       UserService.decrypt_api_key(user)，不在本依赖内隐式执行。
-    3) 错误消息不含任何 token 片段（明文 / hash 一律不进日志）。
-    4) UserRepository 查询失败（UserOperationError）不在这里捕获，
+       PluginService.decrypt_api_key(plugin)，不在本依赖内隐式执行。
+    3) 错误消息不含任何 plugin_secret 片段（明文 / hash 一律不进日志）。
+    4) PluginRepository 查询失败（PluginOperationError）不在这里捕获，
        由 main.py 全局 handler 映射 503。
-
-异常语义（F-REV3）：
-    - token 缺失 / 格式错 / 无效 / 已轮换 → AuthenticationError(401)；
-    - 用户 DISABLED → DisabledUserError(403)。
+    5) 禁止从 plugin_name / document_id / request body / query parameter /
+       document.plugin_id / API Key 推断 Plugin 身份；
+    6) Header 缺失 → PluginCredentialsMissingError（main.py handler → 401）；
+    7) authenticate() 抛出的 PluginNotFoundError / PluginSecretMismatchError
+       （→401）、PluginDisabledError（→403）向上传播，由 main.py handler 映射。
 
 范围边界：
-    - 不检查 IP / User-Agent / 限流（未来可扩展为独立中间件）；
-    - 不轮换 token（token 轮换只发生在 /auth/login）。
+    - 不检查 IP / User-Agent / 限流（未来可扩展为独立中间件）。
 """
 
 from __future__ import annotations
 
 from fastapi import Depends, Header
 
-from ..core.di import get_user_repository
-from ..core.exceptions import AuthenticationError, DisabledUserError
-from ..core.security import hash_token
-from ..models.user import User, UserStatus
-from ..repositories.mysql.user_protocol import UserRepository
-
-_BEARER_PREFIX: str = "Bearer "
+from ..core.di import get_plugin_service
+from ..core.exceptions import PluginCredentialsMissingError
+from ..models.plugin import PluginWorkspace
+from ..services.plugin_service import PluginService
 
 
-def get_current_user(
-    authorization: str | None = Header(default=None),
-    user_repository: UserRepository = Depends(get_user_repository),
-) -> User:
+def get_current_plugin(
+    plugin_id: str | None = Header(default=None, alias="X-Plugin-ID"),
+    plugin_secret: str | None = Header(default=None, alias="X-Plugin-Secret"),
+    plugin_service: PluginService = Depends(get_plugin_service),
+) -> PluginWorkspace:
     """
-    当前用户依赖：`Authorization: Bearer <token>` → User ORM。
+    当前 Plugin 依赖：`X-Plugin-ID` + `X-Plugin-Secret` → PluginWorkspace ORM。
 
     Args:
-        authorization: 请求头 Authorization（默认 None = 未提供）。
-        user_repository: UserRepository（Protocol），DI 注入。
+        plugin_id: 请求头 X-Plugin-ID（Workspace 标识；默认 None = 未提供）。
+        plugin_secret: 请求头 X-Plugin-Secret（Workspace 认证凭证；默认 None）。
+        plugin_service: PluginService（Protocol 依赖，DI 注入）。
 
     Returns:
-        当前登录用户 ORM 对象（status = ACTIVE）。
+        认证通过的 PluginWorkspace ORM 对象（status = ACTIVE）。
 
     Raises:
-        AuthenticationError(401)：
-            - 缺少 Authorization 头 / 非 "Bearer <token>" 格式 / token 为空；
-            - token 对应 token_hash 在 users 表查不到（无效 / 已过期 / 已轮换）。
-        DisabledUserError(403)：用户 status != ACTIVE（DISABLED）。
+        PluginCredentialsMissingError(401)：X-Plugin-ID 或 X-Plugin-Secret
+            任一缺失 / 为空。
+        PluginNotFoundError(401) / PluginSecretMismatchError(401)：由
+            PluginService.authenticate 抛出（plugin_id 不存在 / secret 不匹配）。
+        PluginDisabledError(403)：workspace status != ACTIVE（DISABLED）。
     """
-    if not authorization or not authorization.startswith(_BEARER_PREFIX):
-        raise AuthenticationError(
-            "missing or invalid Authorization header (Bearer token required)"
-        )
-
-    token = authorization[len(_BEARER_PREFIX):].strip()
-    if not token:
-        raise AuthenticationError("empty bearer token")
-
-    user = user_repository.get_user_by_token_hash(hash_token(token))
-    if user is None:
-        raise AuthenticationError("invalid or expired token")
-    if user.status != UserStatus.ACTIVE:
-        raise DisabledUserError("user is disabled")
-
-    return user
+    if not plugin_id or not plugin_secret:
+        raise PluginCredentialsMissingError("plugin credentials are missing")
+    return plugin_service.authenticate(plugin_id, plugin_secret)
