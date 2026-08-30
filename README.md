@@ -104,11 +104,37 @@ uvicorn backend.main:app --host 0.0.0.0 --port 8000
 
 ## 测试
 
+在运行测试前请先确保：基础设施（Docker Compose）已启动、`.env` 已配置、数据库已初始化（`alembic upgrade head`）。
+
+### 运行方式
+
+**Windows（PowerShell）：**
 ```powershell
 .venv\Scripts\python.exe -m pytest backend/tests -v
 ```
 
-当前覆盖 23 个测试文件、476 个测试用例，全部通过。
+**类 Unix（macOS / Linux / WSL）：**
+```bash
+.venv/bin/python -m pytest backend/tests -v
+```
+
+### 推荐首次运行：快速冒烟测试（≤ 30 秒）
+第一次贡献代码时，建议先跑核心链路冒烟测试，无需等全量跑完：
+```powershell
+.venv\Scripts\python.exe -m pytest backend/tests -v -k "smoke or rag or ingest"
+```
+
+### 测试覆盖范围
+`backend/tests/` 目录按层次组织，覆盖以下核心领域（具体用例数随代码演进，以 pytest 运行输出为准）：
+
+| 类别 | 说明 |
+|------|------|
+| 单元测试 | Plugin Workspace、API Key 加解密、Chunker 切分、Document 状态机等纯逻辑 |
+| 集成测试 | Documents Ingest 全链路（上传 → 切块 → Embedding → Milvus + MySQL 入库） |
+| RAG 测试 | Milvus 检索（current / all 两种模式）、RagService 5 层隔离、Sources 返回、Answer Prompt 构造 |
+| API 测试 | 各 REST 端点的输入校验、权限 Header（X-Plugin-ID / X-Plugin-Secret）、错误响应码（404/409/401） |
+
+> 所有 RAG 相关的**质量评估**（Recall@K / Hallucination / Plugin Isolation 等基线指标）属于独立的评估体系，不放在本章节，请详见 [evaluation/datasets/DATASET_MANIFEST.md](evaluation/datasets/DATASET_MANIFEST.md)。
 
 ## 已知限制
 
