@@ -80,6 +80,7 @@ from ..services.rag import RagService
 from ..services.rag_answer import RagAnswerService
 from ..services.plugin_service import PluginService
 from ..services.web_clip import WebClipService
+from ..services.workspace_delete import WorkspaceDeleteService
 from ..storage import FileStorage, LocalFileStorage
 from .config import Settings, get_default_settings
 from .db import get_engine
@@ -740,4 +741,13 @@ def get_plugin_service() -> PluginService:
         plugin_repository=plugin_repository,
         settings=settings,
         embedding_client=embedding_client,
+    )
+
+
+@lru_cache(maxsize=1)
+def get_workspace_delete_service() -> WorkspaceDeleteService:
+    return WorkspaceDeleteService(
+        plugin_service=get_plugin_service(),
+        document_repository=get_document_repository(),
+        document_delete_service=get_document_delete_service(),
     )

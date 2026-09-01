@@ -768,6 +768,28 @@ class DocumentRepositoryImplTest(unittest.TestCase):
         """Protocol runtime_checkable：Impl 实例提供 list/count 契约。"""
         self.assertIsInstance(self.repo, DocumentRepository)
 
+    def test_get_webpage_by_url_is_exact_and_plugin_scoped(self) -> None:
+        own = self._create_webpage_doc(PLUGIN_A, "own", "https://same/page")
+        self._create_webpage_doc(PLUGIN_B, "other", "https://same/page")
+        self._create_webpage_doc(PLUGIN_A, "similar", "https://same/page?x=1")
+
+        result = self.repo.get_webpage_by_url(PLUGIN_A, "https://same/page")
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result.id, own.id)
+        self.assertEqual(result.plugin_id, PLUGIN_A)
+
+    def test_update_webpage_metadata_keeps_identity(self) -> None:
+        document = self._create_webpage_doc(PLUGIN_A, "old", "https://old")
+        updated = self.repo.update_webpage_metadata(
+            document.id, title="new", url="https://new"
+        )
+
+        self.assertEqual(updated.id, document.id)
+        self.assertEqual(updated.plugin_id, PLUGIN_A)
+        self.assertEqual(updated.title, "new")
+        self.assertEqual(updated.url, "https://new")
+
 
 if __name__ == "__main__":
     unittest.main()

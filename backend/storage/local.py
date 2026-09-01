@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import logging
 import os
+import uuid
 
 from ..core.exceptions import (
     DocumentStorageError,
@@ -70,7 +71,9 @@ class LocalFileStorage:
                 f"创建上传目录失败: {self._upload_dir}"
             ) from exc
 
-        dest_path = self._resolve(safe_name)
+        extension = os.path.splitext(safe_name)[1].lower()
+        storage_key = f"{uuid.uuid4().hex}{extension}"
+        dest_path = self._resolve(storage_key)
         try:
             with open(dest_path, "wb") as fh:
                 fh.write(data)
@@ -80,10 +83,11 @@ class LocalFileStorage:
             ) from exc
 
         logger.info(
-            "LocalFileStorage.save: filename=%s → %s", safe_name, dest_path
+            "LocalFileStorage.save: filename=%s → storage_key=%s",
+            safe_name,
+            storage_key,
         )
-        # 返回相对路径（已通过 _validate_filename / _resolve 双重校验，安全）
-        return safe_name
+        return storage_key
 
     def resolve(self, file_path: str) -> str:
         """

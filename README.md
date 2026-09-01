@@ -134,6 +134,13 @@ uvicorn backend.main:app --host 0.0.0.0 --port 8000
 | RAG 测试 | Milvus 检索（current / all 两种模式）、RagService 5 层隔离、Sources 返回、Answer Prompt 构造 |
 | API 测试 | 各 REST 端点的输入校验、权限 Header（X-Plugin-ID / X-Plugin-Secret）、错误响应码（404/409/401） |
 
+## Retrieval Evaluation Baseline
+
+`evaluation/` 已提供 Dataset 校验、占位符对齐和 Retrieval Runner，输出
+Hit@K、Recall@K、Precision@K、MRR、nDCG、隔离泄漏、延迟与错误率。
+原始 Dataset 仍保留占位符，必须先完成运行时 ID 对齐，禁止直接生成伪基线。
+完整命令见 [evaluation/README.md](evaluation/README.md)。
+
 > 所有 RAG 相关的**质量评估**（Recall@K / Hallucination / Plugin Isolation 等基线指标）属于独立的评估体系，不放在本章节，请详见 [evaluation/datasets/DATASET_MANIFEST.md](evaluation/datasets/DATASET_MANIFEST.md)。
 
 ## 已知限制

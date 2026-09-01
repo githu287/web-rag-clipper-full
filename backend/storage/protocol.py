@@ -30,7 +30,8 @@ class FileStorage(Protocol):
             data: 文件字节内容。
 
         Returns:
-            存储层内相对路径（可直接写入 Document.file_path，不含 upload_dir 前缀）。
+            存储层生成的唯一相对对象键（可直接写入 Document.file_path，
+            不含 upload_dir 前缀；不得直接复用客户端 filename）。
 
         Raises:
             DocumentStorageError: 文件名不安全 / 写入失败（含路径穿越）。

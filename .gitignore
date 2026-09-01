@@ -43,3 +43,9 @@ extension/*.zip
 
 # Runtime data: 上传文件存储根目录（config.py upload_dir，运行期数据，不进版本控制）
 uploads/
+
+# Evaluation runtime artifacts and credentials
+evaluation/private/
+evaluation/aligned/
+evaluation/aligned-document/
+evaluation/reports/

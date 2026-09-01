@@ -28,12 +28,12 @@ Plugin API 集成测试（Phase 3.5 Step 2-D 新增）。
 import unittest
 from datetime import datetime
 from types import SimpleNamespace
-from unittest.mock import Mock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 from fastapi.testclient import TestClient
 
 from backend.api.deps import get_current_plugin
-from backend.core.di import get_plugin_service
+from backend.core.di import get_plugin_service, get_workspace_delete_service
 from backend.core.exceptions import (
     ApiKeyNotConfiguredError,
     PluginDeleteConfirmationError,
@@ -100,9 +100,14 @@ class PluginApiTest(unittest.TestCase):
             updated_at=datetime(2026, 1, 1, 0, 0, 0),
         )
         self.fake_plugin_service = Mock()
+        self.fake_workspace_delete_service = Mock()
+        self.fake_workspace_delete_service.delete_workspace = AsyncMock()
         self.app = create_app()
         self.app.dependency_overrides[get_plugin_service] = (
             lambda: self.fake_plugin_service
+        )
+        self.app.dependency_overrides[get_workspace_delete_service] = (
+            lambda: self.fake_workspace_delete_service
         )
         self.app.dependency_overrides[get_current_plugin] = lambda: self.fake_plugin
         self.client = TestClient(self.app)
@@ -346,7 +351,7 @@ class PluginApiTest(unittest.TestCase):
 
     # ------------------------------------------------------------ Delete
     def test_delete_confirm_false_400(self) -> None:
-        self.fake_plugin_service.delete_workspace.side_effect = (
+        self.fake_workspace_delete_service.delete_workspace.side_effect = (
             PluginDeleteConfirmationError(
                 "workspace deletion requires confirm=True"
             )
@@ -361,7 +366,7 @@ class PluginApiTest(unittest.TestCase):
         )
 
     def test_delete_name_mismatch_400(self) -> None:
-        self.fake_plugin_service.delete_workspace.side_effect = (
+        self.fake_workspace_delete_service.delete_workspace.side_effect = (
             PluginDeleteConfirmationError("plugin name does not match")
         )
         response = self._delete_json(
@@ -379,7 +384,7 @@ class PluginApiTest(unittest.TestCase):
             {"confirm": True, "plugin_name": "My Plugin"},
         )
         self.assertEqual(response.status_code, 204)
-        self.fake_plugin_service.delete_workspace.assert_called_once_with(
+        self.fake_workspace_delete_service.delete_workspace.assert_awaited_once_with(
             plugin_id="plugin-id-1",
             confirm=True,
             plugin_name="My Plugin",

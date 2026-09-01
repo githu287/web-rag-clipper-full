@@ -368,6 +368,24 @@ class DocumentUploadServiceTest(unittest.TestCase):
         self.chunker.split.assert_not_called()
         self.ingest_service.ingest_document.assert_not_called()
 
+    def test_create_document_failure_removes_orphan_file(self) -> None:
+        original_error = DocumentRepositoryError("db unavailable")
+        self.document_repo.create_document.side_effect = original_error
+
+        with self.assertRaises(DocumentRepositoryError) as cm:
+            self.run_async(
+                self.service.upload(
+                    filename="test.txt",
+                    content=b"hello",
+                    plugin_id="plugin-a",
+                    mime_type="text/plain",
+                )
+            )
+
+        self.assertIs(cm.exception, original_error)
+        self.file_storage.delete.assert_called_once_with("abc.txt")
+        self.document_repo.update_failure.assert_not_called()
+
     # ------------------------------------------------- H. Parser 失败
     def test_parser_failure_marks_failed_and_propagates(self) -> None:
         """H：parse 抛 DocumentParserError → FAILED + error_message，ingest 不调用。"""

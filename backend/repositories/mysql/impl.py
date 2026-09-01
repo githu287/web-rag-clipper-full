@@ -46,7 +46,7 @@ from ...core.exceptions import (
     DocumentNotFoundError,
     DocumentOperationError,
 )
-from ...models.document import Document, DocumentStatus
+from ...models.document import Document, DocumentSourceType, DocumentStatus
 from .protocol import DocumentRepository, _UNSET
 
 
@@ -169,6 +169,57 @@ class DocumentRepositoryImpl(DocumentRepository):
             raise DocumentOperationError(
                 f"get_document failed: id={document_id}, "
                 f"plugin_id={plugin_id!r}, error={_db_error_brief(e)}"
+            ) from e
+
+    def get_webpage_by_url(self, plugin_id: str, url: str) -> Document | None:
+        """按 Workspace + 精确 URL 查询最新网页 Document。"""
+        try:
+            with self._session_factory() as session:
+                return (
+                    session.execute(
+                        select(Document)
+                        .where(
+                            Document.plugin_id == plugin_id,
+                            Document.source_type == DocumentSourceType.WEBPAGE,
+                            Document.url == url,
+                        )
+                        .order_by(Document.created_at.desc(), Document.id.desc())
+                    )
+                    .scalars()
+                    .first()
+                )
+        except (OperationalError, DBAPIError) as e:
+            raise DocumentOperationError(
+                f"get_webpage_by_url failed: plugin_id={plugin_id!r}, "
+                f"error={_db_error_brief(e)}"
+            ) from e
+
+    def update_webpage_metadata(
+        self,
+        document_id: int,
+        *,
+        title: str | None,
+        url: str,
+    ) -> Document:
+        """原子更新网页来源元数据。"""
+        try:
+            with self._session_factory() as session:
+                document = session.get(Document, document_id)
+                if document is None:
+                    raise DocumentNotFoundError(
+                        f"document not found: id={document_id}"
+                    )
+                document.title = title
+                document.url = url
+                session.commit()
+                session.refresh(document)
+                return document
+        except DocumentNotFoundError:
+            raise
+        except (OperationalError, IntegrityError, DBAPIError) as e:
+            raise DocumentOperationError(
+                f"update_webpage_metadata failed: id={document_id}, "
+                f"error={_db_error_brief(e)}"
             ) from e
 
     # ---------------------------------------------------------------- get_many

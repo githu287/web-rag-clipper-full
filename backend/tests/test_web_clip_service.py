@@ -64,6 +64,7 @@ class WebClipServiceTest(unittest.TestCase):
 
         # 默认成功路径返回值
         self.chunker.split.return_value = ["chunk-1", "chunk-2"]
+        self.document_repo.get_webpage_by_url.return_value = None
 
         self.service = WebClipService(
             document_repository=self.document_repo,
@@ -146,6 +147,42 @@ class WebClipServiceTest(unittest.TestCase):
         self.assertIs(result, success)
         # 4) 失败路径未触发
         self.document_repo.update_failure.assert_not_called()
+
+    def test_reclip_reuses_existing_document_id(self) -> None:
+        existing = self._make_document(
+            doc_id=42,
+            status=DocumentStatus.SUCCESS,
+            title="旧标题",
+            url="https://example.com/same",
+        )
+        updated = self._make_document(
+            doc_id=42,
+            status=DocumentStatus.SUCCESS,
+            title="新标题",
+            url="https://example.com/same",
+        )
+        self.document_repo.get_webpage_by_url.return_value = existing
+        self.document_repo.update_webpage_metadata.return_value = updated
+        self.document_repo.get_document.return_value = updated
+
+        result = self.run_async(
+            self.service.clip(
+                url="https://example.com/same",
+                raw_text="new body",
+                plugin_id="plugin-a",
+                title="新标题",
+                api_key="sk-test",
+            )
+        )
+
+        self.document_repo.create_document.assert_not_called()
+        self.document_repo.update_webpage_metadata.assert_called_once_with(
+            42, title="新标题", url="https://example.com/same"
+        )
+        self.ingest_service.ingest_document.assert_awaited_once_with(
+            42, ["chunk-1", "chunk-2"], plugin_id="plugin-a", api_key="sk-test"
+        )
+        self.assertEqual(result.id, 42)
 
     def test_state_machine_processing_before_chunker(self) -> None:
         """2：状态机顺序 —— split 执行时 PROCESSING 必须已置位（顺序哨兵）。"""

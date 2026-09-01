@@ -38,14 +38,25 @@ class LocalFileStorageTest(unittest.TestCase):
 
     # ------------------------------------------------------------ save 成功
     def test_save_success(self) -> None:
-        """保存成功：返回纯文件名，文件真实写入 upload_dir。"""
+        """保存成功：返回唯一对象键，文件真实写入 upload_dir。"""
         rel_path = self.storage.save("test.txt", b"hello world")
 
-        self.assertEqual(rel_path, "test.txt")
+        self.assertNotEqual(rel_path, "test.txt")
+        self.assertTrue(rel_path.endswith(".txt"))
         dest = os.path.join(self.upload_dir, rel_path)
         self.assertTrue(os.path.isfile(dest))
         with open(dest, "rb") as fh:
             self.assertEqual(fh.read(), b"hello world")
+
+    def test_same_filename_gets_unique_storage_keys(self) -> None:
+        first = self.storage.save("same.txt", b"first")
+        second = self.storage.save("same.txt", b"second")
+
+        self.assertNotEqual(first, second)
+        with open(self.storage.resolve(first), "rb") as fh:
+            self.assertEqual(fh.read(), b"first")
+        with open(self.storage.resolve(second), "rb") as fh:
+            self.assertEqual(fh.read(), b"second")
 
     # ------------------------------------------------------ 自动创建目录
     def test_save_creates_missing_upload_dir(self) -> None:
@@ -117,7 +128,7 @@ class LocalFileStorageTest(unittest.TestCase):
         self.assertTrue(os.path.isabs(physical))
         self.assertEqual(
             physical,
-            os.path.abspath(os.path.join(self.upload_dir, "a.txt")),
+            os.path.abspath(os.path.join(self.upload_dir, rel_path)),
         )
         self.assertTrue(physical.startswith(os.path.abspath(self.upload_dir)))
 

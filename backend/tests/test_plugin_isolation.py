@@ -286,6 +286,7 @@ class PluginIsolationServiceTest(unittest.TestCase):
 
     # ------------------------------------------- 8. WebClipService.clip
     def test_web_clip_creates_document_with_plugin_id(self) -> None:
+        self.document_repo.get_webpage_by_url.return_value = None
         """B(8)：clip 以 plugin_id 落库 create_document + ingest_document。"""
         self.document_repo.create_document.return_value = self._doc(
             1, DocumentStatus.PENDING

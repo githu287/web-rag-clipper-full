@@ -14,7 +14,7 @@
 | LLM | 百炼 `qwen-plus`（OpenAI 兼容） | RAG 问答生成 |
 | 安全 | AES-256-GCM | 用户 API Key 加密存储（`APP_MASTER_KEY` 主密钥） |
 | Redis | redis 7-alpine | compose 已部署，当前预留 |
-| 测试 | pytest | 23 个测试文件、476 个测试用例 |
+| 测试 | pytest | 25 个测试文件、487 个测试用例 |
 | 扩展 | Chrome MV3 | Side Panel + Background + Content Script |
 
 ## 系统架构
@@ -85,7 +85,7 @@
 | PUT | `/plugins/me` | 修改显示名 | 200 |
 | PUT | `/plugins/me/api-key` | 配置/更换百炼 API Key（会调百炼验证有效性） | 200 |
 | DELETE | `/plugins/me/api-key` | 清除 API Key | 204 |
-| DELETE | `/plugins/me` | 删除 Workspace（需 `confirm=true` + `plugin_name` 双重确认） | 204 |
+| DELETE | `/plugins/me` | 删除 Workspace；先清理其 Milvus chunks、上传文件和 Document，再删除 Workspace（双重确认） | 204 |
 
 ### 文档管理
 
@@ -312,7 +312,7 @@ Manifest V3 Side Panel 扩展，文件位于 `extension/`：
 │   ├── storage/                   # LocalFileStorage 本地文件存储
 │   ├── parsers/                   # TextParser 文本解析
 │   ├── chunkers/                  # RecursiveChunker 递归切块
-│   └── tests/                     # 23 个测试文件、476 个用例
+│   └── tests/                     # 25 个测试文件、487 个用例
 ├── extension/                     # Chrome 扩展（MV3 Side Panel）
 │   ├── manifest.json              # MV3 + sidePanel 权限
 │   ├── background.js              # Service Worker

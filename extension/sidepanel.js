@@ -1082,14 +1082,7 @@ async function newSession() {
   await sessionStore.setCurrentSessionId(plugin.pluginId, created.sessionId);
   await sessionStore.enforceSessionLimit(plugin.pluginId, created.sessionId);
   session = created;
-  // Tab binding 不再包含 sessionId，只重置 documentId 和 stale
-  if (binding) {
-    binding.documentId = null;
-    binding.stale = false;
-    if (currentTabId != null) {
-      await sessionStore.setTabBinding(currentTabId, binding);
-    }
-  }
+  // 新建聊天只切换全局 Session；当前 Tab 的网页上下文保持不变。
   switchView("chat");
   els.chatTextarea.value = "";
   renderClipView();

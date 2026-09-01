@@ -35,7 +35,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Response
 
 from ...api.deps import get_current_plugin
-from ...core.di import get_plugin_service
+from ...core.di import get_plugin_service, get_workspace_delete_service
 from ...models.api_schema import (
     PluginDeleteRequest,
     PluginMeResponse,
@@ -48,6 +48,7 @@ from ...models.api_schema import (
 )
 from ...models.plugin import PluginWorkspace
 from ...services.plugin_service import PluginService
+from ...services.workspace_delete import WorkspaceDeleteService
 
 router = APIRouter(prefix="/plugins", tags=["plugins"])
 
@@ -204,10 +205,12 @@ def remove_plugin_api_key(
     "/me",
     status_code=204,
 )
-def delete_plugin_workspace(
+async def delete_plugin_workspace(
     body: PluginDeleteRequest,
     current_plugin: PluginWorkspace = Depends(get_current_plugin),
-    plugin_service: PluginService = Depends(get_plugin_service),
+    workspace_delete_service: WorkspaceDeleteService = Depends(
+        get_workspace_delete_service
+    ),
 ) -> Response:
     """
     删除当前 Workspace（危险操作；双重确认后 204 No Content）。
@@ -216,14 +219,15 @@ def delete_plugin_workspace(
         - body.confirm == True；
         - body.plugin_name == 当前 Workspace 显示名。
 
-    本阶段仅删除 plugin_workspaces 行；documents → Milvus → FileStorage
-    的级联删除属于 Step 2-E 的 Service 级联删除，本阶段不涉及。
+    WorkspaceDeleteService 先逐个调用 DocumentDeleteService，按
+    Milvus → FileStorage → MySQL 的顺序收敛全部文档资源，最后删除
+    plugin_workspaces 行；任一步失败均不会提前删除 Workspace。
 
     Raises:
         PluginDeleteConfirmationError → 400（confirm 缺失或名称不匹配）
         PluginNotFoundError → 401；PluginOperationError → 503。
     """
-    plugin_service.delete_workspace(
+    await workspace_delete_service.delete_workspace(
         plugin_id=current_plugin.plugin_id,
         confirm=body.confirm,
         plugin_name=body.plugin_name,

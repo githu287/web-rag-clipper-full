@@ -132,6 +132,20 @@ class DocumentRepository(Protocol):
             DocumentOperationError: SQLAlchemy 执行异常。
         """
 
+    def get_webpage_by_url(self, plugin_id: str, url: str) -> Document | None:
+        """按 Workspace + 精确 URL 返回最新网页文档；不存在返回 None。"""
+        ...
+
+    def update_webpage_metadata(
+        self,
+        document_id: int,
+        *,
+        title: str | None,
+        url: str,
+    ) -> Document:
+        """更新已有网页文档的标题和 URL，不改变归属、状态或 chunk_count。"""
+        ...
+
     # ----------------------------------------------------------------- get_many
     def get_documents_by_ids(
         self,

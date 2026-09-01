@@ -1,5 +1,7 @@
 # Phase Evaluation Dataset MANIFEST
 
+> **2026-09-01 运行时复核**：两个 Evaluation Workspace 与 40 篇源文档已完成真实入库，Plugin/Document ID 已对齐到本地忽略目录 `evaluation/aligned-document/`。实际 Chunk 边界复核发现 Part-A 有 21 个 Chunk 占位符超出对应文档的真实 `chunk_count`，且 `sg040` 的部分 Gold 信息在 A19 源文档中不存在。因此当前只允许发布**文档级临时 Baseline**；Chunk 级 Gold 必须人工重标后才能发布 Chunk 级指标，禁止把不存在的 Chunk ID 强行映射。
+
 > **Dataset Build Date**：2025-12-19  
 > **Baseline Config (Step 1 §37 Frozen)**：Chunk size=700 / Overlap=100 / Embedding=百炼 text-embedding-v3 dim=1024 / Metric=COSINE / HNSW M=16 efConstruction=200 / TopK default=5 / LLM=qwen-plus temperature=0.2 / Prompt version 6-rule / Milvus collection=page_chunks / Candidate limit rule=all:max(limit,10); current:max(limit*4,40) / Max context chars=4000（硬编码）  
 > **Scope**：仅 evaluation/ 目录；**禁止修改 backend/、extension/、alembic/、Milvus schema、MySQL生产表**（Phase 3.7 Baseline 冻结红线）  

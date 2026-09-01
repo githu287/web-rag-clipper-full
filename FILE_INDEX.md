@@ -175,7 +175,9 @@
 | **组件测试** | |
 | `backend/tests/test_text_parser.py` | TextParser 单元测试（各格式解析 + 空文件 + 编码） |
 | `backend/tests/test_chunker.py` | RecursiveChunker 单元测试（切块/重叠/空文本/配置校验） |
-| `backend/tests/test_file_storage.py` | LocalFileStorage 单元测试（保存/解析/删除/路径穿越防御） |
+| `backend/tests/test_file_storage.py` | LocalFileStorage 单元测试（唯一对象键/保存/解析/删除/路径穿越防御） |
+| `backend/tests/test_workspace_delete_service.py` | Workspace 跨 MySQL/Milvus/FileStorage 删除编排测试 |
+| `backend/tests/test_evaluation_baseline.py` | Retrieval Evaluation 指标与 Dataset 校验测试 |
 | `backend/tests/test_embedding_client.py` | EmbeddingClient 单元测试（批量/错误处理/维度校验） |
 | `backend/tests/test_llm_client.py` | LLMClient 单元测试（请求/响应/空响应/错误处理） |
 | **安全测试** | |
@@ -197,7 +199,17 @@
 | `extension/popup.js` | Popup 逻辑：显示当前页面信息 + 「打开 Side Panel」按钮 |
 | `extension/popup.css` | Popup 样式表 |
 | `extension/api-client.js` | HTTP 请求封装：统一注入 `X-Plugin-ID` / `X-Plugin-Secret` 请求头，错误处理，响应解析 |
-| `extension/session-store.js` | Tab/Session 隔离存储：聊天历史按 Tab ID 独立，Plugin 凭证持久化到 `chrome.storage.local` |
+| `extension/session-store.js` | Plugin 全局 Session + TabBinding 网页上下文隔离存储；Plugin 凭证持久化到 `chrome.storage.local` |
+
+## Evaluation
+
+| 文件 | 职责 |
+|---|---|
+| `evaluation/baseline.py` | Dataset 校验、Retrieval 调用、Hit/Recall/Precision/MRR/nDCG/隔离/延迟指标 |
+| `evaluation/validate_datasets.py` | JSONL 静态校验 CLI |
+| `evaluation/align_datasets.py` | 将审核后的占位符映射写入独立 aligned Dataset |
+| `evaluation/run_baseline.py` | 调用 `/rag/search` 并生成版本化 JSON Baseline Report |
+| `evaluation/README.md` | Part-B 对齐与 Baseline 运行说明 |
 | `extension/config.js` | 后端地址集中配置（`API_BASE_URL`），其他文件不硬编码后端地址 |
 | `extension/.gitkeep` | 占位文件 |
 

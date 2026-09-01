@@ -44,6 +44,7 @@ from __future__ import annotations
 import logging
 
 from ..chunkers import Chunker
+from ..core.exceptions import DocumentOperationError
 from ..models.document import Document, DocumentSourceType, DocumentStatus
 from ..repositories.mysql import DocumentRepository
 from .document_ingest import DocumentIngestService
@@ -122,14 +123,29 @@ class WebClipService:
         # ------------------------------------------------------------------
         # 1) 创建 Document(status=PENDING)；WebClip 不落盘
         # ------------------------------------------------------------------
-        document = self._document_repository.create_document(
-            filename=_WEB_CLIP_FILENAME,
-            file_path=_WEB_CLIP_FILE_PATH,
-            plugin_id=plugin_id,
-            title=title,
-            url=url,
-            source_type=DocumentSourceType.WEBPAGE,
-        )
+        document = self._document_repository.get_webpage_by_url(plugin_id, url)
+        if document is None:
+            document = self._document_repository.create_document(
+                filename=_WEB_CLIP_FILENAME,
+                file_path=_WEB_CLIP_FILE_PATH,
+                plugin_id=plugin_id,
+                title=title,
+                url=url,
+                source_type=DocumentSourceType.WEBPAGE,
+            )
+        else:
+            if document.status in {
+                DocumentStatus.PROCESSING,
+                DocumentStatus.DELETING,
+            }:
+                raise DocumentOperationError(
+                    f"document is being ingested, re-clip rejected: id={document.id}"
+                )
+            document = self._document_repository.update_webpage_metadata(
+                document.id,
+                title=title,
+                url=url,
+            )
 
         # ------------------------------------------------------------------
         # 2) 立即置 PROCESSING（状态机红线：必须发生在 Chunker 之前）

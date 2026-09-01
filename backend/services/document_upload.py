@@ -180,13 +180,23 @@ class DocumentUploadService:
         # ------------------------------------------------------------------
         # 3) 创建 Document(status=PENDING)，携带 file_size / mime_type
         # ------------------------------------------------------------------
-        document = self._document_repository.create_document(
-            filename=filename,
-            file_path=file_path,
-            plugin_id=plugin_id,
-            file_size=len(content),
-            mime_type=mime_type or "",
-        )
+        try:
+            document = self._document_repository.create_document(
+                filename=filename,
+                file_path=file_path,
+                plugin_id=plugin_id,
+                file_size=len(content),
+                mime_type=mime_type or "",
+            )
+        except Exception:
+            try:
+                self._file_storage.delete(file_path)
+            except Exception:
+                logger.exception(
+                    "failed to remove orphan upload after create_document failure: %s",
+                    file_path,
+                )
+            raise
 
         # ------------------------------------------------------------------
         # 3.1) 立即置 PROCESSING（Phase 2.10 Step 3.2 状态机修复）
