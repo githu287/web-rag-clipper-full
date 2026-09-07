@@ -28,11 +28,12 @@ from __future__ import annotations
 
 import asyncio
 import unittest
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, call
 
 from backend.chunkers import Chunker
 from backend.core.exceptions import (
     DocumentChunkingError,
+    DocumentOperationError,
     DocumentRepositoryError,
 )
 from backend.models.document import (
@@ -183,6 +184,218 @@ class WebClipServiceTest(unittest.TestCase):
             42, ["chunk-1", "chunk-2"], plugin_id="plugin-a", api_key="sk-test"
         )
         self.assertEqual(result.id, 42)
+
+    # ------------- 3.6.1 Step 3：re-clip gate / FAILED 重试 / URL 变化 / 跨插件隔离
+    def test_reclip_rejects_processing_document(self) -> None:
+        """3.6.1：文档处于 PROCESSING（正在 ingest）→ 重复剪藏被拒绝，零副作用。"""
+        existing = self._make_document(
+            doc_id=7,
+            status=DocumentStatus.PROCESSING,
+            url="https://example.com/gate",
+        )
+        self.document_repo.get_webpage_by_url.return_value = existing
+
+        with self.assertRaises(DocumentOperationError):
+            self.run_async(
+                self.service.clip(
+                    url="https://example.com/gate",
+                    raw_text="body",
+                    plugin_id="plugin-a",
+                )
+            )
+
+        self.document_repo.create_document.assert_not_called()
+        self.document_repo.update_webpage_metadata.assert_not_called()
+        self.document_repo.update_status.assert_not_called()
+        self.chunker.split.assert_not_called()
+        self.ingest_service.ingest_document.assert_not_called()
+
+    def test_reclip_rejects_deleting_document(self) -> None:
+        """3.6.1：文档处于 DELETING（正在删除）→ 重复剪藏被拒绝，零副作用。"""
+        existing = self._make_document(
+            doc_id=8,
+            status=DocumentStatus.DELETING,
+            url="https://example.com/deleting",
+        )
+        self.document_repo.get_webpage_by_url.return_value = existing
+
+        with self.assertRaises(DocumentOperationError):
+            self.run_async(
+                self.service.clip(
+                    url="https://example.com/deleting",
+                    raw_text="body",
+                    plugin_id="plugin-a",
+                )
+            )
+
+        self.document_repo.create_document.assert_not_called()
+        self.document_repo.update_webpage_metadata.assert_not_called()
+        self.document_repo.update_status.assert_not_called()
+        self.chunker.split.assert_not_called()
+        self.ingest_service.ingest_document.assert_not_called()
+
+    def test_failed_document_reclip_retries_in_place(self) -> None:
+        """3.6.1：FAILED（上次剪藏失败）→ 重复剪藏复用原文档重试并恢复 SUCCESS。"""
+        failed = self._make_document(
+            doc_id=9,
+            status=DocumentStatus.FAILED,
+            title="旧标题",
+            url="https://example.com/retry",
+        )
+        updated = self._make_document(
+            doc_id=9,
+            status=DocumentStatus.FAILED,
+            title="新标题",
+            url="https://example.com/retry",
+        )
+        success = self._make_document(
+            doc_id=9,
+            status=DocumentStatus.SUCCESS,
+            chunk_count=2,
+            error_message=None,
+            title="新标题",
+            url="https://example.com/retry",
+        )
+        self.document_repo.get_webpage_by_url.return_value = failed
+        self.document_repo.update_webpage_metadata.return_value = updated
+        self.document_repo.get_document.return_value = success
+
+        result = self.run_async(
+            self.service.clip(
+                url="https://example.com/retry",
+                raw_text="new body",
+                plugin_id="plugin-a",
+                title="新标题",
+            )
+        )
+
+        self.document_repo.create_document.assert_not_called()
+        self.document_repo.update_webpage_metadata.assert_called_once_with(
+            9, title="新标题", url="https://example.com/retry"
+        )
+        self.ingest_service.ingest_document.assert_awaited_once_with(
+            9, ["chunk-1", "chunk-2"], plugin_id="plugin-a", api_key=None
+        )
+        self.assertEqual(result.id, 9)
+
+    def test_url_change_creates_new_document(self) -> None:
+        """3.6.1：URL 变化 ≠ re-clip → 创建新文档，绝不覆盖原 URL 文档。"""
+        existing = self._make_document(
+            doc_id=42,
+            status=DocumentStatus.SUCCESS,
+            title="A",
+            url="https://example.com/old",
+        )
+        updated = self._make_document(
+            doc_id=42,
+            status=DocumentStatus.SUCCESS,
+            title="A2",
+            url="https://example.com/old",
+        )
+        pending_new = self._make_document(doc_id=55, status=DocumentStatus.PENDING)
+        success_new = self._make_document(
+            doc_id=55,
+            status=DocumentStatus.SUCCESS,
+            chunk_count=2,
+            error_message=None,
+            title="B",
+            url="https://example.com/new",
+        )
+
+        def lookup(plugin_id: str, url: str) -> object | None:
+            if url == "https://example.com/old":
+                return existing
+            return None
+
+        def fetch(doc_id: int, plugin_id: str) -> object:
+            return updated if doc_id == 42 else success_new
+
+        self.document_repo.get_webpage_by_url.side_effect = lookup
+        self.document_repo.update_webpage_metadata.return_value = updated
+        self.document_repo.create_document.return_value = pending_new
+        self.document_repo.get_document.side_effect = fetch
+
+        # 1) 旧 URL 再剪藏 → 复用 42（仅更新元数据 + 重新 ingest）
+        self.run_async(
+            self.service.clip(
+                url="https://example.com/old",
+                raw_text="updated body",
+                plugin_id="plugin-a",
+                title="A2",
+            )
+        )
+        self.document_repo.update_webpage_metadata.assert_called_once_with(
+            42, title="A2", url="https://example.com/old"
+        )
+
+        # 2) 新 URL → 不命中旧文档 → 创建全新文档 55
+        self.document_repo.reset_mock()
+        self.document_repo.get_webpage_by_url.side_effect = lookup
+        self.document_repo.update_webpage_metadata.return_value = updated
+        self.document_repo.create_document.return_value = pending_new
+        self.document_repo.get_document.side_effect = fetch
+        result = self.run_async(
+            self.service.clip(
+                url="https://example.com/new",
+                raw_text="brand new",
+                plugin_id="plugin-a",
+                title="B",
+            )
+        )
+
+        self.document_repo.create_document.assert_called_once()
+        create_kwargs = self.document_repo.create_document.call_args.kwargs
+        self.assertEqual(create_kwargs["url"], "https://example.com/new")
+        self.assertEqual(create_kwargs["title"], "B")
+        self.assertEqual(result.id, 55)
+
+    def test_same_url_in_different_plugins_isolated(self) -> None:
+        """3.6.1：同 URL 归属不同 plugin 互不干扰 —— 查重与创建均按 plugin 隔离。"""
+        self.document_repo.get_webpage_by_url.return_value = None
+        self.document_repo.create_document.side_effect = [
+            self._make_document(doc_id=101, status=DocumentStatus.PENDING),
+            self._make_document(doc_id=202, status=DocumentStatus.PENDING),
+        ]
+        self.document_repo.get_document.side_effect = [
+            self._make_document(
+                doc_id=101,
+                status=DocumentStatus.SUCCESS,
+                chunk_count=2,
+                error_message=None,
+            ),
+            self._make_document(
+                doc_id=202,
+                status=DocumentStatus.SUCCESS,
+                chunk_count=2,
+                error_message=None,
+            ),
+        ]
+
+        self.run_async(
+            self.service.clip(
+                url="https://example.com/shared",
+                raw_text="a",
+                plugin_id="plugin-a",
+            )
+        )
+        self.run_async(
+            self.service.clip(
+                url="https://example.com/shared",
+                raw_text="b",
+                plugin_id="plugin-b",
+            )
+        )
+
+        # 查重必须按 plugin_id 过滤（get_webpage_by_url 的调用边界）
+        self.document_repo.get_webpage_by_url.assert_has_calls(
+            [
+                call("plugin-a", "https://example.com/shared"),
+                call("plugin-b", "https://example.com/shared"),
+            ]
+        )
+        # 各自创建，不跨插件误复用
+        self.assertEqual(self.document_repo.create_document.call_count, 2)
+        self.document_repo.update_webpage_metadata.assert_not_called()
 
     def test_state_machine_processing_before_chunker(self) -> None:
         """2：状态机顺序 —— split 执行时 PROCESSING 必须已置位（顺序哨兵）。"""

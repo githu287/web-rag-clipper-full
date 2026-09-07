@@ -442,9 +442,10 @@ class PluginService:
 
         通过后：PluginRepository.delete_plugin(plugin_id)。
 
-        重要：本阶段只删除 plugin_workspaces 行；documents → Milvus →
-        FileStorage → workspace 的级联删除属于后续业务 Service / Router 阶段，
-        本方法不触碰 Documents / Milvus / 文件存储。
+        重要：本方法只删除 plugin_workspaces 行，不触碰 Documents / Milvus /
+        文件存储。级联删除由 WorkspaceDeleteService
+        （services/workspace_delete.py）编排：先逐文档经 DocumentDeleteService
+        清理（含向量 / 文件）并收敛后，再调用本方法删除 workspace 行。
 
         Args:
             plugin_id: Workspace 标识。

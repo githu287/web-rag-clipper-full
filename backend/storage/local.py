@@ -56,7 +56,9 @@ class LocalFileStorage:
             data: 文件字节内容。
 
         Returns:
-            相对 upload_dir 的相对路径（本实现等价于消毒后的文件名）。
+            相对 upload_dir 的唯一存储键（Phase 3.6.1 Step 1）：
+            ``uuid4().hex + 小写扩展名``。与原始文件名解耦 ——
+            同名文件各得独立键，删除任一文件不影响其它文件。
 
         Raises:
             DocumentStoragePathTraversalError: 文件名含路径分隔符 / `..` / 空。

@@ -58,6 +58,18 @@ class LocalFileStorageTest(unittest.TestCase):
         with open(self.storage.resolve(second), "rb") as fh:
             self.assertEqual(fh.read(), b"second")
 
+    def test_delete_does_not_affect_other_files(self) -> None:
+        """3.6.1 Step 1：唯一键隔离 —— 删除其中一个文件不影响同名/其它文件。"""
+        first = self.storage.save("a.txt", b"first")
+        second = self.storage.save("a.txt", b"second")
+
+        self.storage.delete(first)
+
+        # 第二个文件的物理文件仍存在且内容完好
+        self.assertTrue(os.path.isfile(self.storage.resolve(second)))
+        with open(self.storage.resolve(second), "rb") as fh:
+            self.assertEqual(fh.read(), b"second")
+
     # ------------------------------------------------------ 自动创建目录
     def test_save_creates_missing_upload_dir(self) -> None:
         """upload_dir 不存在时 save 自动创建。"""
