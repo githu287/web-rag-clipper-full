@@ -1,74 +1,105 @@
 # Web RAG Clipper
 
-网页内容剪藏 + RAG 知识库问答系统。通过 Chrome 扩展采集网页正文，构建个人知识库，支持语义检索和 AI 问答。
+Web RAG Clipper 是一个本地优先的网页剪藏与个人知识库 RAG 系统。Chrome/Edge 扩展负责采集网页、管理知识库和发起问答；FastAPI 后端负责文档解析、切块、向量化、检索及生成回答。
 
-## 核心能力
+当前仓库已经打通以下链路：
 
-| 能力 | 说明 |
-|------|------|
-| Chrome 扩展 Side Panel | 网页剪藏、聊天式问答、知识库管理，一站式体验 |
-| Plugin Workspace 多租户 | 独立身份（`X-Plugin-ID` + `X-Plugin-Secret`）、独立 API Key、数据隔离 |
-| 文档全链路自动化 | 上传/剪藏 → 解析 → 切块 → 向量化 → 入库，一步到位 |
-| RAG 检索 + 问答 | Milvus 语义检索 + 百炼 qwen-plus 生成回答，返回答案与来源引用 |
-| Docker Compose 一键启动 | MySQL / Redis / etcd / MinIO / Milvus 五大基础设施 |
+- Plugin Workspace 注册与双凭证认证
+- Workspace 级百炼 API Key 加密保存
+- 网页正文剪藏，以及 `.txt` / `.md` / `.markdown` 文件上传
+- MySQL 文档生命周期与 Milvus 向量索引
+- 全知识库或指定文档的语义检索与 RAG 问答
+- Side Panel 知识库、会话、设置和当前网页模式
+- Workspace 间的文档、检索结果与会话隔离
+- Retrieval 基线数据、运行脚本与报告渲染
 
-> 技术栈、系统架构、API 参考、数据模型等详见 [ARCHITECTURE.md](ARCHITECTURE.md)
+## 系统组成
+
+```text
+Chrome / Edge Extension (Manifest V3)
+  ├─ 网页正文提取、剪藏、文件上传
+  ├─ 知识库列表、筛选、删除与失败重试
+  └─ 当前文档 / 全知识库问答
+                    │
+                    │ HTTP + X-Plugin-ID / X-Plugin-Secret
+                    ▼
+FastAPI
+  ├─ Plugin、Document、Clip、Ingest、RAG API
+  ├─ Parser → Chunker → Embedding → Milvus
+  ├─ Retrieval → Context → qwen-plus
+  └─ MySQL 状态与归属校验
+          │                         │
+          ▼                         ▼
+     MySQL 8.0                 Milvus 2.4.4
+  元数据/状态/凭证              chunk/embedding
+```
+
+更完整的组件边界、数据流和一致性策略见 [ARCHITECTURE.md](ARCHITECTURE.md)，逐文件说明见 [FILE_INDEX.md](FILE_INDEX.md)。
+
+## 技术栈
+
+| 领域 | 实现 |
+|---|---|
+| API | Python 3.11、FastAPI、Uvicorn、Pydantic v2 |
+| 关系数据 | MySQL 8.0、SQLAlchemy 2.0、PyMySQL、Alembic |
+| 向量检索 | Milvus 2.4.4、pymilvus 2.4.15、HNSW + COSINE |
+| 模型服务 | 阿里云百炼 OpenAI 兼容 API；`text-embedding-v3`、`qwen-plus` |
+| 安全 | Plugin ID + Secret；Secret SHA-256；API Key AES-256-GCM |
+| 浏览器端 | Chrome Extension Manifest V3、Side Panel、原生 JavaScript |
+| 测试与评测 | pytest、150 条 Retrieval/隔离评测样本 |
+
+Redis 由 Compose 启动，但当前业务链路尚未使用。
 
 ## 快速开始
 
-### 前置要求
+### 1. 前置条件
 
-- Docker Desktop
-- Python 3.11+
-- 阿里云百炼 API Key（`text-embedding-v3` + `qwen-plus`）
+- Docker Desktop 或兼容的 Docker Compose 环境
+- Python 3.11
+- 可用的阿里云百炼 API Key
+- Chrome 或 Edge（加载浏览器扩展时需要）
 
-### 1. 启动基础设施
+### 2. 启动基础设施
 
 ```powershell
 docker compose up -d
+docker compose ps
 ```
 
-| 服务 | 宿主端口 | 说明 |
-|------|----------|------|
-| MySQL 8.0 | `33066` | 容器内 3306，数据库 `rag_clipper` |
-| Redis 7 | `6379` | 当前预留 |
-| etcd v3.5.5 | `2379` | Milvus 元数据 |
-| MinIO | `9000` / `9001` | Milvus 对象存储 |
-| Milvus v2.4.4 | `19530` | 向量数据库 |
+Compose 会启动 MySQL、Redis、etcd、MinIO 和 Milvus。默认宿主端口如下：
 
-### 2. 配置环境变量
+| 服务 | 端口 |
+|---|---:|
+| MySQL | `33066` |
+| Redis | `6379` |
+| MinIO API / Console | `9000` / `9001` |
+| Milvus gRPC / Health | `19530` / `9091` |
 
-```powershell
-copy .env.example .env
-```
-
-编辑 `.env`，至少修改：
-
-| 变量 | 说明 |
-|------|------|
-| `BAILIAN_API_KEY` | 百炼 API Key |
-| `MYSQL_PORT` | 使用本 compose 时填 `33066` |
-| `APP_MASTER_KEY` | **必填**。AES-256-GCM 主密钥，用于加密用户 API Key |
-
-生成 `APP_MASTER_KEY`（32 个 hex 字符）：
+### 3. 配置后端
 
 ```powershell
+Copy-Item .env.example .env
 python -c "import secrets; print(secrets.token_hex(16))"
 ```
 
-### 3. 安装依赖
+编辑 `.env`：
+
+- 将 `MYSQL_PORT` 改为 `33066`，与本仓库的 Compose 映射一致。
+- 将上一步生成的 32 个 ASCII 字符填入 `APP_MASTER_KEY`。
+- 不要把真实密钥提交到 Git。
+
+`BAILIAN_API_KEY` 是服务端兼容/预留配置。正常产品流程使用每个 Workspace 通过 `PUT /plugins/me/api-key` 保存的独立 Key。
+
+### 4. 安装依赖并迁移数据库
 
 ```powershell
 python -m venv .venv
-.venv\Scripts\activate
-pip install -r backend\requirements.txt
-```
-
-### 4. 初始化数据库
-
-```powershell
+.venv\Scripts\Activate.ps1
+python -m pip install -r backend\requirements.txt
 alembic upgrade head
 ```
+
+当前 Alembic head 为 `0008`。
 
 ### 5. 启动 API
 
@@ -76,75 +107,132 @@ alembic upgrade head
 uvicorn backend.main:app --host 0.0.0.0 --port 8000
 ```
 
-启动后访问 <http://localhost:8000/docs> 查看 Swagger UI。
+启动阶段会幂等初始化并加载 Milvus `page_chunks` Collection。打开 <http://localhost:8000/docs> 可查看和调用完整 API。
 
-### 6. 加载 Chrome 扩展
+### 6. 初始化 Workspace
 
-1. Chrome 打开 `chrome://extensions/`，开启 **Developer mode**
-2. 点击 **Load unpacked**，选择本项目 `extension/` 目录
-3. 点击工具栏插件图标，打开 Side Panel
-4. Settings → 注册 Workspace → 配置百炼 API Key
-5. 打开任意网页 → 点击剪藏按钮 → 文档入库
-6. 切换到 Chat → 提问，验证 RAG 问答返回答案和来源
+在 Swagger UI 中按顺序调用：
 
-## 使用流程
+1. `POST /plugins/register`，请求体为 `{"plugin_name":"My Workspace"}`。
+2. 立即保存响应中的 `plugin_id` 和只返回一次的 `plugin_secret`。
+3. 后续请求携带 `X-Plugin-ID` 与 `X-Plugin-Secret`。
+4. 调用 `PUT /plugins/me/api-key`，请求体为 `{"api_key":"sk-..."}`。
 
-```
-注册 Workspace → 配置百炼 API Key → 剪藏网页 / 上传文件 → 自动切块向量化 → RAG 问答
-```
+后端会先验证 Key，再使用 `APP_MASTER_KEY` 进行 AES-256-GCM 加密。数据库不保存 Plugin Secret 或百炼 API Key 明文。
 
-### Side Panel 页面
+### 7. 加载扩展
 
-| 页面 | 功能 |
-|------|------|
-| **Chat** | 聊天式 RAG 问答，支持"当前网页"和"全部知识库"两种检索模式 |
-| **Library** | 知识库管理：浏览 / 搜索 / 删除文档，支持上传 `.txt` / `.md` / `.markdown` 文件 |
-| **Settings** | Workspace 信息、百炼 API Key 配置 |
-| **欢迎页** | 首次使用引导注册 Workspace |
+1. 保持后端运行。
+2. 打开 `chrome://extensions/` 或 `edge://extensions/`。
+3. 开启开发者模式，选择“加载已解压的扩展程序”。
+4. 选择仓库中的 `extension/` 目录。
+5. 点击扩展图标打开 Side Panel，创建 Workspace、配置百炼 Key 后即可剪藏和问答。
+
+若后端不在 `http://localhost:8000`，同时修改 `extension/config.js` 的 `API_BASE_URL` 与 `extension/manifest.json` 的 `host_permissions`。
+
+## API 概览
+
+仓库当前公开 16 个操作。只有 `POST /plugins/register` 无需认证；其余操作都要求 `X-Plugin-ID` 和 `X-Plugin-Secret`。
+
+| 方法 | 路径 | 用途 |
+|---|---|---|
+| POST | `/plugins/register` | 创建 Workspace，返回一次性明文 Secret |
+| GET | `/plugins/me` | 获取当前 Workspace |
+| PUT | `/plugins/me` | 修改 Workspace 名称 |
+| PUT | `/plugins/me/api-key` | 验证并保存百炼 API Key |
+| DELETE | `/plugins/me/api-key` | 清除百炼 API Key |
+| DELETE | `/plugins/me` | 双重确认后级联删除 Workspace 资源 |
+| GET | `/documents` | 分页列出文档；支持 keyword/status/source_type |
+| POST | `/documents` | 创建 `PENDING` 文档元数据 |
+| POST | `/documents/upload` | 上传并同步完成解析、切块与入库 |
+| GET | `/documents/{document_id}` | 获取当前 Workspace 的文档详情 |
+| POST | `/documents/{document_id}/ingest` | 对已有文档执行或重试 ingest |
+| DELETE | `/documents/{document_id}` | 幂等删除文档及关联资源 |
+| POST | `/clips` | 剪藏网页正文；同 Workspace 同 URL 可原位重试/更新 |
+| POST | `/ingest/page` | 直接写入已切分 chunks 的底层接口 |
+| POST | `/rag/search` | 返回语义检索结果及文档元数据 |
+| POST | `/rag/ask` | 检索、构造 Context 并生成带 Sources 的回答 |
+
+`/rag/search` 与 `/rag/ask` 均支持可选 `document_id`：省略时检索当前 Workspace 的全部成功文档，传入时只使用指定文档。跨 Workspace 访问统一表现为 404。
+
+## 数据与状态
+
+MySQL 是文档状态和归属的权威来源；Milvus 只保存向量检索所需字段。
+
+- `plugin_workspaces`：Workspace 身份、Secret 哈希、加密后的百炼 Key、状态。
+- `documents`：来源信息、文件元数据、Workspace 归属和生命周期状态。
+- `page_chunks`：`id`、`page_id`、`chunk_index`、`chunk_text`、1024 维 `embedding`。
+- 映射规则：`documents.id == page_chunks.page_id`，chunk 主键为 `{page_id}_{chunk_index}`。
+- 生命周期：`PENDING → PROCESSING → SUCCESS | FAILED`；删除期间使用 `DELETING` 互斥。
+
+检索会先按 Workspace 的成功文档 ID 构造 Milvus 表达式，返回后再回查 MySQL 并做一次归属和 `SUCCESS` 过滤。
+
+## 配置
+
+运行时真正由 `backend/core/config.py` 读取的主要变量如下：
+
+| 变量 | 默认值 | 说明 |
+|---|---|---|
+| `MYSQL_HOST` / `MYSQL_PORT` | `localhost` / `3306` | Compose 场景需把端口改为 `33066` |
+| `MYSQL_USER` / `MYSQL_PASSWORD` / `MYSQL_DATABASE` | `rag_user` / 空 / `rag_clipper` | MySQL 连接信息 |
+| `MILVUS_HOST` / `MILVUS_PORT` | `localhost` / `19530` | Milvus 连接信息 |
+| `MILVUS_COLLECTION` | `page_chunks` | Collection 名称 |
+| `APP_MASTER_KEY` | 空 | API Key 加密主密钥，必须恰好 32 字节 |
+| `BAILIAN_BASE_URL` | 百炼兼容端点 | OpenAI 兼容 Base URL |
+| `BAILIAN_EMBEDDING_MODEL` | `text-embedding-v3` | Embedding 模型 |
+| `BAILIAN_EMBEDDING_DIMENSION` | `1024` | 必须与 Milvus Schema 一致 |
+| `BAILIAN_LLM_MODEL` | `qwen-plus` | 问答模型 |
+| `EMBEDDING_BATCH_SIZE` | `10` | 配置校验上限也是 10 |
+| `UPLOAD_DIR` | `uploads` | 上传文件存储目录 |
+| `CHUNK_SIZE` / `CHUNK_OVERLAP` | `700` / `100` | 字符级递归切块参数 |
+| `MAX_PAGE_CONTENT_BYTES` | `2097152` | 上传文件上限，2 MiB |
+
+`.env.example` 中还有 API、Redis、重试和 CORS 等预留字段；当前 Settings 或业务代码并未消费其中全部字段。后端目前也未注册 CORS 中间件。
 
 ## 测试
 
-在运行测试前请先确保：基础设施（Docker Compose）已启动、`.env` 已配置、数据库已初始化（`alembic upgrade head`）。
+当前已接入的主测试集：
 
-### 运行方式
-
-**Windows（PowerShell）：**
 ```powershell
-.venv\Scripts\python.exe -m pytest backend/tests -v
+.venv\Scripts\python.exe -m pytest -q `
+  --ignore=backend/tests/test_auth_api.py `
+  --ignore=backend/tests/test_user_repository.py `
+  --ignore=backend/tests/test_user_service.py
 ```
 
-**类 Unix（macOS / Linux / WSL）：**
-```bash
-.venv/bin/python -m pytest backend/tests -v
-```
+本次文档重写时的结果为：`510 passed, 31 subtests passed`。
 
-### 推荐首次运行：快速冒烟测试（≤ 30 秒）
-第一次贡献代码时，建议先跑核心链路冒烟测试，无需等全量跑完：
-```powershell
-.venv\Scripts\python.exe -m pytest backend/tests -v -k "smoke or rag or ingest"
-```
+仓库工作区中另有尚未接入主应用的旧 User/Bearer 迁移草稿（`auth.py`、`users.py`、`user_*` 及对应三个测试文件）。直接运行不带 ignore 的全量 `pytest` 会在这三个测试模块的收集阶段失败；当前产品身份模型以 Plugin Workspace 为准。
 
-### 测试覆盖范围
-`backend/tests/` 目录按层次组织，覆盖以下核心领域（具体用例数随代码演进，以 pytest 运行输出为准）：
+## Retrieval 评测
 
-| 类别 | 说明 |
-|------|------|
-| 单元测试 | Plugin Workspace、API Key 加解密、Chunker 切分、Document 状态机等纯逻辑 |
-| 集成测试 | Documents Ingest 全链路（上传 → 切块 → Embedding → Milvus + MySQL 入库） |
-| RAG 测试 | Milvus 检索（current / all 两种模式）、RagService 5 层隔离、Sources 返回、Answer Prompt 构造 |
-| API 测试 | 各 REST 端点的输入校验、权限 Header（X-Plugin-ID / X-Plugin-Secret）、错误响应码（404/409/401） |
+`evaluation/` 包含：
 
-## Retrieval Evaluation Baseline
+- 70 条主 RAG 样本
+- 10 条负例/拒答样本
+- 70 条 Workspace 隔离样本
+- 两个 Workspace、共 40 篇源文档
+- 数据校验、运行时 ID 对齐、基线执行和 Markdown 报告渲染工具
 
-`evaluation/` 已提供 Dataset 校验、占位符对齐和 Retrieval Runner，输出
-Hit@K、Recall@K、Precision@K、MRR、nDCG、隔离泄漏、延迟与错误率。
-原始 Dataset 仍保留占位符，必须先完成运行时 ID 对齐，禁止直接生成伪基线。
-完整命令见 [evaluation/README.md](evaluation/README.md)。
-
-> 所有 RAG 相关的**质量评估**（Recall@K / Hallucination / Plugin Isolation 等基线指标）属于独立的评估体系，不放在本章节，请详见 [evaluation/datasets/DATASET_MANIFEST.md](evaluation/datasets/DATASET_MANIFEST.md)。
+当前公开数据的 chunk 标注仍有部分需要人工重标，因此应把现有结果视为文档级临时基线，不应宣称为完整 chunk 级基线。具体流程见 [evaluation/README.md](evaluation/README.md) 与 [docs/REAL_BASELINE_RUNBOOK.md](docs/REAL_BASELINE_RUNBOOK.md)。
 
 ## 已知限制
 
-- 仅支持纯文本：`.txt` / `.md` / `.markdown`（PDF / DOCX / OCR 未实现）
-- ingest 为同步处理，无异步任务队列
-- 扩展正文提取为轻量 MVP，强 JS 渲染 / 分页 / paywall 页面可能不完整
+- Ingest 在 HTTP 请求内同步执行，尚无 Redis/Celery 异步队列。
+- 仅解析 UTF-8 文本和 Markdown；PDF、DOCX、OCR 尚未接入。
+- 扩展正文提取是 DOM 启发式实现，复杂 SPA、分页、登录墙可能提取不完整。
+- 会话历史保存在浏览器 `chrome.storage.local`，后端没有会话表。
+- Milvus Collection 已存在时初始化器不会自动迁移 Schema；修改向量维度需重建并重新 ingest。
+- 文档删除和 Workspace 删除通过有序、可重试的补偿流程实现，不是跨 MySQL/Milvus/文件系统的分布式事务。
+- 当前没有限流、审计、生产级 Secret 轮换或公网部署加固。
+
+## 目录
+
+```text
+backend/       FastAPI、业务服务、Repository、模型与测试
+extension/     Chrome/Edge Manifest V3 扩展
+alembic/       MySQL Schema 迁移（0001 → 0008）
+evaluation/    Retrieval/隔离评测数据与工具
+docs/          历史设计、数据模型和运行手册
+uploads/       本地运行时上传目录（Git 忽略）
+```

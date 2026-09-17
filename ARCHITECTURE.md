@@ -1,355 +1,252 @@
-# Web RAG Clipper — 系统架构
+# Web RAG Clipper 架构
 
-## 技术栈
+本文描述当前代码实际采用的架构。`docs/PHASE*.md` 是阶段性设计记录；当历史描述与当前代码冲突时，以本文件、根目录 `README.md` 和代码为准。
 
-| 类别 | 技术 | 说明 |
+## 1. 架构目标与边界
+
+系统把浏览器中的网页或本地文本文件转换为可检索知识，并支持两种问答范围：当前文档和当前 Plugin Workspace 的全部知识库。
+
+```text
+┌─────────────────────────────────────────────────────────────┐
+│ Browser Extension (MV3)                                     │
+│ Side Panel / Popup / Content Script / chrome.storage.local  │
+└───────────────────────────┬─────────────────────────────────┘
+                            │ HTTP
+                            │ X-Plugin-ID + X-Plugin-Secret
+                            ▼
+┌─────────────────────────────────────────────────────────────┐
+│ FastAPI                                                     │
+│ Router → Service → Repository Protocol → Infrastructure     │
+└──────────────┬─────────────────┬─────────────────┬───────────┘
+               │                 │                 │
+               ▼                 ▼                 ▼
+        MySQL 8.0          Milvus 2.4.4      Bailian API
+  identity/metadata/state   vectors/chunks   embedding/chat
+               │
+               ▼
+        LocalFileStorage
+```
+
+系统是单后端、多 Workspace 的本地优先实现。Workspace 是当前唯一的租户与认证边界；扩展不直接访问数据库或模型服务。
+
+## 2. 分层与依赖方向
+
+| 层 | 目录 | 职责 |
 |---|---|---|
-| 语言 | Python 3.11.9 | |
-| Web 框架 | FastAPI + Uvicorn | 应用版本 `0.1.0` |
-| 数据校验 | Pydantic v2 | 全部 Schema 使用 `extra="forbid"` 防契约漂移 |
-| MySQL | MySQL 8.0 + SQLAlchemy 2.0 + PyMySQL | `documents` + `plugin_workspaces` 表 |
-| 迁移 | Alembic | head = `0008_documents_user_id_default`（共 8 个迁移） |
-| 向量库 | Milvus v2.4.4 (standalone) + pymilvus | `page_chunks` Collection |
-| Embedding | 阿里云百炼 `text-embedding-v3` | 1024 维，批量上限 10 条/请求 |
-| LLM | 百炼 `qwen-plus`（OpenAI 兼容） | RAG 问答生成 |
-| 安全 | AES-256-GCM | 用户 API Key 加密存储（`APP_MASTER_KEY` 主密钥） |
-| Redis | redis 7-alpine | compose 已部署，当前预留 |
-| 测试 | pytest | 25 个测试文件、487 个测试用例 |
-| 扩展 | Chrome MV3 | Side Panel + Background + Content Script |
+| 接口层 | `backend/api/routers` | HTTP 契约、请求校验、依赖注入、响应组装 |
+| 业务层 | `backend/services` | 生命周期、跨存储编排、Workspace 隔离、RAG 流程 |
+| 抽象/数据层 | `backend/repositories/*/protocol.py`、`backend/models` | Repository Protocol、ORM、DTO、API Schema |
+| 基础设施层 | `backend/repositories/*/impl.py`、`clients`、`storage` | MySQL、Milvus、百炼、本地文件系统适配 |
+| 装配层 | `backend/core/di.py` | 根据 Settings 创建并连接依赖 |
+| 应用入口 | `backend/main.py` | Router、异常处理器、lifespan、模块级 app |
 
-## 系统架构
+依赖方向保持为 API → Service → Protocol。Service 不依赖 FastAPI，Router 不直接写 SQL、调用 pymilvus 或构造 OpenAI Client。
 
-```
-[Chrome Extension — Side Panel]（MV3）
-    │  正文采集 / 剪藏 / 聊天问答 / 知识库管理
-    │  身份：X-Plugin-ID + X-Plugin-Secret
-    ▼
-[FastAPI Backend]
-    │  JSON / multipart 请求
-    ▼
-┌──────────────────────────────────────────────────────┐
-│  API 层（FastAPI Router，依赖注入 + Plugin 身份校验）  │
-│                                                      │
-│  Plugins:  POST /plugins/register                    │
-│            GET/PUT/DELETE /plugins/me                 │
-│            PUT/DELETE /plugins/me/api-key             │
-│  Docs:     POST /documents/upload                     │
-│            POST /documents · GET /documents            │
-│            GET /documents/{id} · DELETE /documents/{id}│
-│            POST /documents/{id}/ingest                │
-│  Clips:    POST /clips                                │
-│  Ingest:   POST /ingest/page                          │
-│  RAG:      POST /rag/search · POST /rag/ask           │
-└───────────────────────┬──────────────────────────────┘
-                        ▼
-┌──────────────────────────────────────────────────────┐
-│  Service 层                                          │
-│  PluginService          → 工作空间注册/认证/API Key   │
-│  DocumentUploadService  → 上传 + 全链路编排           │
-│  DocumentIngestService  → 生命周期 + 重试             │
-│  DocumentDeleteService  → 幂等删除                   │
-│  WebClipService         → 网页剪藏                   │
-│  RagService             → RAG 语义检索               │
-│  RagAnswerService       → 检索 + LLM 问答            │
-└──┬──────┬──────┬──────┬──────┬──────┬───────────────┘
-   ▼      ▼      ▼      ▼      ▼      ▼
- 安全   存储   解析   切分   向量化  双存储
- AES-256-GCM   LocalFile  TextParser  RecursiveChunker
- (API Key      Storage     (.txt/.md)  (700字/100重叠)
-  加密/解密)   (uploads/)
-               百炼 Embedding ──► text-embedding-v3 (1024d)
-               百炼 LLM ────────► qwen-plus
-               MySQL ───────────► documents + plugin_workspaces
-               Milvus ──────────► page_chunks（HNSW + COSINE）
-```
+## 3. 运行时组件
 
-**核心链路：**
+### 3.1 浏览器扩展
 
-```
-注册 Workspace → 配置百炼 API Key → 上传文档/剪藏网页
-  → TextParser 解析 → RecursiveChunker 切块
-  → 百炼 Embedding → Milvus 写入 chunks → Document 置 SUCCESS
-  → RAG Search（语义 Top-K）/ RAG Ask（检索 + qwen-plus 生成回答）
-```
+- `background.js` 管理 Side Panel 行为和 Tab URL 变化通知。
+- `content.js` 按 `article → main → body` 选择正文容器，克隆后移除脚本、导航、页脚等噪声节点。
+- `api-client.js` 集中添加 Plugin Header、解析错误和处理 401。
+- `session-store.js` 把会话、当前会话和 Tab 上下文存入 `chrome.storage.local`。
+- `sidepanel.js` 承担 Workspace 初始化、剪藏、知识库管理、问答和设置交互。
+- `popup.js` 提供轻量入口，并可引导用户打开 Side Panel。
 
-## API 参考
+Plugin Secret 会保存在扩展本地存储以便认证，但不会写入聊天 Session、URL 或页面 DOM。会话仅存在浏览器端，服务端不保存对话历史。
 
-共 13 个端点。除 `POST /plugins/register` 外，所有端点需要 `X-Plugin-ID` + `X-Plugin-Secret` 请求头。
+### 3.2 FastAPI
 
-### Plugin Workspace
+`backend.main:create_app()` 注册 ingest、rag、documents、clips、plugins 五组 Router。模块级 `app` 供 Uvicorn 直接引用。
 
-| 方法 | 路径 | 说明 | 状态码 |
-|---|---|---|---|
-| POST | `/plugins/register` | 注册新 Workspace（返回 `plugin_id` + `plugin_secret`） | 201 |
-| GET | `/plugins/me` | 获取当前 Workspace 信息 | 200 |
-| PUT | `/plugins/me` | 修改显示名 | 200 |
-| PUT | `/plugins/me/api-key` | 配置/更换百炼 API Key（会调百炼验证有效性） | 200 |
-| DELETE | `/plugins/me/api-key` | 清除 API Key | 204 |
-| DELETE | `/plugins/me` | 删除 Workspace；先清理其 Milvus chunks、上传文件和 Document，再删除 Workspace（双重确认） | 204 |
+lifespan 启动阶段调用 `MilvusInitializer.initialize()`：连接 Milvus；Collection 不存在时创建 Schema 和索引；已存在时校验/复用；最后加载 Collection。它不会自动删除并重建已有 Collection。
 
-### 文档管理
+已知领域异常由 `main.py` 统一映射为 HTTP 响应，未知异常交给 FastAPI 默认 500。
 
-| 方法 | 路径 | 说明 | 状态码 |
-|---|---|---|---|
-| POST | `/documents/upload` | multipart 上传并完整入库（解析→切块→向量化→入库） | 201 |
-| POST | `/documents` | 创建 Document 元数据（`status=PENDING`） | 201 |
-| GET | `/documents` | 分页列出当前 Workspace 文档（支持 keyword/status/source_type 筛选） | 200 |
-| GET | `/documents/{id}` | 获取单个文档详情 | 200 |
-| POST | `/documents/{id}/ingest` | Document 生命周期 ingest（FAILED 可重试） | 200 |
-| DELETE | `/documents/{id}` | 删除文档（幂等：不存在也返回 204） | 204 |
+### 3.3 基础设施
 
-### 剪藏 & 入库
+- MySQL：权威保存 Workspace、Document 元数据、归属和生命周期状态。
+- Milvus：保存 chunk 文本及向量，用于近似最近邻检索。
+- MinIO + etcd：Milvus standalone 的对象存储与元数据依赖。
+- Redis：已编排，当前业务未读取。
+- 本地文件系统：仅上传文件落入 `uploads/`；网页剪藏不创建物理文件。
+- 百炼：Embedding 和 Chat Completion 均通过 OpenAI 兼容接口访问。
 
-| 方法 | 路径 | 说明 | 状态码 |
-|---|---|---|---|
-| POST | `/clips` | Web Clip 网页剪藏（`source_type=webpage`，正文直接入库） | 201 |
-| POST | `/ingest/page` | 底层 chunk 入库（re-ingest：query old → upsert new → delete stale） | 200 |
+## 4. 身份、凭证与隔离
 
-### RAG
+### 4.1 Workspace 身份
 
-| 方法 | 路径 | 说明 | 状态码 |
-|---|---|---|---|
-| POST | `/rag/search` | 语义检索（候选 `max(limit,10)` → SUCCESS 过滤 → Top-K） | 200 |
-| POST | `/rag/ask` | RAG 问答（检索 → 构造 Context → qwen-plus 生成 → Answer + Sources） | 200 |
+注册 `POST /plugins/register` 时，服务端生成公开的 `plugin_id` 和只返回一次的 `plugin_secret`。数据库只保存 Secret 的 SHA-256 哈希。
 
-### 典型请求/响应
+除注册外，所有业务 API 都通过 `get_current_plugin()` 读取 `X-Plugin-ID` 与 `X-Plugin-Secret`，再由 `PluginService.authenticate()` 校验。禁用的 Workspace 返回 403；无效凭证返回 401。
 
-**RAG 问答** `POST /rag/ask`
+### 4.2 模型 API Key
 
-```json
-// 请求
-{
-  "query": "什么是向量检索",
-  "top_k": 5,
-  "document_id": null
-}
+Workspace 的百炼 API Key 不参与身份识别。更新 Key 时：
 
-// 200 OK
-{
-  "answer": "向量检索是一种基于语义相似度的信息检索方法...",
-  "sources": [
-    {
-      "document_id": 1,
-      "title": "sample.txt",
-      "url": null,
-      "chunk_id": "1_3",
-      "score": 0.86
-    }
-  ]
-}
-```
+1. 使用提交的 Key 发起最小 Embedding 验证。
+2. 使用 `APP_MASTER_KEY` 做 AES-256-GCM 加密。
+3. 将 ciphertext 与独立 nonce 保存到 `plugin_workspaces`。
+4. 业务请求中按当前 Workspace 解密，再显式传给 Embedding/LLM Client。
 
-**RAG 检索** `POST /rag/search`
+`APP_MASTER_KEY` 必须是 UTF-8 编码后恰好 32 字节的字符串。
 
-```json
-// 请求
-{ "query": "什么是向量检索", "limit": 5 }
+### 4.3 多层隔离
 
-// 200 OK
-{
-  "results": [
-    {
-      "id": "1_3",
-      "page_id": 1,
-      "chunk_index": 3,
-      "chunk_text": "...",
-      "distance": 0.86,
-      "document_id": 1,
-      "filename": "sample.txt",
-      "status": "SUCCESS",
-      "created_at": "2026-08-20T10:00:00"
-    }
-  ]
-}
-```
+Workspace 隔离不只依赖一个过滤点：
 
-> `distance` 为 COSINE similarity（越大越相似，1.0 为完全相似）。
+1. API 身份来自双 Header，客户端不能在请求体指定 `plugin_id`。
+2. Document Repository 的读取、列表、删除都带 `plugin_id` 条件。
+3. 全库检索先从 MySQL 获取当前 Workspace 的 `SUCCESS` 文档 ID。
+4. Milvus 搜索表达式限制 `page_id in [...]`；指定文档模式使用 `page_id == document_id`。
+5. 候选返回后再次按 MySQL 归属和状态过滤，孤儿 chunk 也会被移除。
+6. 跨 Workspace 的具体文档访问统一返回 404，避免泄露资源是否存在。
 
-### 错误映射
+## 5. 核心数据模型
 
-| HTTP | 场景 |
+### 5.1 `plugin_workspaces`
+
+| 字段 | 作用 |
 |---|---|
-| 400 | 空文件、路径穿越、删除确认失败、API Key 校验失败 |
-| 401 | Plugin 凭证缺失/无效 |
+| `id` | 内部自增主键 |
+| `plugin_id` | 对外 Workspace 标识，唯一 |
+| `plugin_name` / `plugin_name_norm` | 展示名与唯一归一化名 |
+| `plugin_secret_hash` | Secret 的 SHA-256 哈希 |
+| `api_key_ciphertext` / `api_key_nonce` | AES-GCM 加密的百炼 Key；可为空 |
+| `status` | `ACTIVE` / `DISABLED` / `DELETING` |
+| `created_at` / `updated_at` | 时间戳 |
+
+### 5.2 `documents`
+
+| 字段组 | 字段 |
+|---|---|
+| 标识与归属 | `id`、`plugin_id` |
+| 文件 | `filename`、`file_path`、`file_size`、`mime_type` |
+| 来源 | `title`、`url`、`source_type` (`upload` / `webpage`) |
+| 生命周期 | `status`、`chunk_count`、`error_message` |
+| 时间 | `created_at`、`updated_at` |
+
+数据库还保留旧迁移产生的 `user_id NOT NULL DEFAULT 0` 列以支持回滚；当前 ORM 和业务归属不使用该列。
+
+### 5.3 Milvus `page_chunks`
+
+| 字段 | 类型 | 约束 |
+|---|---|---|
+| `id` | `VARCHAR(64)` | 主键，`{page_id}_{chunk_index}` |
+| `page_id` | `INT64` | 等于 `documents.id` |
+| `chunk_index` | `INT64` | 从 0 开始 |
+| `chunk_text` | `VARCHAR(4096)` | DTO 按 UTF-8 字节校验 |
+| `embedding` | `FLOAT_VECTOR(1024)` | 与百炼维度一致 |
+
+向量索引为 HNSW，距离度量为 COSINE，搜索参数 `ef=128`。代码中的 `distance` 实际承载相似度，值越大越相似。
+
+## 6. 写入链路
+
+### 6.1 文件上传
+
+```text
+POST /documents/upload
+  → 校验名称、扩展名、大小
+  → LocalFileStorage.save
+  → INSERT Document(PENDING, source_type=upload)
+  → status=PROCESSING
+  → TextDocumentParser
+  → RecursiveCharacterChunker
+  → EmbeddingClient（每批最多 10 条）
+  → Milvus re-ingest
+  → status=SUCCESS + chunk_count
+```
+
+失败后 Document 进入 `FAILED` 并记录最长 2048 字符的错误摘要。文件在 Document 创建成功后的处理失败场景中会保留以支持重试；若 Document 创建本身失败，会清理刚落盘的孤儿文件。
+
+### 6.2 网页剪藏
+
+```text
+POST /clips
+  → 按 (plugin_id, url) 查询既有网页
+  → 新建或复用 Document
+  → Chunker → Embedding → Milvus
+  → 更新 title/url/source_type/chunk_count/status
+```
+
+网页文档固定使用 `filename=webclip.txt`，不写本地文件。同一 Workspace、同一 URL 的失败文档可原位重试；不同 Workspace 的相同 URL 相互独立。
+
+### 6.3 Milvus re-ingest
+
+`IngestService` 使用三步收敛算法：查询该 `page_id` 的旧 chunk IDs；以确定性主键 upsert 新 chunks；删除 `old_ids - new_ids` 中的陈旧 chunks。相同输入重复执行可收敛到相同结果，文档变短时也不会遗留尾部 chunk。
+
+## 7. 检索与问答链路
+
+### 7.1 Search
+
+```text
+POST /rag/search
+  → 解密当前 Workspace API Key
+  → query embedding
+  → 确定检索范围与 Milvus expr
+  → Milvus HNSW/COSINE 候选
+  → MySQL 批量反查 Document
+  → Workspace + SUCCESS + orphan 后过滤
+  → top-K + 文档来源元数据
+```
+
+全知识库模式候选数为 `max(limit, 10)`；当前文档模式会扩大候选池后再限定到目标文档。API 的 `limit` 范围是 1–20。
+
+### 7.2 Ask
+
+```text
+POST /rag/ask
+  → 可选 document_id 的归属与 SUCCESS 前置校验
+  → RagService.search(top_k=5)
+  → 最多 4000 字符 Context
+  → 固定六条约束 System Prompt
+  → qwen-plus
+  → answer + sources
+```
+
+没有检索结果时不调用 LLM，直接返回固定提示和空 Sources。回答仅使用本次 retrieval 结果；服务端不读取扩展里的历史会话。
+
+## 8. 删除与一致性
+
+### 8.1 文档删除
+
+删除流程按 Milvus chunks → 本地文件 → MySQL Document 的顺序执行。接口对不存在的文档幂等返回 204；网页文档跳过文件删除。`DELETING` 状态用于阻止 ingest 与 delete 并发进入。
+
+这不是分布式事务。若中途失败，保留的 MySQL 权威记录使重试可以继续收敛；错误由 API 映射为可观察的 5xx。
+
+### 8.2 Workspace 删除
+
+Workspace 删除要求 `confirm=true` 且提交名称与当前名称完全一致。服务按每批 100 条、始终读取第一页的方式删除所有 Document，再删除 Workspace 行，避免 offset 分页漏项。
+
+## 9. API 与异常边界
+
+当前共有 16 个操作：Plugin 6、Document 6、Clip 1、Ingest 1、RAG 2。
+
+| 状态码 | 典型场景 |
+|---:|---|
+| 400 | 非法输入、路径穿越、API Key 验证失败、删除确认失败 |
+| 401 | Plugin Header 缺失或凭证无效 |
 | 403 | Workspace 被禁用 |
-| 404 | Document 不存在（跨 Workspace 也返回 404，不泄露归属） |
-| 409 | 名称已占用、API Key 未配置、Document 状态不允许操作 |
-| 413 | 文件超过大小上限（默认 2 MB） |
-| 415 | 不支持的扩展名（当前仅 `.txt` / `.md` / `.markdown`） |
-| 422 | Plugin 名称格式非法 |
-| 502 | 百炼 Embedding / LLM 服务异常（可重试） |
-| 503 | Milvus / MySQL / Plugin 数据服务异常（可重试） |
+| 404 | 文档不存在或不属于当前 Workspace |
+| 409 | API Key 未配置、文档状态冲突、名称冲突 |
+| 413 | 上传超过 2 MiB |
+| 415 | 上传类型不支持 |
+| 422 | Pydantic/FastAPI 契约校验失败 |
+| 502 | 百炼 Embedding 或 LLM 调用异常 |
+| 503 | MySQL/Milvus 操作异常 |
 
-## 数据模型
+## 10. 测试、可观测性与维护状态
 
-### MySQL `plugin_workspaces` 表
+主测试集覆盖 Router、Service、Repository、DTO、安全工具、Workspace 隔离、评测计算和报告渲染。当前活动集实测为 510 passed，并包含 31 个 subtests。
 
-| 字段 | 类型 | 说明 |
-|---|---|---|
-| `plugin_id` | VARCHAR(36) PK | UUID v4 |
-| `plugin_name` | VARCHAR(64) | 显示名（原始值） |
-| `plugin_name_norm` | VARCHAR(64) UNIQUE | 归一化名（strip + collapse + lower） |
-| `plugin_secret_hash` | VARCHAR(255) | bcrypt hash |
-| `api_key_ciphertext` | BLOB NULL | AES-256-GCM 加密后的百炼 API Key |
-| `api_key_nonce` | BLOB NULL | GCM nonce |
-| `status` | VARCHAR(32) | `ACTIVE` / `DISABLED` |
-| `created_at` / `updated_at` | DATETIME | 时间戳 |
+日志记录操作类型、Document ID 和候选数量等诊断信息；安全代码避免记录 Plugin Secret 与 API Key 明文。项目目前没有统一 metrics/tracing、结构化审计日志或请求 ID 中间件。
 
-### MySQL `documents` 表
+工作区中存在未接入主应用的旧 User/Bearer 草稿。`main.py` 不注册 `auth.py` 与 `users.py`，`deps.py` 也只提供 Plugin 身份；这些文件不属于当前运行架构。
 
-| 字段 | 类型 | 说明 |
-|---|---|---|
-| `id` | INT PK AUTO_INCREMENT | 主键，1:1 对应 Milvus `page_id` |
-| `plugin_id` | VARCHAR(36) | 所属 Workspace（FK → plugin_workspaces） |
-| `title` | VARCHAR(512) | 文档标题 |
-| `filename` | VARCHAR(255) | 文件名 |
-| `url` | VARCHAR(2048) NULL | 来源 URL（webpage 类型） |
-| `source_type` | VARCHAR(32) | `upload` / `webpage` |
-| `status` | VARCHAR(32) | `PENDING / PROCESSING / SUCCESS / FAILED / DELETING` |
-| `chunk_count` | INT | 已入库 chunk 数 |
-| `file_size` | INT | 文件字节数 |
-| `mime_type` | VARCHAR(128) | MIME 类型 |
-| `file_path` | VARCHAR(512) | 文件存储路径 |
-| `error_message` | TEXT NULL | 失败摘要 |
-| `created_at` / `updated_at` | DATETIME | 时间戳 |
+## 11. 已知演进约束
 
-### Milvus `page_chunks` Collection
-
-| 字段 | 类型 | 说明 |
-|---|---|---|
-| `id` | VARCHAR(64) PK | `{page_id}_{chunk_index}` |
-| `page_id` | INT64 | = `documents.id`（1:1） |
-| `chunk_index` | INT64 | chunk 序号（0 起） |
-| `chunk_text` | VARCHAR(4096) | 切块文本 |
-| `embedding` | FLOAT_VECTOR(1024) | 百炼向量 |
-
-- 向量索引：`HNSW`（metric=COSINE，M=16，efConstruction=200）
-- 检索参数：`ef=128`，返回 `id/page_id/chunk_index/chunk_text`，不返回 `embedding`
-- 初始化幂等：应用启动时 `MilvusInitializer.initialize()`，Collection 已存在则跳过
-
-## Chrome 扩展
-
-Manifest V3 Side Panel 扩展，文件位于 `extension/`：
-
-| 文件 | 说明 |
-|---|---|
-| `manifest.json` | MV3 声明，权限：`activeTab` / `scripting` / `storage` / `sidePanel` / `tabs` |
-| `background.js` | Service Worker：Side Panel 行为绑定、Tab 切换监听 |
-| `sidepanel.html` / `sidepanel.js` / `sidepanel.css` | Side Panel 主界面：欢迎/注册/应用三视图 |
-| `content.js` | 正文提取（`article → main → body`，噪声节点清理） |
-| `popup.html` / `popup.js` | Popup 备用入口 |
-| `api-client.js` | HTTP 请求封装（Plugin Header 注入、错误处理） |
-| `session-store.js` | 全局 Session 隔离存储（聊天历史按 Plugin 独立） |
-| `config.js` | 后端地址集中配置 |
-
-### 安全设计
-
-- 扩展仅在用户点击时对当前 Tab 注入脚本（`activeTab` 权限），不后台常驻
-- AI 生成内容一律 `textContent` 渲染，禁止 `innerHTML` 拼接（防 XSS）
-- `plugin_secret` 仅在注册时显示一次，后续请求通过 Header 传递
-
-## 环境变量
-
-全部配置项见 `.env.example`（复制为 `.env` 后填写，禁止硬编码 API Key）。
-
-| 变量 | 默认值 | 说明 |
-|---|---|---|
-| `APP_ENV` | `development` | 运行环境 |
-| `API_HOST` / `API_PORT` | `0.0.0.0` / `8000` | 服务监听地址 |
-| `APP_MASTER_KEY` | 空 | **必填**。AES-256-GCM 主密钥（32 字节），加密用户 API Key |
-| `MYSQL_HOST` / `MYSQL_PORT` | `localhost` / `3306` | MySQL 连接（compose 填 `33066`） |
-| `MYSQL_USER` / `MYSQL_PASSWORD` | `rag_user` / `rag_password` | MySQL 凭证 |
-| `MYSQL_DATABASE` | `rag_clipper` | 数据库名 |
-| `MILVUS_HOST` / `MILVUS_PORT` | `localhost` / `19530` | Milvus 连接 |
-| `MILVUS_COLLECTION` | `page_chunks` | Milvus Collection 名 |
-| `BAILIAN_API_KEY` | 空 | 百炼 API Key（服务端默认 Key） |
-| `BAILIAN_BASE_URL` | `https://dashscope.aliyuncs.com/compatible-mode/v1` | 百炼 OpenAI 兼容端点 |
-| `BAILIAN_EMBEDDING_MODEL` | `text-embedding-v3` | Embedding 模型 |
-| `BAILIAN_EMBEDDING_DIMENSION` | `1024` | 向量维度（须与 Milvus `embedding.dim` 一致） |
-| `BAILIAN_LLM_MODEL` | `qwen-plus` | LLM 模型 |
-| `UPLOAD_DIR` | `uploads` | 原始文件存储根目录 |
-| `CHUNK_SIZE` / `CHUNK_OVERLAP` | `700` / `100` | 递归切块参数 |
-| `EMBEDDING_BATCH_SIZE` | `10` | Embedding 批量上限（百炼硬限制 10） |
-| `MAX_PAGE_CONTENT_BYTES` | `2097152` | 上传文件大小上限（2 MB） |
-| `REDIS_*` | — | Redis 连接（当前预留） |
-| `CORS_ORIGINS` | `chrome-extension://*` | CORS 配置 |
-
-## 项目结构
-
-```
-├── backend/
-│   ├── main.py                    # FastAPI 工厂 + lifespan + 全局异常处理器
-│   ├── api/
-│   │   ├── deps.py                # get_current_plugin 身份依赖
-│   │   └── routers/
-│   │       ├── clips.py           # POST /clips
-│   │       ├── documents.py       # 文档 CRUD + upload + ingest
-│   │       ├── ingest.py          # POST /ingest/page
-│   │       ├── plugins.py         # Plugin Workspace 6 端点
-│   │       └── rag.py             # POST /rag/search + /rag/ask
-│   ├── services/
-│   │   ├── plugin_service.py      # 注册/认证/API Key/删除
-│   │   ├── document_upload.py     # 上传 + 全链路编排
-│   │   ├── document_ingest.py     # 生命周期 + 重试
-│   │   ├── document_delete.py     # 幂等删除
-│   │   ├── web_clip.py            # 网页剪藏
-│   │   ├── ingest.py              # 底层 chunk 入库
-│   │   ├── rag.py                 # RAG 语义检索
-│   │   └── rag_answer.py          # 检索 + LLM 问答
-│   ├── repositories/
-│   │   ├── mysql/                 # documents + plugin_workspaces 仓储
-│   │   └── milvus/                # 向量库仓储 + Initializer
-│   ├── clients/
-│   │   ├── embedding.py           # 百炼 Embedding 客户端
-│   │   └── llm.py                 # 百炼 LLM 客户端（OpenAI 兼容）
-│   ├── core/
-│   │   ├── config.py              # Pydantic Settings 配置单源
-│   │   ├── db.py                  # SQLAlchemy 引擎
-│   │   ├── di.py                  # 依赖注入工厂
-│   │   ├── exceptions.py          # 异常体系（Document/Plugin/Security/Milvus）
-│   │   └── security.py            # AES-256-GCM 加密/解密
-│   ├── models/                    # ORM + API Schema + Milvus DTO + Plugin ORM
-│   ├── storage/                   # LocalFileStorage 本地文件存储
-│   ├── parsers/                   # TextParser 文本解析
-│   ├── chunkers/                  # RecursiveChunker 递归切块
-│   └── tests/                     # 25 个测试文件、487 个用例
-├── extension/                     # Chrome 扩展（MV3 Side Panel）
-│   ├── manifest.json              # MV3 + sidePanel 权限
-│   ├── background.js              # Service Worker
-│   ├── sidepanel.html/js/css      # Side Panel 主界面
-│   ├── content.js                 # 正文提取
-│   ├── api-client.js              # HTTP 请求封装
-│   ├── session-store.js           # 全局 Session 隔离存储
-│   └── config.js                  # 后端地址配置
-├── alembic/versions/              # 8 个数据库迁移（0001 → 0008）
-├── docker-compose.yml             # MySQL / Redis / etcd / MinIO / Milvus
-├── .env.example                   # 环境变量模板
-└── docs/                          # 架构文档与历史设计文档
-```
-
-## 测试覆盖
-
-测试框架：`pytest`，测试文件位于 `backend/tests/`。
-
-**API 层**（7 个）：
-`test_document_api` / `test_document_upload_api` / `test_ingest_api` / `test_rag_api` / `test_rag_answer_api` / `test_web_clip_api` / `test_plugin_api`
-
-**Service 层**（7 个）：
-`test_document_upload_service` / `test_document_ingest_service` / `test_document_delete_service` / `test_rag_service` / `test_rag_answer_service` / `test_web_clip_service` / `test_plugin_service`
-
-**数据层**（3 个）：
-`test_document_repository` / `test_plugin_repository` / `test_plugin_isolation`
-
-**组件**（4 个）：
-`test_text_parser` / `test_chunker` / `test_file_storage` / `test_embedding_client` / `test_llm_client`
-
-**安全**（2 个）：
-`test_security` / `test_plugin_isolation`
-
-## 演进方向
-
-- 扩展增强：正文提取升级、右键菜单剪藏、快捷键
-- 异步 ingest 队列（Redis/Celery）+ 任务进度查询
-- PDF / DOCX / OCR 解析接入
-- 全局 API Token / JWT 鉴权中间件
-- 基于对话历史的上下文连续问答
+- 同步 ingest 会占用请求；异步化时需保持 Document 状态机和幂等 re-ingest 语义。
+- 向量维度或 Collection Schema 改动不能仅改环境变量，必须重建 Collection 并全量重新 ingest。
+- 若启用公网访问，需要补齐 CORS、TLS、限流、Secret 轮换、审计和更严格的部署配置。
+- 新解析器应实现 `DocumentParser` Protocol，新存储或数据库适配应实现对应 Protocol。
+- `docs/ARCHITECTURE.md` 是较早阶段的实现快照，已落后于当前扩展与 Workspace 架构。

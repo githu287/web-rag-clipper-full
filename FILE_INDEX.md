@@ -1,241 +1,276 @@
-# 项目文件索引
+# Web RAG Clipper 文件索引
 
-本文件列出 Web RAG Clipper 项目中每一个文件及其作用。
-
----
+本索引按职责说明当前仓库文件。运行时生成的 `.env`、`.venv/`、`uploads/`、缓存和 evaluation 私有输出均被 Git 忽略，不属于源代码。
 
 ## 根目录
 
 | 文件 | 说明 |
 |---|---|
-| `.env.example` | 环境变量模板，包含全部配置项及注释说明 |
-| `.env` | 实际运行环境变量（由 `.env.example` 复制后填写，不提交 Git） |
-| `README.md` | 项目说明文档：功能特性、技术栈、架构图、快速开始、API 一览 |
-| `FILE_INDEX.md` | 本文件，项目全文件索引 |
-| `docker-compose.yml` | Docker Compose 编排：MySQL / Redis / etcd / MinIO / Milvus 五大服务 |
-| `alembic.ini` | Alembic 配置文件，`sqlalchemy.url` 留空由 `env.py` 运行时注入 |
+| `README.md` | 项目能力、安装、运行、API、测试与限制 |
+| `ARCHITECTURE.md` | 当前实现的分层、数据流、隔离与一致性设计 |
+| `FILE_INDEX.md` | 本文件 |
+| `.env.example` | 环境变量模板；部分字段是尚未消费的预留配置 |
+| `.gitignore` | Python、IDE、运行数据、扩展构建与评测私有产物忽略规则 |
+| `docker-compose.yml` | MySQL、Redis、etcd、MinIO、Milvus standalone 编排 |
+| `alembic.ini` | Alembic 配置入口；数据库 URL 由运行时环境注入 |
 
----
+## `backend/` — FastAPI 后端
 
-## Alembic 数据库迁移
-
-| 文件 | 说明 |
-|---|---|
-| `alembic/env.py` | Alembic 迁移环境入口，从 Settings 构建 MySQL URL，加载 ORM metadata |
-| `alembic/script.py.mako` | Alembic 迁移脚本 Mako 模板，生成新迁移时使用的骨架 |
-| `alembic/versions/0001_create_documents.py` | 创建 `documents` 表（id, filename, file_path, status, chunk_count, created_at, updated_at） |
-| `alembic/versions/0002_add_document_file_metadata.py` | 为 `documents` 添加 `file_size` / `mime_type` 字段 |
-| `alembic/versions/0003_add_document_source_metadata.py` | 为 `documents` 添加 `title` / `url` / `source_type` 字段 |
-| `alembic/versions/0004_create_users.py` | 创建 `users` 表（后续废弃） |
-| `alembic/versions/0005_documents_user_id_not_null.py` | 将 `documents.user_id` 改为 NOT NULL |
-| `alembic/versions/0006_user_identity_rework.py` | 用户身份体系重构，移除旧 users 表 |
-| `alembic/versions/0007_plugin_workspace.py` | 创建 `plugin_workspaces` 表（Plugin Workspace 多租户） |
-| `alembic/versions/0008_documents_user_id_default.py` | 将 `documents.user_id` 改为可空并设默认值 |
-
----
-
-## 后端 — API 层
+### 应用与 API
 
 | 文件 | 说明 |
 |---|---|
-| `backend/api/__init__.py` | 空包初始化 |
-| `backend/api/deps.py` | FastAPI 依赖注入函数：`get_current_plugin()` 从 `X-Plugin-ID` + `X-Plugin-Secret` 请求头解析当前插件工作空间身份 |
-| `backend/api/routers/__init__.py` | 空包初始化 |
-| `backend/api/routers/clips.py` | `POST /clips` — Web Clip 网页剪藏路由，接收 URL/标题/正文，`source_type=webpage` 直接入库 |
-| `backend/api/routers/documents.py` | 文档管理路由：`POST /documents/upload`（上传入库）、`POST /documents`（创建元数据）、`GET /documents`（分页列表）、`GET /documents/{id}`（详情）、`POST /documents/{id}/ingest`（生命周期 ingest）、`DELETE /documents/{id}`（幂等删除） |
-| `backend/api/routers/ingest.py` | `POST /ingest/page` — 底层 chunk 入库路由，re-ingest 链路（query old → upsert new → delete stale） |
-| `backend/api/routers/plugins.py` | Plugin Workspace 路由（6 个端点）：`POST /plugins/register`、`GET/PUT/DELETE /plugins/me`、`PUT/DELETE /plugins/me/api-key` |
-| `backend/api/routers/rag.py` | RAG 路由：`POST /rag/search`（语义检索）、`POST /rag/ask`（检索 + LLM 问答） |
+| `backend/main.py` | FastAPI 工厂、模块级 `app`、Milvus lifespan、Router 与全局异常处理器 |
+| `backend/api/__init__.py` | API 包标记 |
+| `backend/api/deps.py` | 从双请求头解析当前 Workspace |
+| `backend/api/routers/__init__.py` | Router 子包标记；文件内路由清单注释已落后 |
+| `backend/api/routers/plugins.py` | Workspace 注册、详情、改名、API Key 与删除 |
+| `backend/api/routers/documents.py` | 文档列表/详情、创建、上传、ingest 与删除 |
+| `backend/api/routers/clips.py` | 网页正文剪藏 |
+| `backend/api/routers/ingest.py` | 已切分 chunks 的底层 re-ingest |
+| `backend/api/routers/rag.py` | 语义检索与生成式问答 |
+| `backend/api/routers/auth.py` | 未接入的旧 User/Bearer 草稿；`main.py` 未注册 |
+| `backend/api/routers/users.py` | 未接入的旧 User 资料/API Key 草稿；`main.py` 未注册 |
 
----
-
-## 后端 — Service 层
-
-| 文件 | 说明 |
-|---|---|
-| `backend/services/__init__.py` | 空包初始化 |
-| `backend/services/plugin_service.py` | PluginService：工作空间注册、身份认证、名称修改、API Key 加密存储/解密/验证、工作空间删除 |
-| `backend/services/document_upload.py` | DocumentUploadService：multipart 上传 → 解析 → 切块 → Embedding → 向量入库 → 置 SUCCESS，全链路编排 |
-| `backend/services/document_ingest.py` | DocumentIngestService：Document 生命周期 ingest（PENDING → PROCESSING → SUCCESS/FAILED），支持 FAILED 重试 |
-| `backend/services/document_delete.py` | DocumentDeleteService：幂等删除（Milvus chunks → 本地文件 → MySQL 行，不存在也返回 204） |
-| `backend/services/web_clip.py` | WebClipService：网页剪藏编排，接收 URL/标题/正文 → 切块 → Embedding → 入库，不创建物理文件 |
-| `backend/services/ingest.py` | IngestService：底层 chunk 入库逻辑，被 DocumentIngestService 和 WebClipService 复用 |
-| `backend/services/rag.py` | RagService：RAG 语义检索，Embedding query → Milvus 候选 → SUCCESS 状态过滤 → Top-K 返回 |
-| `backend/services/rag_answer.py` | RagAnswerService：RAG 问答编排，用户问题 → Retrieval（经 RagService）→ 构造 Context → 百炼 qwen-plus LLM → Answer + Sources |
-
----
-
-## 后端 — Repository 层
+### Core
 
 | 文件 | 说明 |
 |---|---|
-| `backend/repositories/__init__.py` | 空包初始化 |
-| **MySQL** | |
-| `backend/repositories/mysql/__init__.py` | MySQL 子包初始化，重导出 Document/Plugin Repository Protocol + Impl |
-| `backend/repositories/mysql/protocol.py` | `DocumentRepository` Protocol 接口定义（CRUD + 状态更新 + 分页查询） |
-| `backend/repositories/mysql/impl.py` | `DocumentRepositoryImpl`：DocumentRepository 的 SQLAlchemy 实现 |
-| `backend/repositories/mysql/plugin_protocol.py` | `PluginRepository` Protocol 接口定义（plugin_workspaces 表 CRUD） |
-| `backend/repositories/mysql/plugin_impl.py` | `PluginRepositoryImpl`：PluginRepository 的 SQLAlchemy 实现 |
-| **Milvus** | |
-| `backend/repositories/milvus/__init__.py` | Milvus 子包初始化，重导出 MilvusRepository Protocol + Initializer + Impl |
-| `backend/repositories/milvus/protocol.py` | `MilvusRepository` Protocol 接口定义（insert / search / delete by page_id） |
-| `backend/repositories/milvus/impl.py` | `PyMilvusRepositoryImpl`：MilvusRepository 的 pymilvus 实现 |
-| `backend/repositories/milvus/initializer.py` | `MilvusInitializer`：应用启动时幂等创建 `page_chunks` Collection + HNSW Index + Load |
-| **Redis** | |
-| `backend/repositories/redis/.gitkeep` | 占位文件，Redis 仓储预留目录 |
+| `backend/core/__init__.py` | Core 包标记 |
+| `backend/core/config.py` | Pydantic Settings 单一配置源与参数交叉校验 |
+| `backend/core/db.py` | SQLAlchemy Engine、Session 工厂和 MySQL URL |
+| `backend/core/di.py` | Repository、Client、Service 和存储组件的 DI 工厂 |
+| `backend/core/exceptions.py` | Document、Plugin、Security、Milvus 等领域异常 |
+| `backend/core/security.py` | AES-256-GCM、SHA-256、Plugin ID/Secret 工具 |
 
----
-
-## 后端 — Client 层
+### Models 与契约
 
 | 文件 | 说明 |
 |---|---|
-| `backend/clients/__init__.py` | 空包初始化 |
-| `backend/clients/embedding.py` | `EmbeddingClient`：百炼 `text-embedding-v3` 向量化客户端（OpenAI 兼容协议），批量上限 10 条/请求 |
-| `backend/clients/llm.py` | `LLMClient`：百炼 `qwen-plus` LLM 客户端（OpenAI Chat Completions 兼容协议），用于 RAG 问答生成 |
+| `backend/models/__init__.py` | 对外导出 ORM 与常量 |
+| `backend/models/base.py` | SQLAlchemy Declarative Base |
+| `backend/models/document.py` | `documents` ORM、Document 状态与来源类型 |
+| `backend/models/plugin.py` | `plugin_workspaces` ORM 与 Workspace 状态 |
+| `backend/models/milvus_dto.py` | `ChunkVector` / `ChunkSearchResult` 严格 DTO |
+| `backend/models/api_schema.py` | Ingest、RAG、Plugin API Schema |
+| `backend/models/document_api_schema.py` | Document、Upload、Clip、列表与详情 Schema |
+| `backend/models/user.py` | 未接入的旧 User/Bearer 草稿 ORM |
 
----
-
-## 后端 — Core 基础设施
-
-| 文件 | 说明 |
-|---|---|
-| `backend/core/__init__.py` | 空包初始化 |
-| `backend/core/config.py` | `Settings` 类（Pydantic v2 BaseSettings），全局配置单源：Milvus / MySQL / 百炼 / 切块 / 上传等全部参数 |
-| `backend/core/db.py` | SQLAlchemy 2.0 Engine 单例 + `build_mysql_url()` URL 构建函数 |
-| `backend/core/di.py` | 依赖注入工厂：`get_*_service()` / `get_*_repository()` 等函数，集中装配 Service/Repository 依赖图 |
-| `backend/core/exceptions.py` | 完整异常体系：Document 族 / Plugin 族 / Security 族 / Milvus 族 / Embedding 族 / LLM 族，全部继承自对应基类 |
-| `backend/core/security.py` | AES-256-GCM 加密/解密模块：`encrypt_api_key()` / `decrypt_api_key()`，使用 `APP_MASTER_KEY` 主密钥 |
-
----
-
-## 后端 — Models
+### Services
 
 | 文件 | 说明 |
 |---|---|
-| `backend/models/__init__.py` | 包初始化，显式注册 Document / PluginWorkspace ORM 到 Base.metadata |
-| `backend/models/base.py` | SQLAlchemy 2.0 `DeclarativeBase`，所有 ORM 模型共享的基类 |
-| `backend/models/document.py` | `Document` ORM 模型 + `DocumentStatus` 枚举（PENDING/PROCESSING/SUCCESS/FAILED/DELETING） |
-| `backend/models/plugin.py` | `PluginWorkspace` ORM 模型 + `PluginStatus` 枚举（ACTIVE/DISABLED），含 `plugin_secret_hash` / `api_key_ciphertext` / `api_key_nonce` |
-| `backend/models/api_schema.py` | 全局 Pydantic API Schema：RAG / Plugin / Ingest 等请求/响应 DTO，全部 `extra="forbid"` |
-| `backend/models/document_api_schema.py` | Document 专属 API Schema：`DocumentCreateRequest` / `DocumentResponse` / `DocumentIngestRequest` / `DocumentIngestResponse` / `DocumentListResponse` / `DocumentDetailResponse` |
-| `backend/models/milvus_dto.py` | Milvus 数据契约 DTO：`ChunkVector`（写入）/ `ChunkSearchResult`（检索结果），字段集与 Milvus Schema 严格对齐 |
+| `backend/services/__init__.py` | Service 包标记 |
+| `backend/services/plugin_service.py` | Workspace 注册、认证、改名、API Key 处理 |
+| `backend/services/document_upload.py` | 文件校验、落盘、解析、切块与生命周期编排 |
+| `backend/services/document_ingest.py` | Document 状态机和 ingest 成功/失败收敛 |
+| `backend/services/document_delete.py` | Milvus → 文件 → MySQL 的幂等文档删除 |
+| `backend/services/workspace_delete.py` | 分批清理文档后删除 Workspace |
+| `backend/services/web_clip.py` | 网页文档创建/复用、切块、入库与元数据更新 |
+| `backend/services/ingest.py` | old IDs → upsert new → delete stale |
+| `backend/services/rag.py` | Query 向量化、范围过滤、搜索和 metadata 组装 |
+| `backend/services/rag_answer.py` | Retrieval、Context、Prompt、LLM、Sources 编排 |
+| `backend/services/user_service.py` | 未接入的旧 User/Bearer 草稿 Service |
 
----
-
-## 后端 — 解析 / 切分 / 存储
-
-| 文件 | 说明 |
-|---|---|
-| `backend/parsers/__init__.py` | 空包初始化 |
-| `backend/parsers/protocol.py` | `DocumentParser` Protocol 接口：`parse(file_path) -> str` |
-| `backend/parsers/text.py` | `TextParser`：纯文本解析器，支持 `.txt` / `.md` / `.markdown`，读取并 UTF-8 解码 |
-| `backend/chunkers/__init__.py` | 空包初始化 |
-| `backend/chunkers/protocol.py` | `Chunker` Protocol 接口：`split(text) -> list[str]` |
-| `backend/chunkers/recursive.py` | `RecursiveChunker`：递归字符切块器，默认 700 字符/块、100 字符重叠 |
-| `backend/storage/__init__.py` | 空包初始化 |
-| `backend/storage/protocol.py` | `FileStorage` Protocol 接口：`save()` / `resolve()` / `delete()` |
-| `backend/storage/local.py` | `LocalFileStorage`：本地文件系统存储实现，文件存入 `uploads/` 目录，防路径穿越 |
-
----
-
-## 后端 — 应用入口
+### Repository
 
 | 文件 | 说明 |
 |---|---|
-| `backend/main.py` | FastAPI 应用入口：`create_app()` 工厂 + `lifespan` 生命周期（启动时 Milvus 初始化） + 全局异常处理器注册（15+ 异常类型 → HTTP 状态码映射） |
-| `backend/requirements.txt` | Python 依赖清单：fastapi / uvicorn / sqlalchemy / pymilvus / pydantic / openai / cryptography 等 |
+| `backend/repositories/__init__.py` | Repository 包标记 |
+| `backend/repositories/mysql/__init__.py` | 导出 Document Repository 接口与实现 |
+| `backend/repositories/mysql/protocol.py` | Document Repository Protocol |
+| `backend/repositories/mysql/impl.py` | SQLAlchemy Document Repository 与 Workspace 过滤 |
+| `backend/repositories/mysql/plugin_protocol.py` | Plugin Repository Protocol |
+| `backend/repositories/mysql/plugin_impl.py` | SQLAlchemy Plugin Workspace Repository |
+| `backend/repositories/mysql/user_protocol.py` | 未接入的旧 User Repository Protocol |
+| `backend/repositories/mysql/user_impl.py` | 未接入的旧 User Repository 实现 |
+| `backend/repositories/milvus/__init__.py` | 导出 Milvus Protocol、实现与初始化器 |
+| `backend/repositories/milvus/protocol.py` | Milvus Repository Protocol |
+| `backend/repositories/milvus/impl.py` | pymilvus 查询、upsert、删除与搜索实现 |
+| `backend/repositories/milvus/initializer.py` | Collection、HNSW/倒排索引的幂等初始化 |
 
----
-
-## 后端 — 测试
-
-| 文件 | 说明 |
-|---|---|
-| **API 层测试** | |
-| `backend/tests/test_document_api.py` | Document 生命周期 API 测试（POST /documents + POST /documents/{id}/ingest） |
-| `backend/tests/test_document_upload_api.py` | 文档上传 API 测试（POST /documents/upload，含空文件/超限/不支持格式） |
-| `backend/tests/test_ingest_api.py` | 底层 ingest API 测试（POST /ingest/page） |
-| `backend/tests/test_rag_api.py` | RAG 检索 API 测试（POST /rag/search） |
-| `backend/tests/test_rag_answer_api.py` | RAG 问答 API 测试（POST /rag/ask） |
-| `backend/tests/test_web_clip_api.py` | Web Clip API 测试（POST /clips） |
-| `backend/tests/test_plugin_api.py` | Plugin Workspace API 测试（注册/认证/改名/API Key/删除全流程） |
-| **Service 层测试** | |
-| `backend/tests/test_document_upload_service.py` | DocumentUploadService 单元测试（全链路编排 Mock 验证） |
-| `backend/tests/test_document_ingest_service.py` | DocumentIngestService 单元测试（状态流转 + 重试逻辑） |
-| `backend/tests/test_document_delete_service.py` | DocumentDeleteService 单元测试（幂等删除顺序验证） |
-| `backend/tests/test_rag_service.py` | RagService 单元测试（检索 + 过滤 + Top-K） |
-| `backend/tests/test_rag_answer_service.py` | RagAnswerService 单元测试（Context 构造 + 截断 + LLM 调用） |
-| `backend/tests/test_web_clip_service.py` | WebClipService 单元测试（网页剪藏编排） |
-| `backend/tests/test_plugin_service.py` | PluginService 单元测试（注册/认证/名称归一化/API Key 加密/删除） |
-| **数据层测试** | |
-| `backend/tests/test_document_repository.py` | DocumentRepository 单元测试（CRUD + 分页 + 状态更新） |
-| `backend/tests/test_plugin_repository.py` | PluginRepository 单元测试（plugin_workspaces CRUD） |
-| `backend/tests/test_plugin_isolation.py` | Plugin 数据隔离测试（跨 Workspace 文档不可见/不可操作） |
-| **组件测试** | |
-| `backend/tests/test_text_parser.py` | TextParser 单元测试（各格式解析 + 空文件 + 编码） |
-| `backend/tests/test_chunker.py` | RecursiveChunker 单元测试（切块/重叠/空文本/配置校验） |
-| `backend/tests/test_file_storage.py` | LocalFileStorage 单元测试（唯一对象键/保存/解析/删除/路径穿越防御） |
-| `backend/tests/test_workspace_delete_service.py` | Workspace 跨 MySQL/Milvus/FileStorage 删除编排测试 |
-| `backend/tests/test_evaluation_baseline.py` | Retrieval Evaluation 指标与 Dataset 校验测试 |
-| `backend/tests/test_embedding_client.py` | EmbeddingClient 单元测试（批量/错误处理/维度校验） |
-| `backend/tests/test_llm_client.py` | LLMClient 单元测试（请求/响应/空响应/错误处理） |
-| **安全测试** | |
-| `backend/tests/test_security.py` | AES-256-GCM 加密/解密测试（密钥校验/解密失败/轮转） |
-
----
-
-## Chrome 扩展
+### Client、解析、切块与存储
 
 | 文件 | 说明 |
 |---|---|
-| `extension/manifest.json` | Manifest V3 声明：名称/版本/权限（`activeTab` / `scripting` / `storage` / `sidePanel` / `tabs`）/host_permissions / side_panel 路径 |
-| `extension/background.js` | Service Worker：`chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true })`、Tab 切换时更新 Side Panel 上下文 |
-| `extension/sidepanel.html` | Side Panel HTML 结构：欢迎视图 / 被阻止视图 / 应用视图（Chat + Library + Settings） |
-| `extension/sidepanel.js` | Side Panel 主逻辑：视图切换、Plugin 注册、聊天问答（流式渲染）、知识库管理（分页/搜索/筛选/删除）、Settings（改名/改 API Key/删除 Workspace） |
-| `extension/sidepanel.css` | Side Panel 样式表 |
-| `extension/content.js` | Content Script：注入网页提取正文（`article → main → body`，清理 script/style/nav/footer/iframe/广告区，空白归一化） |
-| `extension/popup.html` | Popup HTML 结构：轻量入口，引导打开 Side Panel |
-| `extension/popup.js` | Popup 逻辑：显示当前页面信息 + 「打开 Side Panel」按钮 |
-| `extension/popup.css` | Popup 样式表 |
-| `extension/api-client.js` | HTTP 请求封装：统一注入 `X-Plugin-ID` / `X-Plugin-Secret` 请求头，错误处理，响应解析 |
-| `extension/session-store.js` | Plugin 全局 Session + TabBinding 网页上下文隔离存储；Plugin 凭证持久化到 `chrome.storage.local` |
+| `backend/clients/__init__.py` | Client 包标记 |
+| `backend/clients/embedding.py` | 百炼 Embedding Client、batch 与 Key 隔离 |
+| `backend/clients/llm.py` | LLM Protocol 与百炼 Chat Completion 实现 |
+| `backend/parsers/__init__.py` | Parser 包标记 |
+| `backend/parsers/protocol.py` | Document Parser Protocol |
+| `backend/parsers/text.py` | UTF-8/BOM 文本与 Markdown Parser |
+| `backend/chunkers/__init__.py` | Chunker 包标记 |
+| `backend/chunkers/protocol.py` | Chunker Protocol |
+| `backend/chunkers/recursive.py` | 字符级递归切块，默认 700/100 |
+| `backend/storage/__init__.py` | Storage 包标记 |
+| `backend/storage/protocol.py` | File Storage Protocol |
+| `backend/storage/local.py` | 本地保存/删除与路径穿越防护 |
+| `backend/requirements.txt` | 后端依赖和 Milvus Client 版本约束 |
 
-## Evaluation
+### 后端测试
 
-| 文件 | 职责 |
+| 文件 | 覆盖重点 |
 |---|---|
-| `evaluation/baseline.py` | Dataset 校验、Retrieval 调用、Hit/Recall/Precision/MRR/nDCG/隔离/延迟指标 |
-| `evaluation/validate_datasets.py` | JSONL 静态校验 CLI |
-| `evaluation/align_datasets.py` | 将审核后的占位符映射写入独立 aligned Dataset |
-| `evaluation/run_baseline.py` | 调用 `/rag/search` 并生成版本化 JSON Baseline Report |
-| `evaluation/README.md` | Part-B 对齐与 Baseline 运行说明 |
-| `extension/config.js` | 后端地址集中配置（`API_BASE_URL`），其他文件不硬编码后端地址 |
-| `extension/.gitkeep` | 占位文件 |
+| `backend/tests/test_chunker.py` | Chunk 大小、重叠、顺序和配置边界 |
+| `backend/tests/test_text_parser.py` | UTF-8/BOM、扩展名和异常 |
+| `backend/tests/test_file_storage.py` | 保存/删除、幂等与路径穿越 |
+| `backend/tests/test_embedding_client.py` | 批处理、维度、异常和 Key 隔离 |
+| `backend/tests/test_llm_client.py` | LLM 参数、响应和异常包装 |
+| `backend/tests/test_security.py` | AES-GCM、哈希、随机凭证与篡改检测 |
+| `backend/tests/test_document_repository.py` | CRUD、筛选、分页和 Workspace 隔离 |
+| `backend/tests/test_plugin_repository.py` | Plugin Repository 数据契约 |
+| `backend/tests/test_plugin_service.py` | 名称、认证、API Key 与敏感信息保护 |
+| `backend/tests/test_plugin_isolation.py` | Workspace 数据隔离 |
+| `backend/tests/test_document_upload_service.py` | 上传编排、补偿和状态机 |
+| `backend/tests/test_document_ingest_service.py` | Ingest 状态、重试和删除互斥 |
+| `backend/tests/test_document_delete_service.py` | 删除顺序、幂等和失败收敛 |
+| `backend/tests/test_workspace_delete_service.py` | Workspace 级联删除和重试 |
+| `backend/tests/test_web_clip_service.py` | URL 复用、状态与隔离 |
+| `backend/tests/test_rag_service.py` | 检索范围、后过滤、metadata 与隔离 |
+| `backend/tests/test_rag_answer_service.py` | Context、空结果、Sources 与 LLM |
+| `backend/tests/test_ingest_api.py` | `/ingest/page` 契约与错误映射 |
+| `backend/tests/test_rag_api.py` | `/rag/search` 契约和隔离 |
+| `backend/tests/test_rag_answer_api.py` | `/rag/ask` 契约和异常映射 |
+| `backend/tests/test_document_api.py` | Document CRUD、列表/详情与分页 API |
+| `backend/tests/test_document_upload_api.py` | multipart 上传 API |
+| `backend/tests/test_web_clip_api.py` | Web Clip Schema 与响应 |
+| `backend/tests/test_plugin_api.py` | Plugin Workspace API |
+| `backend/tests/test_evaluation_baseline.py` | 指标、数据对齐和隔离泄漏计算 |
+| `backend/tests/test_auth_api.py` | 未接入 User/Bearer 草稿测试；当前收集失败 |
+| `backend/tests/test_user_repository.py` | 未接入 User Repository 草稿测试；当前收集失败 |
+| `backend/tests/test_user_service.py` | 未接入 User Service 草稿测试；当前收集失败 |
 
----
-
-## 文档
+## `extension/` — 浏览器扩展
 
 | 文件 | 说明 |
 |---|---|
-| `docs/ARCHITECTURE.md` | 项目架构文档：分层设计、依赖注入、数据流 |
-| `docs/INTERVIEW_MATERIALS.md` | 面试材料：项目亮点、技术决策、问题排查经验总结 |
-| `docs/PHASE0_ARCHITECTURE.md` | Phase 0 架构设计文档：初始系统设计与技术选型 |
-| `docs/PHASE2_DATA_MODEL.md` | Phase 2 数据模型设计：MySQL 表结构、ORM 映射 |
-| `docs/PHASE2_MILVUS_SCHEMA.md` | Phase 2 Milvus Schema 设计：`page_chunks` Collection 字段/索引/参数 |
-| `docs/PHASE2.3_MILVUS_REPOSITORY_DESIGN.md` | Phase 2.3 Milvus Repository 设计：Protocol/Impl 分层、Initializer 幂等初始化 |
+| `extension/manifest.json` | Manifest V3、Side Panel、Service Worker 与权限 |
+| `extension/config.js` | 后端地址、存储键、Session 上限等常量 |
+| `extension/background.js` | Side Panel 行为和 Tab 消息广播 |
+| `extension/content.js` | DOM 正文抽取、噪声清理和 SPA URL 监听 |
+| `extension/api-client.js` | Plugin Header、JSON/multipart 请求与错误分类 |
+| `extension/session-store.js` | Session、当前 Session 和 Tab Binding 存储层 |
+| `extension/sidepanel.html` | 注册、剪藏、聊天、知识库和设置视图 |
+| `extension/sidepanel.css` | Side Panel 样式 |
+| `extension/sidepanel.js` | Side Panel 状态、事件和业务交互 |
+| `extension/popup.html` | Popup 轻量入口结构 |
+| `extension/popup.css` | Popup 样式 |
+| `extension/popup.js` | 页面预览、快捷剪藏和打开 Side Panel |
 
----
-
-## 其他
+## `alembic/` — 数据库迁移
 
 | 文件 | 说明 |
 |---|---|
-| `backend/api/.gitkeep` | 占位文件，确保空目录被 Git 追踪 |
-| `backend/clients/.gitkeep` | 同上 |
-| `backend/core/.gitkeep` | 同上 |
-| `backend/models/.gitkeep` | 同上 |
-| `backend/repositories/milvus/.gitkeep` | 同上 |
-| `backend/repositories/mysql/.gitkeep` | 同上 |
-| `backend/services/.gitkeep` | 同上 |
+| `alembic/env.py` | 加载 ORM metadata，按环境构造数据库 URL |
+| `alembic/script.py.mako` | 新迁移模板 |
+| `alembic/versions/0001_create_documents.py` | 初始 `documents` 表 |
+| `alembic/versions/0002_add_document_file_metadata.py` | 增加大小、MIME 和错误信息 |
+| `alembic/versions/0003_add_document_source_metadata.py` | 增加标题、URL 和来源类型 |
+| `alembic/versions/0004_create_users.py` | 历史 User 表迁移 |
+| `alembic/versions/0005_documents_user_id_not_null.py` | 历史 `documents.user_id` 非空化 |
+| `alembic/versions/0006_user_identity_rework.py` | 历史用户名/密码身份重构 |
+| `alembic/versions/0007_plugin_workspace.py` | 创建 Workspace，增加并回填 `documents.plugin_id` |
+| `alembic/versions/0008_documents_user_id_default.py` | 为旧 `user_id` 设置默认 0 |
+
+## `evaluation/` — Retrieval 基线
+
+| 文件 | 说明 |
+|---|---|
+| `evaluation/__init__.py` | Evaluation 包标记 |
+| `evaluation/README.md` | 数据验证、对齐与基线执行说明 |
+| `evaluation/baseline.py` | 指标计算、样本运行和结果汇总 |
+| `evaluation/run_baseline.py` | 调用后端执行 Retrieval 基线的 CLI |
+| `evaluation/validate_datasets.py` | JSONL Schema、占位符和一致性校验 |
+| `evaluation/align_datasets.py` | 用真实 ID 替换占位符 |
+| `evaluation/validate_runtime_alignment.py` | 对照 MySQL/Milvus 验证映射与归属 |
+| `evaluation/render_report.py` | 将基线 JSON 渲染为 Markdown |
+
+### 数据集
+
+| 文件 | 说明 |
+|---|---|
+| `evaluation/datasets/DATASET_MANIFEST.md` | 150 条样本、占位符、源文档和复核状态 |
+| `evaluation/datasets/rag_eval.jsonl` | 70 条主 Retrieval/RAG 样本 |
+| `evaluation/datasets/negative_eval.jsonl` | 10 条拒答与幻觉负例 |
+| `evaluation/datasets/isolation_eval.jsonl` | 70 条 Workspace 隔离样本 |
+| `evaluation/datasets/chunk_gold_annotations.json` | Chunk Gold 人工标注与复核数据 |
+
+### 评测源文档
+
+`evaluation/datasets/source_docs/plugin-a/` 是 LangChain/LangGraph Workspace：
+
+| 文件 | 主题 |
+|---|---|
+| `A01_langgraph_stategraph_definition.md` | StateGraph 定义与 reducer |
+| `A02_langgraph_nodes_best_practices.md` | Node 编写实践 |
+| `A03_langgraph_conditional_edges.md` | 条件边与路由 |
+| `A04_langgraph_end_exit_conditions.md` | END 与退出条件 |
+| `A05_langgraph_memory_checkpointer.md` | Memory 与 Checkpointer 基础 |
+| `A06_langchain_runnable_lcel.md` | Runnable 与 LCEL |
+| `A07_langchain_prompt_templates.md` | Prompt Template |
+| `A08_langchain_output_parsers.md` | Output Parser 与降级 |
+| `A09_langchain_retrievers_comparison.md` | Retriever 对比 |
+| `A10_langchain_embeddings_bailian_v3.md` | 百炼 Embedding v3 |
+| `A11_langgraph_tool_calling_mechanism.md` | Tool Calling |
+| `A12_agent_executor_vs_langgraph.md` | AgentExecutor 与 LangGraph 对比 |
+| `A13_langgraph_multi_agent_supervisor.md` | Multi-Agent Supervisor |
+| `A14_langgraph_human_in_the_loop.md` | Human in the Loop |
+| `A15_langgraph_streaming_modes.md` | Streaming 模式 |
+| `A16_langgraph_persistence_production_best_practices.md` | 生产级持久化 |
+| `A17_langchain_callbacks_langsmith_tracing.md` | Callback 与 LangSmith tracing |
+| `A18_langchain_error_handling_fallbacks.md` | 错误处理与 fallback |
+| `A19_langchain_chunking_strategies.md` | Chunking 策略 |
+| `A20_langgraph_production_deployment_k8s.md` | K8s 生产部署 |
+
+`evaluation/datasets/source_docs/plugin-b/` 是 Java/Spring Workspace：
+
+| 文件 | 主题 |
+|---|---|
+| `B01_springboot_autoconfiguration.md` | Spring Boot 自动配置 |
+| `B02_spring_ioc_bean_lifecycle.md` | IoC Bean 生命周期 |
+| `B03_spring_dependency_injection_modes.md` | 依赖注入模式 |
+| `B04_spring_application_event_stategraph.md` | Application Event 与状态图术语陷阱 |
+| `B05_spring_bean_factorybean_comparison.md` | BeanFactory / FactoryBean |
+| `B06_spring_mvc_rest_controllers.md` | MVC REST Controller |
+| `B07_resttemplate_vs_webclient_migration.md` | RestTemplate / WebClient 迁移 |
+| `B08_spring_webflux_reactive_core.md` | WebFlux 响应式核心 |
+| `B09_spring_filter_interceptor_comparison.md` | Filter / Interceptor |
+| `B10_spring_actuator_health_metrics.md` | Actuator 健康与指标 |
+| `B11_spring_data_jpa_nplusone.md` | JPA N+1 |
+| `B12_hibernate_entity_states_flush.md` | Hibernate 状态与 flush |
+| `B13_spring_transactional_traps_best_practices.md` | Transactional 陷阱 |
+| `B14_flyway_database_migration_best_practices.md` | Flyway 迁移实践 |
+| `B15_spring_jdbctemplate_namedparameter.md` | JdbcTemplate / NamedParameter |
+| `B16_spring_security_jwt_filterchain.md` | Spring Security JWT FilterChain |
+| `B17_spring_boot_testing_slices.md` | Spring Boot Test Slices |
+| `B18_spring_aop_aspect_around_audit.md` | AOP Around 与审计 |
+| `B19_springboot_deploy_docker_jvm_k8s.md` | Docker/JVM/K8s 部署 |
+| `B20_spring_ai_vs_langchain_python_rag.md` | Spring AI 与 LangChain RAG 对比陷阱 |
+
+## 根级评测测试
+
+| 文件 | 说明 |
+|---|---|
+| `tests/conftest.py` | 根级 pytest 路径/fixture 配置 |
+| `tests/test_render_report.py` | Markdown 报告结构与输出测试 |
+
+## `docs/` — 设计记录与手册
+
+| 文件 | 说明 |
+|---|---|
+| `docs/ARCHITECTURE.md` | 较早阶段架构快照；部分内容已过时 |
+| `docs/PHASE0_ARCHITECTURE.md` | 初始阶段架构方案 |
+| `docs/PHASE2_DATA_MODEL.md` | Phase 2 关系数据模型设计 |
+| `docs/PHASE2_MILVUS_SCHEMA.md` | Milvus Schema、索引和约束设计 |
+| `docs/PHASE2.3_MILVUS_REPOSITORY_DESIGN.md` | Milvus Repository 分层设计 |
+| `docs/REAL_BASELINE_RUNBOOK.md` | 真实环境评测对齐和运行手册 |
+| `docs/INTERVIEW_MATERIALS.md` | 项目讲解/面试材料，不是运行规范 |
+
+## 运行时目录
+
+| 路径 | 说明 |
+|---|---|
+| `uploads/` | 上传文件存储；Git 忽略 |
+| `evaluation/private/` | 本地 Plugin Secret 等凭证；Git 忽略 |
+| `evaluation/aligned*/` | 运行时 ID 对齐数据；Git 忽略 |
+| `evaluation/reports/` | 基线输出和报告；Git 忽略 |
