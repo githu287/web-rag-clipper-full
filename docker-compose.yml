@@ -60,8 +60,8 @@ services:
       MINIO_SECRET_KEY: minioadmin
     command: minio server /minio_data --console-address ":9001"
     ports:
-      - "9000:9000"
-      - "9001:9001"
+      - "19000:9000"
+      - "19001:9001"
     volumes:
       - minio_data:/minio_data
     healthcheck:

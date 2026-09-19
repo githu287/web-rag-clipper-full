@@ -227,6 +227,14 @@ class RagAnswerServiceTest(unittest.TestCase):
             "禁止编造",
             "禁止猜测",
             "[Source",
+            "Markdown",
+            "直接结论",
+            "短标题",
+            "无序列表",
+            "不要用 ```markdown",
+            "不要输出 HTML 标签",
+            "HTML 实体",
+            "连续星号",
         ]:
             self.assertIn(keyword, system_prompt)
 

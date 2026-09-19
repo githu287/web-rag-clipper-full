@@ -1,6 +1,6 @@
 // sidepanel.js —— Web RAG Clipper Side Panel 主界面逻辑（Phase 3.5 Step 2-F）
 // 目标：Tab/Session 隔离 + 长对话体验 + Plugin Workspace 双凭证（X-Plugin-ID/X-Plugin-Secret）无回归。
-// 安全：AI 内容一律 textContent 渲染，禁止 innerHTML 拼接 answer。
+// 安全：AI 内容只通过 textContent / createElement 渲染，禁止 innerHTML 拼接 answer。
 "use strict";
 
 const els = {
@@ -901,6 +901,111 @@ function emptyText() {
   return "当前知识库中暂无可用内容";
 }
 
+// 渲染回答中的少量行内 Markdown。所有内容最终都写入 textContent，
+// 不把模型输出交给 innerHTML，因此 `<script>` 等文本不会被当作 HTML 执行。
+function appendInlineMarkdown(parent, text) {
+  const source = String(text || "");
+  const tokenPattern = /(`[^`\n]+`|\*\*[^*\n]+\*\*)/g;
+  let cursor = 0;
+  let match;
+  while ((match = tokenPattern.exec(source)) !== null) {
+    if (match.index > cursor) {
+      parent.appendChild(document.createTextNode(source.slice(cursor, match.index)));
+    }
+    const token = match[0];
+    const el = document.createElement(token.startsWith("`") ? "code" : "strong");
+    el.textContent = token.startsWith("`") ? token.slice(1, -1) : token.slice(2, -2);
+    parent.appendChild(el);
+    cursor = match.index + token.length;
+  }
+  if (cursor < source.length) {
+    parent.appendChild(document.createTextNode(source.slice(cursor)));
+  }
+}
+
+function normalizeAssistantText(content) {
+  const normalized = String(content || "")
+    .replace(/(?:&#x20;|&#32;|&nbsp;)/gi, " ")
+    .replace(/\*{3,}/g, "");
+  const outerMarkdownFence = normalized
+    .trim()
+    .match(/^```(?:markdown|md)\s*\n([\s\S]*?)\n```$/i);
+  return outerMarkdownFence ? outerMarkdownFence[1] : normalized;
+}
+
+// 安全的轻量 Markdown：标题、段落、列表、代码块、粗体与行内代码。
+// 未识别语法按普通文本显示，避免引入第三方 HTML sanitizer 或 XSS 面。
+function renderAssistantMarkdown(container, content) {
+  const lines = normalizeAssistantText(content).replace(/\r\n?/g, "\n").split("\n");
+  let list = null;
+  let listType = null;
+  let codeBlock = null;
+
+  function closeList() {
+    list = null;
+    listType = null;
+  }
+
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+
+    if (line.startsWith("```")) {
+      closeList();
+      if (codeBlock) {
+        codeBlock = null;
+      } else {
+        const pre = document.createElement("pre");
+        const code = document.createElement("code");
+        pre.appendChild(code);
+        container.appendChild(pre);
+        codeBlock = code;
+      }
+      continue;
+    }
+
+    if (codeBlock) {
+      codeBlock.textContent += (codeBlock.textContent ? "\n" : "") + rawLine;
+      continue;
+    }
+
+    if (!line) {
+      closeList();
+      continue;
+    }
+
+    const headingMatch = line.match(/^#{1,4}\s+(.+)$/);
+    if (headingMatch) {
+      closeList();
+      const heading = document.createElement("div");
+      heading.className = "answer-heading";
+      appendInlineMarkdown(heading, headingMatch[1]);
+      container.appendChild(heading);
+      continue;
+    }
+
+    const unorderedMatch = line.match(/^[-*•]\s+(.+)$/);
+    const orderedMatch = line.match(/^\d+[.)]\s+(.+)$/);
+    if (unorderedMatch || orderedMatch) {
+      const nextType = unorderedMatch ? "ul" : "ol";
+      if (!list || listType !== nextType) {
+        closeList();
+        list = document.createElement(nextType);
+        listType = nextType;
+        container.appendChild(list);
+      }
+      const item = document.createElement("li");
+      appendInlineMarkdown(item, (unorderedMatch || orderedMatch)[1]);
+      list.appendChild(item);
+      continue;
+    }
+
+    closeList();
+    const paragraph = document.createElement("p");
+    appendInlineMarkdown(paragraph, line);
+    container.appendChild(paragraph);
+  }
+}
+
 function appendMessageToDom(message) {
   if (!message || typeof message !== "object") return;
   const msg = document.createElement("div");
@@ -920,7 +1025,12 @@ function appendMessageToDom(message) {
 
   const bubble = document.createElement("div");
   bubble.className = "msg-bubble";
-  bubble.textContent = message.content || "";
+  if (message.role === "assistant") {
+    bubble.classList.add("rich-text");
+    renderAssistantMarkdown(bubble, message.content || "");
+  } else {
+    bubble.textContent = message.content || "";
+  }
   msg.appendChild(bubble);
 
   if (message.role === "assistant" && typeof message.content === "string" && message.content.length > LONG_ANSWER_CHARS) {
