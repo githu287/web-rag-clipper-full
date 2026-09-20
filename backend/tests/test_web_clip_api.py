@@ -108,7 +108,26 @@ class WebClipRequestValidationTest(unittest.TestCase):
         self.assertEqual(req.title, "示例文章")
         self.assertEqual(req.raw_text, _VALID_TEXT)
         # 契约：schema 无 source_type 字段（不允许客户端传入）
-        self.assertNotIn("source_type", req.model_fields)
+        self.assertNotIn("source_type", WebClipRequest.model_fields)
+
+    def test_i_url_is_validated_but_preserved_for_service_normalization(self) -> None:
+        req = WebClipRequest(
+            url="HTTPS://Example.COM:443/article?id=7&utm_source=test#part",
+            raw_text=_VALID_TEXT,
+        )
+        self.assertEqual(
+            req.url,
+            "HTTPS://Example.COM:443/article?id=7&utm_source=test#part",
+        )
+
+    def test_i_non_http_url_and_credentials_rejected(self) -> None:
+        for value in (
+            "file:///tmp/page.html",
+            "https://user:secret@example.com/private",
+            "not-a-url",
+        ):
+            with self.subTest(value=value), self.assertRaises(ValidationError):
+                WebClipRequest(url=value, raw_text=_VALID_TEXT)
 
     # ---------------------------------------------- H. 边界合法值
     def test_h_boundary_lengths_accepted(self) -> None:

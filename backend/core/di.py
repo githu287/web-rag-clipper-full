@@ -69,6 +69,8 @@ from ..repositories.milvus import (
 from ..repositories.mysql import (
     DocumentRepository,
     DocumentRepositoryImpl,
+    IngestJobRepository,
+    IngestJobRepositoryImpl,
 )
 from ..repositories.mysql.plugin_impl import PluginRepositoryImpl
 from ..repositories.mysql.plugin_protocol import PluginRepository
@@ -76,12 +78,14 @@ from ..services.document_delete import DocumentDeleteService
 from ..services.document_ingest import DocumentIngestService
 from ..services.document_upload import DocumentUploadService
 from ..services.ingest import IngestService
+from ..services.ingest_job import IngestJobService
 from ..services.rag import RagService
 from ..services.rag_answer import RagAnswerService
 from ..services.plugin_service import PluginService
 from ..services.web_clip import WebClipService
 from ..services.workspace_delete import WorkspaceDeleteService
 from ..storage import FileStorage, LocalFileStorage
+from ..tasks import RedisIngestQueue
 from .config import Settings, get_default_settings
 from .db import get_engine
 
@@ -314,6 +318,25 @@ def get_document_repository() -> DocumentRepository:
     """
     engine = get_engine()
     return DocumentRepositoryImpl(engine)
+
+
+@lru_cache(maxsize=1)
+def get_ingest_job_repository() -> IngestJobRepository:
+    return IngestJobRepositoryImpl(get_engine())
+
+
+@lru_cache(maxsize=1)
+def get_redis_ingest_queue() -> RedisIngestQueue:
+    return RedisIngestQueue(get_settings())
+
+
+@lru_cache(maxsize=1)
+def get_ingest_job_service() -> IngestJobService:
+    return IngestJobService(
+        repository=get_ingest_job_repository(),
+        queue=get_redis_ingest_queue(),
+        settings=get_settings(),
+    )
 
 
 @lru_cache(maxsize=1)

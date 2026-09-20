@@ -6,7 +6,9 @@ Web RAG Clipper 是一个本地优先的网页剪藏与个人知识库 RAG 系�
 
 - Plugin Workspace 注册与双凭证认证
 - Workspace 级百炼 API Key 加密保存
-- 网页正文剪藏，以及 `.txt` / `.md` / `.markdown` 文件上传
+- Side Panel 网页正文提取与剪藏前预览编辑，以及 `.txt` / `.md` / `.markdown` 文件上传
+- 网页 URL 规范化与重复识别；锚点、默认端口和常见跟踪参数不会产生新文档
+- Redis 异步网页/文件入库、持久化任务状态、进度轮询与失败重试
 - MySQL 文档生命周期与 Milvus 向量索引
 - 全知识库或指定文档的语义检索与 RAG 问答
 - Side Panel 知识库、会话、设置和当前网页模式
@@ -48,7 +50,7 @@ FastAPI
 | 浏览器端 | Chrome Extension Manifest V3、Side Panel、原生 JavaScript |
 | 测试与评测 | pytest、150 条 Retrieval/隔离评测样本 |
 
-Redis 由 Compose 启动，但当前业务链路尚未使用。
+Redis 用于异步入库队列和临时 payload；MySQL `ingest_jobs` 是任务状态的权威来源。
 
 ## 快速开始
 
@@ -99,7 +101,7 @@ python -m pip install -r backend\requirements.txt
 alembic upgrade head
 ```
 
-当前 Alembic head 为 `0008`。
+当前 Alembic head 为 `0009`。
 
 ### 5. 启动 API
 
@@ -109,7 +111,17 @@ uvicorn backend.main:app --host 0.0.0.0 --port 8000
 
 启动阶段会幂等初始化并加载 Milvus `page_chunks` Collection。打开 <http://localhost:8000/docs> 可查看和调用完整 API。
 
-### 6. 初始化 Workspace
+### 6. 启动异步 Worker
+
+在另一个已激活虚拟环境的终端运行：
+
+```powershell
+python -m backend.workers.ingest_worker
+```
+
+Worker 会初始化 Milvus，恢复上次意外中断且未确认的任务，然后阻塞等待 Redis 队列。当前按单 Worker 模式设计。
+
+### 7. 初始化 Workspace
 
 在 Swagger UI 中按顺序调用：
 
@@ -120,7 +132,7 @@ uvicorn backend.main:app --host 0.0.0.0 --port 8000
 
 后端会先验证 Key，再使用 `APP_MASTER_KEY` 进行 AES-256-GCM 加密。数据库不保存 Plugin Secret 或百炼 API Key 明文。
 
-### 7. 加载扩展
+### 8. 加载扩展
 
 1. 保持后端运行。
 2. 打开 `chrome://extensions/` 或 `edge://extensions/`。
@@ -132,7 +144,7 @@ uvicorn backend.main:app --host 0.0.0.0 --port 8000
 
 ## API 概览
 
-仓库当前公开 16 个操作。只有 `POST /plugins/register` 无需认证；其余操作都要求 `X-Plugin-ID` 和 `X-Plugin-Secret`。
+仓库当前公开 20 个操作。只有 `POST /plugins/register` 无需认证；其余操作都要求 `X-Plugin-ID` 和 `X-Plugin-Secret`。
 
 | 方法 | 路径 | 用途 |
 |---|---|---|
@@ -145,10 +157,14 @@ uvicorn backend.main:app --host 0.0.0.0 --port 8000
 | GET | `/documents` | 分页列出文档；支持 keyword/status/source_type |
 | POST | `/documents` | 创建 `PENDING` 文档元数据 |
 | POST | `/documents/upload` | 上传并同步完成解析、切块与入库 |
+| POST | `/documents/upload/async` | 安全落盘文件、创建入库任务并返回 `202` |
 | GET | `/documents/{document_id}` | 获取当前 Workspace 的文档详情 |
 | POST | `/documents/{document_id}/ingest` | 对已有文档执行或重试 ingest |
 | DELETE | `/documents/{document_id}` | 幂等删除文档及关联资源 |
-| POST | `/clips` | 剪藏网页正文；同 Workspace 同 URL 可原位重试/更新 |
+| POST | `/clips` | 剪藏网页正文；同 Workspace 同规范化 URL 可原位重试/更新 |
+| POST | `/clips/async` | 创建网页剪藏任务并立即返回 `202` |
+| GET | `/jobs/{job_id}` | 查询当前 Workspace 任务进度与结果 |
+| POST | `/jobs/{job_id}/retry` | 重试未超过上限的失败任务 |
 | POST | `/ingest/page` | 直接写入已切分 chunks 的底层接口 |
 | POST | `/rag/search` | 返回语义检索结果及文档元数据 |
 | POST | `/rag/ask` | 检索、构造 Context 并生成带 Sources 的回答 |
@@ -161,6 +177,7 @@ MySQL 是文档状态和归属的权威来源；Milvus 只保存向量检索所�
 
 - `plugin_workspaces`：Workspace 身份、Secret 哈希、加密后的百炼 Key、状态。
 - `documents`：来源信息、文件元数据、Workspace 归属和生命周期状态。
+- `ingest_jobs`：异步任务类型、进度、尝试次数、Document 结果和错误摘要。
 - `page_chunks`：`id`、`page_id`、`chunk_index`、`chunk_text`、1024 维 `embedding`。
 - 映射规则：`documents.id == page_chunks.page_id`，chunk 主键为 `{page_id}_{chunk_index}`。
 - 生命周期：`PENDING → PROCESSING → SUCCESS | FAILED`；删除期间使用 `DELETING` 互斥。
@@ -186,6 +203,10 @@ MySQL 是文档状态和归属的权威来源；Milvus 只保存向量检索所�
 | `UPLOAD_DIR` | `uploads` | 上传文件存储目录 |
 | `CHUNK_SIZE` / `CHUNK_OVERLAP` | `700` / `100` | 字符级递归切块参数 |
 | `MAX_PAGE_CONTENT_BYTES` | `2097152` | 上传文件上限，2 MiB |
+| `REDIS_HOST` / `REDIS_PORT` / `REDIS_DB` | `localhost` / `6379` / `0` | 异步队列 Redis |
+| `INGEST_QUEUE_NAME` | `web-rag:ingest` | 待处理任务队列名 |
+| `INGEST_PAYLOAD_TTL_SECONDS` | `604800` | Redis 任务 payload 保留时间 |
+| `INGEST_MAX_RETRIES` | `3` | 失败任务最大尝试次数 |
 
 `.env.example` 中还有 API、Redis、重试和 CORS 等预留字段；当前 Settings 或业务代码并未消费其中全部字段。后端目前也未注册 CORS 中间件。
 
@@ -200,7 +221,7 @@ MySQL 是文档状态和归属的权威来源；Milvus 只保存向量检索所�
   --ignore=backend/tests/test_user_service.py
 ```
 
-本次文档重写时的结果为：`510 passed, 31 subtests passed`。
+当前活动测试集结果为：`550 passed, 37 subtests passed`。
 
 仓库工作区中另有尚未接入主应用的旧 User/Bearer 迁移草稿（`auth.py`、`users.py`、`user_*` 及对应三个测试文件）。直接运行不带 ignore 的全量 `pytest` 会在这三个测试模块的收集阶段失败；当前产品身份模型以 Plugin Workspace 为准。
 
@@ -218,7 +239,8 @@ MySQL 是文档状态和归属的权威来源；Milvus 只保存向量检索所�
 
 ## 已知限制
 
-- Ingest 在 HTTP 请求内同步执行，尚无 Redis/Celery 异步队列。
+- 扩展的网页剪藏和文件上传已使用 Redis Worker 异步入库；旧 `/clips` 与 `/documents/upload` 兼容接口仍是同步。
+- 当前 Worker 是单进程模式；启动时会恢复 Redis processing 列表中未确认的任务。
 - 仅解析 UTF-8 文本和 Markdown；PDF、DOCX、OCR 尚未接入。
 - 扩展正文提取是 DOM 启发式实现，复杂 SPA、分页、登录墙可能提取不完整。
 - 会话历史保存在浏览器 `chrome.storage.local`，后端没有会话表。
@@ -231,7 +253,7 @@ MySQL 是文档状态和归属的权威来源；Milvus 只保存向量检索所�
 ```text
 backend/       FastAPI、业务服务、Repository、模型与测试
 extension/     Chrome/Edge Manifest V3 扩展
-alembic/       MySQL Schema 迁移（0001 → 0008）
+alembic/       MySQL Schema 迁移（0001 → 0009）
 evaluation/    Retrieval/隔离评测数据与工具
 docs/          历史设计、数据模型和运行手册
 uploads/       本地运行时上传目录（Git 忽略）

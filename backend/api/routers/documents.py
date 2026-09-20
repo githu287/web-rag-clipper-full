@@ -55,8 +55,10 @@ from ...core.di import (
     get_document_ingest_service,
     get_document_repository,
     get_document_upload_service,
+    get_ingest_job_service,
     get_plugin_service,
 )
+from ...core.exceptions import IngestJobOperationError
 from ...models import PluginWorkspace
 from ...models.document_api_schema import (
     DocumentCreateRequest,
@@ -70,12 +72,15 @@ from ...models.document_api_schema import (
     DocumentSummaryResponse,
     DocumentUploadResponse,
 )
+from ...models.ingest_job_api_schema import IngestJobResponse
 from ...repositories.mysql import DocumentRepository
 from ...services.document_delete import DocumentDeleteService
 from ...services.document_ingest import DocumentIngestService
 from ...services.document_upload import DocumentUploadService
+from ...services.ingest_job import IngestJobService
 from ...services.plugin_service import PluginService
 from ..deps import get_current_plugin
+from .jobs import build_job_response
 
 # 创建 Router（prefix + tags 与既有 ingest/rag Router 风格一致）
 router: APIRouter = APIRouter(
@@ -312,6 +317,39 @@ async def ingest_document(
         status=document.status,
         chunk_count=document.chunk_count,
     )
+
+
+@router.post(
+    "/upload/async",
+    response_model=IngestJobResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="异步上传并入库文档",
+)
+async def upload_document_async(
+    file: UploadFile = File(...),
+    current_plugin: PluginWorkspace = Depends(get_current_plugin),
+    upload_service: DocumentUploadService = Depends(get_document_upload_service),
+    job_service: IngestJobService = Depends(get_ingest_job_service),
+    plugin_service: PluginService = Depends(get_plugin_service),
+) -> IngestJobResponse:
+    # 提交时即拒绝未配置 Key 的 Workspace；明文 Key 不写入 Redis。
+    plugin_service.decrypt_api_key(current_plugin)
+    content = await file.read()
+    document = upload_service.prepare_upload(
+        filename=file.filename or "",
+        content=content,
+        plugin_id=current_plugin.plugin_id,
+        mime_type=file.content_type,
+    )
+    try:
+        job = job_service.create_file_upload_job(
+            current_plugin.plugin_id,
+            document.id,
+        )
+    except IngestJobOperationError as exc:
+        upload_service.fail_prepared_upload(document.id, exc)
+        raise
+    return build_job_response(job)
 
 
 @router.post(

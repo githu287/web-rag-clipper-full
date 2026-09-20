@@ -323,6 +323,22 @@ class ApiKeyNotConfiguredError(Exception):
     """
 
 
+class IngestJobError(Exception):
+    """异步入库任务错误根类。"""
+
+
+class IngestJobNotFoundError(IngestJobError):
+    """任务不存在或不属于当前 Workspace。"""
+
+
+class IngestJobConflictError(IngestJobError):
+    """任务当前状态不允许 claim 或重试。"""
+
+
+class IngestJobOperationError(IngestJobError):
+    """任务持久化或队列操作失败。"""
+
+
 # ============================================================================
 # Plugin Repository 异常族（Phase 3.5 Step 2-B 新增：MySQL plugin_workspaces 表数据访问层）
 # ============================================================================

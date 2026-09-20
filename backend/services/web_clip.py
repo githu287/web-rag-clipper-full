@@ -45,6 +45,7 @@ import logging
 
 from ..chunkers import Chunker
 from ..core.exceptions import DocumentOperationError
+from ..core.url_normalization import normalize_web_url
 from ..models.document import Document, DocumentSourceType, DocumentStatus
 from ..repositories.mysql import DocumentRepository
 from .document_ingest import DocumentIngestService
@@ -59,6 +60,9 @@ _WEB_CLIP_FILE_PATH = ""
 
 # error_message 最大长度（与 DocumentUploadService._MAX_ERROR_MESSAGE_LENGTH 对齐）
 _MAX_ERROR_MESSAGE_LENGTH = 2048
+
+# 仅在兼容旧的未规范化 URL 时分页扫描网页文档。
+_LEGACY_URL_SCAN_PAGE_SIZE = 100
 
 
 class WebClipService:
@@ -120,17 +124,30 @@ class WebClipService:
                 ingest 链路失败（Document 状态迁移由 DocumentIngestService 完成，
                 原异常继续传播）。
         """
+        # API 层会先规范化；Service 再做一次以保证非 HTTP 调用方
+        # （测试、后台任务）也不会绕过网页身份规则。
+        normalized_url = normalize_web_url(url)
+
         # ------------------------------------------------------------------
         # 1) 创建 Document(status=PENDING)；WebClip 不落盘
         # ------------------------------------------------------------------
-        document = self._document_repository.get_webpage_by_url(plugin_id, url)
+        document = self._document_repository.get_webpage_by_url(
+            plugin_id,
+            normalized_url,
+        )
+        if document is None and url.strip() != normalized_url:
+            document = self._find_legacy_url_match(
+                plugin_id=plugin_id,
+                original_url=url.strip(),
+                normalized_url=normalized_url,
+            )
         if document is None:
             document = self._document_repository.create_document(
                 filename=_WEB_CLIP_FILENAME,
                 file_path=_WEB_CLIP_FILE_PATH,
                 plugin_id=plugin_id,
                 title=title,
-                url=url,
+                url=normalized_url,
                 source_type=DocumentSourceType.WEBPAGE,
             )
         else:
@@ -144,7 +161,7 @@ class WebClipService:
             document = self._document_repository.update_webpage_metadata(
                 document.id,
                 title=title,
-                url=url,
+                url=normalized_url,
             )
 
         # ------------------------------------------------------------------
@@ -183,6 +200,50 @@ class WebClipService:
         # 5) 返回终态（SUCCESS，error_message=None）
         # ------------------------------------------------------------------
         return self._document_repository.get_document(document.id, plugin_id)
+
+    def _find_legacy_url_match(
+        self,
+        *,
+        plugin_id: str,
+        original_url: str,
+        normalized_url: str,
+    ) -> Document | None:
+        """Find an old row saved before URL normalization was introduced.
+
+        The exact original URL is attempted first. Only if that misses do we
+        scan this Workspace's webpage rows in bounded pages and normalize each
+        candidate. This fallback runs only when the incoming URL itself changed
+        during normalization, so the normal create/re-clip path remains one
+        indexed lookup.
+        """
+
+        document = self._document_repository.get_webpage_by_url(
+            plugin_id,
+            original_url,
+        )
+        if document is not None:
+            return document
+
+        page = 1
+        while True:
+            candidates = self._document_repository.list_documents(
+                plugin_id,
+                page=page,
+                page_size=_LEGACY_URL_SCAN_PAGE_SIZE,
+                source_type=DocumentSourceType.WEBPAGE,
+            )
+            for candidate in candidates:
+                if not candidate.url:
+                    continue
+                try:
+                    candidate_url = normalize_web_url(candidate.url)
+                except ValueError:
+                    continue
+                if candidate_url == normalized_url:
+                    return candidate
+            if len(candidates) < _LEGACY_URL_SCAN_PAGE_SIZE:
+                return None
+            page += 1
 
     def _mark_failed(self, document_id: int, exc: Exception) -> None:
         """

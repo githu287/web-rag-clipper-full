@@ -23,6 +23,8 @@ const WEB_RAG_CLIPPER_CONFIG = {
     // Tab → 上下文绑定：{ [tabId]: { pluginId, documentId, pageUrl, pageTitle, mode, stale, updatedAt } }
     // Phase 3.6 Step 2-H：Tab Binding 不再包含 sessionId，只负责网页上下文
     TAB_BINDINGS: "webRagTabBindings",
+    // Workspace → 当前文件上传任务（用于 Side Panel 重开后恢复轮询）
+    UPLOAD_JOBS: "webRagUploadJobs",
   },
   LIMITS: {
     // 每个 session 最大消息数（超限裁剪最旧）

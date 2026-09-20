@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Web RAG Clipper",
-  "version": "0.1.1",
+  "version": "0.5.0",
   "description": "剪藏当前网页正文到 Web RAG Clipper 知识库（本地后端 http://localhost:8000）",
   "action": {
     "default_title": "Web RAG Clipper"

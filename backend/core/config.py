@@ -42,6 +42,9 @@ _DEFAULT_MYSQL_HOST: Final[str] = "localhost"
 _DEFAULT_MYSQL_PORT: Final[int] = 3306
 _DEFAULT_MYSQL_DATABASE: Final[str] = "rag_clipper"
 
+_DEFAULT_REDIS_HOST: Final[str] = "localhost"
+_DEFAULT_REDIS_PORT: Final[int] = 6379
+
 # 文件上传 / 解析 / 切分默认值（与 .env.example 的 CHUNK_* / MAX_PAGE_CONTENT_BYTES 对齐；Phase 2.10 Step 2 新增）
 _DEFAULT_UPLOAD_DIR: Final[str] = "uploads"
 _DEFAULT_CHUNK_SIZE: Final[int] = 700
@@ -135,6 +138,15 @@ class Settings(BaseSettings):
         description="MySQL 密码（支持特殊字符，db.py 用 quote_plus 转义后再拼入 URL）",
     )
     mysql_database: str = Field(default=_DEFAULT_MYSQL_DATABASE, description="MySQL 数据库名")
+
+    # Redis 异步 ingest 队列。
+    redis_host: str = Field(default=_DEFAULT_REDIS_HOST, min_length=1)
+    redis_port: int = Field(default=_DEFAULT_REDIS_PORT, ge=1, le=65535)
+    redis_db: int = Field(default=0, ge=0)
+    redis_password: str = Field(default="")
+    ingest_queue_name: str = Field(default="web-rag:ingest", min_length=1)
+    ingest_payload_ttl_seconds: int = Field(default=604800, ge=60)
+    ingest_max_retries: int = Field(default=3, ge=1, le=20)
 
     # ---- 文件上传 / 解析 / 切分（Phase 2.10 Step 2 新增）----
     upload_dir: str = Field(

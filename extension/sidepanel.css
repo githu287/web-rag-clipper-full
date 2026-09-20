@@ -1102,6 +1102,132 @@ button.page-num:not(.current):hover {
   flex: 1;
 }
 
+.clip-preview {
+  margin-top: 14px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+
+.clip-job {
+  margin-top: 12px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+
+.clip-job-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--text-sub);
+  font-size: 12px;
+}
+
+.clip-job-track {
+  height: 6px;
+  margin-top: 7px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #e5e7eb;
+}
+
+.clip-job-bar {
+  width: 0;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--primary);
+  transition: width 180ms ease;
+}
+
+.clip-job-error {
+  margin-top: 7px;
+  color: var(--danger);
+  font-size: 12px;
+  word-break: break-word;
+}
+
+.clip-job-error:empty {
+  display: none;
+}
+
+.clip-job .btn-secondary {
+  margin-top: 8px;
+}
+
+.clip-preview-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.clip-preview-heading .section-title {
+  margin: 0;
+}
+
+.clip-preview-count {
+  color: var(--text-sub);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.clip-preview-label {
+  display: block;
+  margin: 8px 0 5px;
+  color: var(--text-sub);
+  font-size: 12px;
+}
+
+.clip-preview-title,
+.clip-preview-text {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #fff;
+  color: var(--text);
+}
+
+.clip-preview-text {
+  min-height: 240px;
+  resize: vertical;
+  line-height: 1.55;
+}
+
+.clip-preview-title:focus,
+.clip-preview-text:focus {
+  outline: none;
+  border-color: var(--primary);
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.12);
+}
+
+.clip-preview-title:disabled,
+.clip-preview-text:disabled {
+  background: #f3f4f6;
+  color: var(--text-sub);
+}
+
+.clip-preview .hint {
+  margin-top: 6px;
+}
+
+.clip-preview-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 10px;
+  flex-wrap: wrap;
+}
+
+.clip-preview-actions .btn-secondary,
+.clip-preview-actions .primary-btn {
+  margin-top: 0;
+}
+
 .goto-chat-btn {
   margin-top: 16px;
   width: 100%;
@@ -1120,6 +1246,9 @@ button.page-num:not(.current):hover {
 .modal-mask[hidden],
 .warn-banner[hidden],
 .api-key-form[hidden],
-.library-pager[hidden] {
+.library-pager[hidden],
+.clip-preview[hidden],
+.clip-job[hidden],
+.clip-job-retry-btn[hidden] {
   display: none !important;
 }

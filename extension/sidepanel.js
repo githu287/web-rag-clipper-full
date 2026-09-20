@@ -31,6 +31,19 @@ const els = {
   clipStatus: document.getElementById("clip-status"),
   clipStale: document.getElementById("clip-stale"),
   clipBtn: document.getElementById("clip-btn"),
+  clipJob: document.getElementById("clip-job"),
+  clipJobStage: document.getElementById("clip-job-stage"),
+  clipJobProgress: document.getElementById("clip-job-progress"),
+  clipJobBar: document.getElementById("clip-job-bar"),
+  clipJobError: document.getElementById("clip-job-error"),
+  clipJobRetryBtn: document.getElementById("clip-job-retry-btn"),
+  clipPreview: document.getElementById("clip-preview"),
+  clipPreviewCount: document.getElementById("clip-preview-count"),
+  clipPreviewTitle: document.getElementById("clip-preview-title"),
+  clipPreviewText: document.getElementById("clip-preview-text"),
+  clipPreviewCancelBtn: document.getElementById("clip-preview-cancel-btn"),
+  clipPreviewRefreshBtn: document.getElementById("clip-preview-refresh-btn"),
+  clipPreviewSaveBtn: document.getElementById("clip-preview-save-btn"),
   gotoChatBtn: document.getElementById("goto-chat-btn"),
   librarySearchInput: document.getElementById("library-search-input"),
   libraryStatusFilter: document.getElementById("library-status-filter"),
@@ -82,17 +95,27 @@ const SCROLL_THRESHOLD = 120;
 const LONG_ANSWER_CHARS = 600;
 const MAX_UPLOAD_SIZE = 2 * 1024 * 1024;
 const ALLOWED_UPLOAD_EXTENSIONS = [".txt", ".md", ".markdown"];
+const CLIP_JOB_POLL_INTERVAL_MS = 1500;
+const UPLOAD_JOB_POLL_INTERVAL_MS = 1500;
 
 let currentTabId = null;
 let binding = null;
 let session = null;
 let isSending = false;
 let clipBusy = false;
+let clipBusyAction = null;
 let clipErrorMsg = null;
+let clipDraft = null;
+let clipDraftTabId = null;
+let activeClipJob = null;
+let clipJobPollToken = 0;
 let currentView = "chat";
 let registerBusy = false;
 let apiKeyBusy = false;
 let uploadBusy = false;
+let activeUploadJob = null;
+let uploadJobPollToken = 0;
+let uploadResumePending = false;
 
 // ================================================================ 工具
 async function getCurrentTab() {
@@ -218,6 +241,7 @@ async function loadLibrary() {
     renderWelcomeView();
     return;
   }
+  resumeUploadJobMonitor();
   if (libraryState.loading) return;
   libraryState.loading = true;
   showLibraryState("正在加载知识库…", false);
@@ -450,12 +474,24 @@ function closeLibraryDeleteModal() {
 
 async function confirmLibraryDelete() {
   if (libraryState.deletePendingId == null || libraryState.deleteBusy) return;
+  const deletingDocumentId = libraryState.deletePendingId;
   libraryState.deleteBusy = true;
   els.libraryDeleteConfirmBtn.disabled = true;
   els.libraryDeleteConfirmBtn.textContent = "删除中...";
   setStatus(els.libraryDeleteStatus, "", null);
   try {
-    await webRagApiClient.documents.delete(libraryState.deletePendingId);
+    await webRagApiClient.documents.delete(deletingDocumentId);
+    const plugin = webRagApiClient.getPlugin();
+    await sessionStore.clearUploadJob(plugin.pluginId, deletingDocumentId);
+    if (
+      activeUploadJob &&
+      Number(activeUploadJob.document_id) === Number(deletingDocumentId)
+    ) {
+      uploadJobPollToken += 1;
+      activeUploadJob = null;
+      uploadBusy = false;
+      els.libraryUploadBtn.disabled = false;
+    }
     closeLibraryDeleteModal();
     if (libraryState.items.length === 1 && libraryState.page > 1) {
       libraryState.page -= 1;
@@ -503,12 +539,29 @@ function openDocumentUrl(url) {
   chrome.tabs.create({ url: url });
 }
 
-// Phase 3.6 Step 2：现有 POST /documents/{id}/ingest 的 chunks（min_length=1）仅由
-// 后端在剪藏/上传时写入 Milvus，知识库列表前端没有可复用的 chunks 数据源。
-// 按实施指令：不猜测构造 chunks、不擅自新增后端「重新切分」逻辑，
-// 因此从知识库无法直接重试，仅提示用户重新剪藏/上传（详见完成报告）。
-function retryDocument(_doc) {
-  setStatus(els.librarySummary, "该文档缺少原文 chunks，无法从知识库直接重试；请重新剪藏或上传。", "warn");
+// 异步上传会保留原文件与 Job 引用，可由知识库直接重试。
+// 历史同步失败文档没有 Job 记录，仍需用户重新上传原文件。
+async function retryDocument(doc) {
+  const plugin = webRagApiClient.getPlugin();
+  const record = await sessionStore.getUploadJob(plugin.pluginId, doc.id);
+  if (!record || Number(record.documentId) !== Number(doc.id)) {
+    setStatus(els.librarySummary, "该文档没有可恢复的异步任务，请重新上传原文件。", "warn");
+    return;
+  }
+  if (uploadBusy) return;
+  uploadBusy = true;
+  els.libraryUploadBtn.disabled = true;
+  setUploadStatus("正在重新提交任务…", "loading");
+  try {
+    const job = await webRagApiClient.jobs.retry(record.jobId);
+    activeUploadJob = job;
+    startUploadJobMonitor(record, job);
+    await loadLibrary();
+  } catch (err) {
+    uploadBusy = false;
+    els.libraryUploadBtn.disabled = false;
+    setUploadStatus("重试失败：" + errorText(err), "err");
+  }
 }
 
 // ================================================================ 文件上传（Phase 3.6 Step 3）
@@ -562,10 +615,21 @@ async function handleFileUpload(file) {
   uploadBusy = true;
   els.libraryUploadBtn.disabled = true;
   setUploadStatus("正在上传 " + file.name + "…", "loading");
+  var submitted = false;
   try {
-    var result = await webRagApiClient.documents.uploadFile(file);
-    var statusLabel = result && result.status === "SUCCESS" ? "上传成功" : "上传完成（状态：" + (result && result.status || "未知") + "）";
-    setUploadStatus(statusLabel + "：" + (file.name) + (result && result.chunk_count != null ? "（" + result.chunk_count + " 个片段）" : ""), "ok");
+    var job = await webRagApiClient.documents.uploadFileAsync(file);
+    if (!job || !job.id || job.document_id == null) {
+      throw new Error("后端未返回完整的上传任务");
+    }
+    var record = {
+      jobId: job.id,
+      documentId: Number(job.document_id),
+      filename: file.name,
+    };
+    await sessionStore.setUploadJob(plugin.pluginId, record);
+    submitted = true;
+    activeUploadJob = job;
+    startUploadJobMonitor(record, job);
     libraryState.page = 1;
     await loadLibrary();
   } catch (err) {
@@ -574,9 +638,76 @@ async function handleFileUpload(file) {
     }
     setUploadStatus("上传失败：" + errorText(err), "err");
   } finally {
-    uploadBusy = false;
-    els.libraryUploadBtn.disabled = false;
+    if (!submitted) {
+      uploadBusy = false;
+      els.libraryUploadBtn.disabled = false;
+    }
     els.libraryFileInput.value = "";
+  }
+}
+
+async function resumeUploadJobMonitor() {
+  if (uploadResumePending) return;
+  uploadResumePending = true;
+  const plugin = webRagApiClient.getPlugin();
+  try {
+    if (!plugin.pluginId) return;
+    const record = await sessionStore.getUploadJob(plugin.pluginId);
+    if (!record || !record.jobId) return;
+    if (activeUploadJob && activeUploadJob.id === record.jobId) return;
+    startUploadJobMonitor(record, null);
+  } finally {
+    uploadResumePending = false;
+  }
+}
+
+function startUploadJobMonitor(record, initialJob) {
+  const token = ++uploadJobPollToken;
+  activeUploadJob = initialJob || { id: record.jobId, status: "QUEUED", progress: 0 };
+  uploadBusy = true;
+  els.libraryUploadBtn.disabled = true;
+  monitorUploadJob(record, token);
+}
+
+async function monitorUploadJob(record, token) {
+  while (token === uploadJobPollToken) {
+    try {
+      const job = await webRagApiClient.jobs.get(record.jobId);
+      if (token !== uploadJobPollToken) return;
+      activeUploadJob = job;
+      const progress = Math.max(0, Math.min(100, Number(job.progress) || 0));
+      if (job.status === "SUCCEEDED") {
+        const plugin = webRagApiClient.getPlugin();
+        await sessionStore.clearUploadJob(plugin.pluginId, record.documentId);
+        activeUploadJob = null;
+        uploadBusy = false;
+        els.libraryUploadBtn.disabled = false;
+        setUploadStatus("上传成功：" + record.filename + "（100%）", "ok");
+        libraryState.page = 1;
+        await loadLibrary();
+        return;
+      }
+      if (job.status === "FAILED") {
+        uploadBusy = false;
+        els.libraryUploadBtn.disabled = false;
+        setUploadStatus(
+          "入库失败：" + (job.error_message || "未知错误") + "（可在文档卡片中重试）",
+          "err"
+        );
+        await loadLibrary();
+        return;
+      }
+      const stage = job.status === "QUEUED" ? "等待 Worker" : "正在解析、切块并向量化";
+      setUploadStatus(stage + "：" + record.filename + "（" + progress + "%）", "loading");
+    } catch (err) {
+      if (token !== uploadJobPollToken) return;
+      activeUploadJob = null;
+      uploadBusy = false;
+      els.libraryUploadBtn.disabled = false;
+      setUploadStatus("任务状态查询失败：" + errorText(err) + "，重新打开知识库后会继续。", "err");
+      return;
+    }
+    await waitMilliseconds(UPLOAD_JOB_POLL_INTERVAL_MS);
   }
 }
 
@@ -687,6 +818,7 @@ async function confirmDeletePlugin() {
     await webRagApiClient.clearPlugin();
     if (pluginId != null) {
       await sessionStore.clearTabBindingsByPlugin(pluginId);
+      await sessionStore.clearUploadJob(pluginId);
     }
     binding = null;
     session = null;
@@ -711,7 +843,8 @@ async function confirmDeletePlugin() {
 
 // ================================================================ Tab 上下文（Phase 3.6 Step 2-H 重构）
 // 核心原则：Tab 是网页上下文，不是聊天 Session。
-// Tab Binding 只负责 { pluginId, documentId, pageUrl, pageTitle, mode, stale }
+// Tab Binding 只负责网页上下文；pageUrl 保留 Tab 实际 URL，documentUrl
+// 保留后端返回的规范化来源 URL。
 // 全局 Session 由 currentSessionId 管理，Tab 切换不改变 Session。
 
 // 确保当前 Plugin 有一个全局 Session（首次启动或 Session 被删除时调用）
@@ -727,12 +860,14 @@ async function ensureGlobalSession(pluginId) {
   return created;
 }
 
-// 根据当前网页 URL 自动检测是否已剪藏（使用 GET /documents 精确匹配 URL）
+// 根据当前网页 URL 自动检测是否已剪藏。查询前使用与后端对齐的
+// 规范化规则，避免锚点或 utm_* 等跟踪参数导致重复文档。
 async function detectClippedDocument(pluginId, pageUrl) {
   if (!pluginId || !pageUrl) return null;
   try {
+    const normalizedUrl = webRagUrlUtils.normalizeWebUrl(pageUrl);
     const data = await webRagApiClient.documents.list({
-      keyword: pageUrl,
+      keyword: normalizedUrl,
       status: "SUCCESS",
       page: 1,
       page_size: 100,
@@ -740,7 +875,7 @@ async function detectClippedDocument(pluginId, pageUrl) {
     const items = data.items || [];
     // keyword 是 LIKE 查询，必须精确匹配 url
     const matches = items.filter(function (item) {
-      return item.url === pageUrl && item.status === "SUCCESS";
+      return item.url === normalizedUrl && item.status === "SUCCESS";
     });
     if (matches.length === 0) return null;
     // 多个匹配时取 created_at 最新的
@@ -750,6 +885,14 @@ async function detectClippedDocument(pluginId, pageUrl) {
     return matches[0];
   } catch (_err) {
     return null;
+  }
+}
+
+function isSameNormalizedWebUrl(left, right) {
+  try {
+    return webRagUrlUtils.normalizeWebUrl(left) === webRagUrlUtils.normalizeWebUrl(right);
+  } catch (_err) {
+    return left === right;
   }
 }
 
@@ -784,6 +927,12 @@ async function loadTabContext(tabId) {
     renderWelcomeView();
     return;
   }
+  if (currentTabId !== tabId) {
+    clipJobPollToken += 1;
+    activeClipJob = null;
+    clearClipDraft();
+    clipErrorMsg = null;
+  }
   currentTabId = tabId;
   let b = await sessionStore.getTabBinding(tabId);
   if (!b || b.pluginId !== plugin.pluginId) {
@@ -792,7 +941,7 @@ async function loadTabContext(tabId) {
   } else {
     // Binding 已存在，但仍需重新检测当前 URL 是否已剪藏
     // （用户可能在其他 Tab 剪藏了该 URL，或文档被删除）
-    if (b.pageUrl && !b.stale) {
+    if (b.pageUrl && !b.stale && !b.ingestJobId) {
       const doc = await detectClippedDocument(plugin.pluginId, b.pageUrl);
       b.documentId = doc ? Number(doc.id) : null;
       await sessionStore.setTabBinding(tabId, b);
@@ -811,6 +960,9 @@ async function loadTabContext(tabId) {
   }
   updateNav();
   renderWarnBanner();
+  if (b.ingestJobId) {
+    startClipJobMonitor(b.ingestJobId, tabId);
+  }
 }
 
 // URL 变化或剪藏完成后刷新上下文
@@ -820,16 +972,33 @@ async function refreshContextFromStorage() {
   if (!plugin.pluginId) return;
   const b = await sessionStore.getTabBinding(currentTabId);
   if (!b) {
+    clipJobPollToken += 1;
+    activeClipJob = null;
     binding = null;
+    clearClipDraft();
     renderClipView();
     updateSendState();
     return;
   }
+  const activeJobId = activeClipJob && activeClipJob.id;
+  if (activeJobId && activeJobId !== b.ingestJobId) {
+    clipJobPollToken += 1;
+    activeClipJob = null;
+  }
   binding = b;
+  if (clipDraft && (
+    clipDraftTabId !== currentTabId ||
+    !isSameNormalizedWebUrl(clipDraft.url, b.pageUrl)
+  )) {
+    clearClipDraft();
+  }
   // 不重新加载 Session（全局 Session 不变）
   renderClipView();
   updateNav();
   updateSendState();
+  if (b.ingestJobId && b.ingestJobId !== activeJobId) {
+    startClipJobMonitor(b.ingestJobId, currentTabId);
+  }
 }
 
 // ================================================================ 模式与页面上下文
@@ -849,29 +1018,186 @@ async function switchMode(mode) {
 }
 
 function renderClipView() {
-  if (!binding) return;
+  if (!binding) {
+    clearClipDraft();
+    return;
+  }
   els.clipTitle.textContent = binding.pageTitle || "（无标题）";
   els.clipUrl.textContent = binding.pageUrl || "—";
   els.clipStale.hidden = !binding.stale;
-  els.clipBtn.disabled = clipBusy;
+  const jobIsActive = !!(
+    activeClipJob &&
+    (activeClipJob.status === "QUEUED" || activeClipJob.status === "RUNNING")
+  );
+  els.clipBtn.disabled = clipBusy || jobIsActive;
+  renderClipJob();
+  els.clipPreview.hidden = !clipDraft;
+  if (clipDraft) {
+    if (els.clipPreviewTitle.value !== clipDraft.title) {
+      els.clipPreviewTitle.value = clipDraft.title;
+    }
+    if (els.clipPreviewText.value !== clipDraft.raw_text) {
+      els.clipPreviewText.value = clipDraft.raw_text;
+    }
+    renderClipDraftMeta();
+  }
+  els.clipPreviewTitle.disabled = clipBusy || jobIsActive;
+  els.clipPreviewText.disabled = clipBusy || jobIsActive;
+  els.clipPreviewCancelBtn.disabled = clipBusy || jobIsActive;
+  els.clipPreviewRefreshBtn.disabled = clipBusy || jobIsActive;
   const hasDoc = binding.documentId != null && !binding.stale;
   els.gotoChatBtn.hidden = !hasDoc;
-  if (binding.stale) {
-    setStatus(els.clipStatus, "页面已变化，请重新剪藏", "warn");
-    els.clipBtn.textContent = "重新剪藏";
-  } else if (clipBusy) {
-    setStatus(els.clipStatus, "处理中…", null);
-    els.clipBtn.textContent = "剪藏当前网页";
-  } else if (binding.documentId != null) {
-    setStatus(els.clipStatus, "✓ 已剪藏（Document #" + binding.documentId + "）", "ok");
-    els.clipBtn.textContent = "重新剪藏";
+  if (clipBusy) {
+    const isSubmitting = clipBusyAction === "save";
+    setStatus(els.clipStatus, isSubmitting ? "正在提交入库任务…" : "正在提取网页正文…", null);
+    els.clipBtn.textContent = isSubmitting ? "正在提交…" : "正在提取…";
+  } else if (jobIsActive) {
+    setStatus(els.clipStatus, "已提交，后台正在入库", null);
+    els.clipBtn.textContent = "处理中…";
+  } else if (activeClipJob && activeClipJob.status === "FAILED") {
+    setStatus(els.clipStatus, "入库失败：" + (activeClipJob.error_message || "未知错误"), "err");
+    els.clipBtn.textContent = "重新提取";
   } else if (clipErrorMsg) {
     setStatus(els.clipStatus, "剪藏失败：" + clipErrorMsg, "err");
-    els.clipBtn.textContent = "剪藏当前网页";
+    els.clipBtn.textContent = clipDraft ? "重新提取" : "重试提取";
+  } else if (clipDraft) {
+    setStatus(els.clipStatus, "已提取，请检查并确认剪藏", null);
+    els.clipBtn.textContent = "重新提取";
+  } else if (binding.stale) {
+    setStatus(els.clipStatus, "页面已变化，请重新剪藏", "warn");
+    els.clipBtn.textContent = "提取并预览";
+  } else if (binding.documentId != null) {
+    setStatus(els.clipStatus, "✓ 已剪藏（Document #" + binding.documentId + "）", "ok");
+    els.clipBtn.textContent = "重新提取并预览";
   } else {
     setStatus(els.clipStatus, "未剪藏", null);
-    els.clipBtn.textContent = "剪藏当前网页";
+    els.clipBtn.textContent = "提取并预览";
   }
+}
+
+function renderClipJob() {
+  els.clipJob.hidden = !activeClipJob;
+  if (!activeClipJob) return;
+  const progress = Math.max(0, Math.min(100, Number(activeClipJob.progress) || 0));
+  const stageLabels = {
+    QUEUED: "等待 Worker 处理",
+    INGESTING: "正在切块、向量化并入库",
+    COMPLETED: "入库完成",
+    FAILED: "入库失败",
+  };
+  els.clipJobStage.textContent = stageLabels[activeClipJob.stage] || activeClipJob.stage || "处理中";
+  els.clipJobProgress.textContent = progress + "%";
+  els.clipJobBar.style.width = progress + "%";
+  els.clipJobError.textContent = activeClipJob.status === "FAILED"
+    ? (activeClipJob.error_message || "未知错误")
+    : "";
+  els.clipJobRetryBtn.hidden = activeClipJob.status !== "FAILED";
+}
+
+function waitMilliseconds(milliseconds) {
+  return new Promise(function (resolve) {
+    setTimeout(resolve, milliseconds);
+  });
+}
+
+function startClipJobMonitor(jobId, tabId) {
+  const token = ++clipJobPollToken;
+  monitorClipJob(jobId, tabId, token);
+}
+
+async function monitorClipJob(jobId, tabId, token) {
+  while (token === clipJobPollToken && currentTabId === tabId) {
+    try {
+      const job = await webRagApiClient.jobs.get(jobId);
+      if (token !== clipJobPollToken || currentTabId !== tabId) return;
+      activeClipJob = job;
+      renderClipView();
+      if (job.status === "SUCCEEDED") {
+        await completeClipJob(job, tabId, token);
+        return;
+      }
+      if (job.status === "FAILED") return;
+    } catch (err) {
+      if (token !== clipJobPollToken || currentTabId !== tabId) return;
+      clipErrorMsg = errorText(err);
+      renderClipView();
+      return;
+    }
+    await waitMilliseconds(CLIP_JOB_POLL_INTERVAL_MS);
+  }
+}
+
+async function completeClipJob(job, tabId, token) {
+  if (!job.document_id) {
+    clipErrorMsg = "任务完成但未返回 document id";
+    renderClipView();
+    return;
+  }
+  const document = await webRagApiClient.documents.get(job.document_id);
+  if (token !== clipJobPollToken || currentTabId !== tabId) return;
+  const storedBinding = await sessionStore.getTabBinding(tabId);
+  if (!storedBinding) return;
+  const expectedUrl = storedBinding.ingestJobPageUrl;
+  let pageStillMatches = !storedBinding.stale;
+  try {
+    pageStillMatches = pageStillMatches && !!expectedUrl && (
+      webRagUrlUtils.normalizeWebUrl(storedBinding.pageUrl) ===
+      webRagUrlUtils.normalizeWebUrl(expectedUrl)
+    );
+  } catch (_err) {
+    pageStillMatches = false;
+  }
+  storedBinding.ingestJobId = null;
+  storedBinding.ingestJobPageUrl = null;
+  if (!pageStillMatches) {
+    await sessionStore.setTabBinding(tabId, storedBinding);
+    binding = storedBinding;
+    activeClipJob = null;
+    renderClipView();
+    return;
+  }
+  storedBinding.documentId = Number(job.document_id);
+  storedBinding.documentUrl = document.url || null;
+  storedBinding.stale = false;
+  if (document.title) storedBinding.pageTitle = document.title;
+  await sessionStore.setTabBinding(tabId, storedBinding);
+  binding = storedBinding;
+  activeClipJob = null;
+  clipErrorMsg = null;
+  renderClipView();
+  updateSendState();
+  try {
+    chrome.runtime.sendMessage({
+      type: "WEB_RAG_CLIP_COMPLETED",
+      tabId: tabId,
+      documentId: storedBinding.documentId,
+    });
+  } catch (_err) {}
+}
+
+function clearClipDraft() {
+  clipDraft = null;
+  clipDraftTabId = null;
+  if (els.clipPreview) {
+    els.clipPreview.hidden = true;
+    els.clipPreviewTitle.value = "";
+    els.clipPreviewText.value = "";
+    els.clipPreviewCount.textContent = "0 字";
+  }
+}
+
+function syncClipDraftFromInputs() {
+  if (!clipDraft) return;
+  clipDraft.title = els.clipPreviewTitle.value.slice(0, 512);
+  clipDraft.raw_text = els.clipPreviewText.value;
+  renderClipDraftMeta();
+}
+
+function renderClipDraftMeta() {
+  const text = clipDraft ? clipDraft.raw_text : "";
+  const trimmedLength = text.trim().length;
+  els.clipPreviewCount.textContent = trimmedLength.toLocaleString("zh-CN") + " 字";
+  els.clipPreviewSaveBtn.disabled = clipBusy || trimmedLength === 0;
 }
 
 // ================================================================ 聊天渲染
@@ -1367,7 +1693,7 @@ async function extractCurrentPage() {
   };
 }
 
-async function clipCurrentPage() {
+async function prepareClipPreview() {
   const plugin = webRagApiClient.getPlugin();
   if (!plugin.pluginId) {
     renderWelcomeView();
@@ -1379,37 +1705,126 @@ async function clipCurrentPage() {
   }
   if (!binding) return;
   clipBusy = true;
+  clipBusyAction = "extract";
   clipErrorMsg = null;
+  const extractionTabId = currentTabId;
   renderClipView();
   try {
     const page = await extractCurrentPage();
-    const data = await webRagApiClient.clips.clip({
+    if (currentTabId !== extractionTabId) {
+      return;
+    }
+    clipDraft = page;
+    clipDraftTabId = extractionTabId;
+  } catch (err) {
+    if (currentTabId === extractionTabId) {
+      clearClipDraft();
+      clipErrorMsg = err instanceof webRagApiClient.ApiRequestError ? err.message : err && err.message ? err.message : "未知错误";
+    }
+  } finally {
+    clipBusy = false;
+    clipBusyAction = null;
+    renderClipView();
+  }
+}
+
+async function submitClipDraft() {
+  const plugin = webRagApiClient.getPlugin();
+  if (!plugin.pluginId) {
+    renderWelcomeView();
+    return;
+  }
+  if (clipBusy || !clipDraft || clipDraftTabId !== currentTabId) return;
+  const submitTabId = currentTabId;
+  const submitBinding = binding;
+  syncClipDraftFromInputs();
+  const draft = {
+    url: clipDraft.url,
+    title: clipDraft.title,
+    raw_text: clipDraft.raw_text,
+  };
+  const rawText = draft.raw_text.trim();
+  if (!rawText) {
+    clipErrorMsg = "剪藏正文不能为空";
+    renderClipView();
+    return;
+  }
+  const tab = await chrome.tabs.get(submitTabId).catch(() => null);
+  if (!tab || !isSameNormalizedWebUrl(tab.url, draft.url) || currentTabId !== submitTabId) {
+    if (currentTabId === submitTabId) {
+      clearClipDraft();
+      clipErrorMsg = "页面已变化，请重新提取";
+      renderClipView();
+    }
+    return;
+  }
+  const page = {
+    url: draft.url,
+    title: draft.title.trim(),
+    raw_text: rawText,
+  };
+  clipBusy = true;
+  clipBusyAction = "save";
+  clipErrorMsg = null;
+  let submittedJobId = null;
+  renderClipView();
+  try {
+    const job = await webRagApiClient.clips.clipAsync({
       url: page.url,
       title: page.title,
       raw_text: page.raw_text,
     });
-    if (data && data.id != null) {
-      binding.documentId = Number(data.id);
-      binding.stale = false;
-      binding.pageUrl = page.url;
-      binding.pageTitle = page.title;
-      await sessionStore.setTabBinding(currentTabId, binding);
-      try {
-        chrome.runtime.sendMessage({
-          type: "WEB_RAG_CLIP_COMPLETED",
-          tabId: currentTabId,
-          documentId: binding.documentId,
-        });
-      } catch (_err) {}
+    if (job && job.id) {
+      submitBinding.documentId = null;
+      submitBinding.ingestJobId = job.id;
+      submitBinding.ingestJobPageUrl = page.url;
+      submitBinding.stale = false;
+      submitBinding.pageUrl = page.url;
+      submitBinding.pageTitle = page.title;
+      await sessionStore.setTabBinding(submitTabId, submitBinding);
+      if (currentTabId === submitTabId) {
+        binding = submitBinding;
+        activeClipJob = job;
+      }
+      if (clipDraftTabId === submitTabId) {
+        clearClipDraft();
+      }
+      submittedJobId = job.id;
     } else {
-      clipErrorMsg = "后端未返回 document id";
+      if (currentTabId === submitTabId) {
+        clipErrorMsg = "后端未返回 job id";
+      }
     }
   } catch (err) {
-    clipErrorMsg = err instanceof webRagApiClient.ApiRequestError ? err.message : err && err.message ? err.message : "未知错误";
+    if (currentTabId === submitTabId) {
+      clipErrorMsg = err instanceof webRagApiClient.ApiRequestError ? err.message : err && err.message ? err.message : "未知错误";
+    }
   } finally {
     clipBusy = false;
+    clipBusyAction = null;
     renderClipView();
     updateSendState();
+    if (submittedJobId && currentTabId === submitTabId) {
+      startClipJobMonitor(submittedJobId, submitTabId);
+    }
+  }
+}
+
+async function retryActiveClipJob() {
+  if (!activeClipJob || activeClipJob.status !== "FAILED" || clipBusy) return;
+  const jobId = activeClipJob.id;
+  const tabId = currentTabId;
+  els.clipJobRetryBtn.disabled = true;
+  try {
+    activeClipJob = await webRagApiClient.jobs.retry(jobId);
+    clipErrorMsg = null;
+    renderClipView();
+    startClipJobMonitor(jobId, tabId);
+  } catch (err) {
+    clipErrorMsg = errorText(err);
+    renderClipView();
+  } finally {
+    els.clipJobRetryBtn.disabled = false;
   }
 }
 
@@ -1586,7 +2001,7 @@ function updateSendState() {
   let disabled = !plugin.pluginId || isSending;
   if (!disabled && plugin.apiKeyConfigured === false) disabled = true;
   if (!disabled && binding && binding.mode === "current") {
-    if (!binding.documentId || binding.stale) disabled = true;
+    if (!binding.documentId || binding.stale || binding.ingestJobId) disabled = true;
   }
   els.chatSend.disabled = disabled;
 }
@@ -1654,7 +2069,27 @@ function bindEvents() {
   });
 
   els.clipBtn.addEventListener("click", function () {
-    clipCurrentPage();
+    prepareClipPreview();
+  });
+  els.clipPreviewRefreshBtn.addEventListener("click", function () {
+    prepareClipPreview();
+  });
+  els.clipPreviewCancelBtn.addEventListener("click", function () {
+    clearClipDraft();
+    clipErrorMsg = null;
+    renderClipView();
+  });
+  els.clipPreviewSaveBtn.addEventListener("click", function () {
+    submitClipDraft();
+  });
+  els.clipJobRetryBtn.addEventListener("click", function () {
+    retryActiveClipJob();
+  });
+  els.clipPreviewTitle.addEventListener("input", function () {
+    syncClipDraftFromInputs();
+  });
+  els.clipPreviewText.addEventListener("input", function () {
+    syncClipDraftFromInputs();
   });
 
   els.chatSend.addEventListener("click", function () {
@@ -1765,6 +2200,7 @@ async function validatePlugin() {
       // 初始加载时渲染聊天历史（Tab 切换时不重新渲染）
       renderChat();
     }
+    resumeUploadJobMonitor();
   } catch (err) {
     if (err instanceof webRagApiClient.ApiRequestError && err.code === "PLUGIN_DISABLED") {
       // 插件被禁用：保留本地身份，仅显示禁用视图（不清 secret、不创建新 workspace）
@@ -1787,6 +2223,7 @@ async function init() {
   webRagApiClient.setUnauthenticatedHandler(async function (ctx) {
     if (ctx && ctx.pluginId != null) {
       await sessionStore.clearTabBindingsByPlugin(ctx.pluginId);
+      await sessionStore.clearUploadJob(ctx.pluginId);
     }
     binding = null;
     session = null;

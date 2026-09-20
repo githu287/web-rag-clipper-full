@@ -295,6 +295,26 @@ const webRagApiClient = (() => {
         const result = await request("/clips", { method: "POST", body: payload });
         return result.data;
       },
+      async clipAsync(payload) {
+        const result = await request("/clips/async", { method: "POST", body: payload });
+        return result.data;
+      },
+    },
+    jobs: {
+      async get(jobId) {
+        const result = await request(
+          "/jobs/" + encodeURIComponent(String(jobId)),
+          { method: "GET" }
+        );
+        return result.data;
+      },
+      async retry(jobId) {
+        const result = await request(
+          "/jobs/" + encodeURIComponent(String(jobId)) + "/retry",
+          { method: "POST" }
+        );
+        return result.data;
+      },
     },
     rag: {
       // 全部知识库模式：不传 document_id（后端按 X-Plugin-ID → plugin_id → SUCCESS documents）
@@ -357,6 +377,13 @@ const webRagApiClient = (() => {
         const formData = new FormData();
         formData.append("file", file);
         const result = await uploadRequest("/documents/upload", formData);
+        return result.data;
+      },
+      // POST /documents/upload/async：只落盘并创建任务，返回 202 Job。
+      async uploadFileAsync(file) {
+        const formData = new FormData();
+        formData.append("file", file);
+        const result = await uploadRequest("/documents/upload/async", formData);
         return result.data;
       },
     },

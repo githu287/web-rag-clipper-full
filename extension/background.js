@@ -3,7 +3,7 @@
 // 禁止：发送任何业务请求（/clips /rag/* /plugins/register）；保存/解密凭证。
 "use strict";
 
-importScripts("config.js", "session-store.js");
+importScripts("config.js", "url-utils.js", "session-store.js");
 
 // STORAGE_KEYS 已在 config.js 全局声明，禁止重复声明（避免 SW 解析失败）。
 
@@ -19,6 +19,14 @@ function isHttpUrl(url) {
   return typeof url === "string" && /^https?:/.test(url);
 }
 
+function isSameNormalizedUrl(left, right) {
+  try {
+    return webRagUrlUtils.normalizeWebUrl(left) === webRagUrlUtils.normalizeWebUrl(right);
+  } catch (_err) {
+    return left === right;
+  }
+}
+
 async function handleUrlChanged(tabId, url, title) {
   if (!isHttpUrl(url)) return;
   const stored = await chrome.storage.local.get(STORAGE_KEYS.TAB_BINDINGS);
@@ -26,9 +34,28 @@ async function handleUrlChanged(tabId, url, title) {
   const key = String(tabId);
   const binding = bindings[key];
   if (!binding) return;
-  if (binding.pageUrl === url && !binding.stale) return;
+  if (isSameNormalizedUrl(binding.pageUrl, url) && !binding.stale) {
+    // 只有 fragment / 跟踪参数变化时保留 Document 绑定，但更新展示 URL。
+    bindings[key] = Object.assign({}, binding, {
+      pageUrl: url,
+      pageTitle: typeof title === "string" && title ? title : binding.pageTitle,
+      updatedAt: Date.now(),
+    });
+    try {
+      await chrome.storage.local.set({ [STORAGE_KEYS.TAB_BINDINGS]: bindings });
+    } catch (_err) {}
+    broadcast({
+      type: "WEB_RAG_TAB_URL_CHANGED",
+      tabId: tabId,
+      url: url,
+      title: bindings[key].pageTitle || "",
+    });
+    return;
+  }
   bindings[key] = Object.assign({}, binding, {
     documentId: null,
+    ingestJobId: null,
+    ingestJobPageUrl: null,
     pageUrl: url,
     pageTitle: typeof title === "string" && title ? title : binding.pageTitle,
     stale: true,

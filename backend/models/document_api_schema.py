@@ -29,7 +29,9 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from ..core.url_normalization import normalize_web_url
 
 
 # ---------------------------------------------------------------------------
@@ -183,7 +185,7 @@ class WebClipRequest(BaseModel):
         ...,
         min_length=1,
         max_length=2048,
-        description="网页来源 URL（非空，<=2048 字符）",
+        description="HTTP(S) 网页来源 URL（后端会规范化，<=2048 字符）",
     )
     title: str | None = Field(
         default=None,
@@ -195,6 +197,13 @@ class WebClipRequest(BaseModel):
         min_length=1,
         description="网页正文纯文本（非空）",
     )
+
+    @field_validator("url")
+    @classmethod
+    def validate_url(cls, value: str) -> str:
+        """Reject invalid URLs while preserving the original for legacy lookup."""
+        normalize_web_url(value)
+        return value.strip()
 
 
 class WebClipResponse(BaseModel):

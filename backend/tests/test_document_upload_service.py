@@ -114,6 +114,7 @@ class DocumentUploadServiceTest(unittest.TestCase):
         file_size: int = 11,
         mime_type: str = "text/plain",
         error_message: str | None = None,
+        source_type: str = "upload",
     ) -> Mock:
         """构造带全部响应字段的 Mock Document。"""
         doc = Mock()
@@ -125,6 +126,7 @@ class DocumentUploadServiceTest(unittest.TestCase):
         doc.file_size = file_size
         doc.mime_type = mime_type
         doc.error_message = error_message
+        doc.source_type = source_type
         return doc
 
     def _assert_failure_state_written(self, error_summary: str) -> None:
@@ -189,6 +191,52 @@ class DocumentUploadServiceTest(unittest.TestCase):
         self.assertIsNone(result.error_message)
         # 4) 失败路径未被触发
         self.document_repo.update_failure.assert_not_called()
+
+    def test_process_prepared_upload_skips_save_and_create(self) -> None:
+        """Queued processing loads an owned Document and reuses its stored file."""
+        pending = self._make_document(
+            doc_id=7,
+            filename="queued.txt",
+            file_path="stored.txt",
+            status=DocumentStatus.PENDING,
+        )
+        success = self._make_document(
+            doc_id=7,
+            filename="queued.txt",
+            file_path="stored.txt",
+            status=DocumentStatus.SUCCESS,
+            chunk_count=1,
+        )
+        self.document_repo.get_document.side_effect = [pending, success]
+
+        result = self.run_async(
+            self.service.process_upload(7, "plugin-a", api_key="sk-test")
+        )
+
+        self.file_storage.save.assert_not_called()
+        self.document_repo.create_document.assert_not_called()
+        self.file_storage.resolve.assert_called_once_with("stored.txt")
+        self.ingest_service.ingest_document.assert_awaited_once_with(
+            7,
+            ["hello world"],
+            plugin_id="plugin-a",
+            api_key="sk-test",
+        )
+        self.assertIs(result, success)
+
+    def test_process_prepared_upload_rejects_webpage_document(self) -> None:
+        webpage = self._make_document(
+            doc_id=8,
+            source_type="webpage",
+        )
+        self.document_repo.get_document.return_value = webpage
+
+        with self.assertRaises(DocumentUploadError):
+            self.run_async(self.service.process_upload(8, "plugin-a"))
+
+        self.document_repo.update_status.assert_not_called()
+        self.file_storage.resolve.assert_not_called()
+        self.ingest_service.ingest_document.assert_not_awaited()
 
     # ------------------------------------------------- B. 正常 .md 上传
     def test_upload_markdown_success(self) -> None:

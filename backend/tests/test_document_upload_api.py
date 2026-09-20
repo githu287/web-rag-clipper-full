@@ -24,6 +24,7 @@ POST /documents/upload API 集成测试（Phase 2.10 Step 3）。
 from __future__ import annotations
 
 import unittest
+from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -31,7 +32,11 @@ from fastapi.testclient import TestClient
 
 from backend.api.deps import get_current_plugin
 from backend.clients.embedding import EmbeddingClientError
-from backend.core.di import get_document_upload_service, get_plugin_service
+from backend.core.di import (
+    get_document_upload_service,
+    get_ingest_job_service,
+    get_plugin_service,
+)
 from backend.core.exceptions import (
     DocumentChunkingError,
     DocumentFileEmptyError,
@@ -40,8 +45,10 @@ from backend.core.exceptions import (
     DocumentUnsupportedExtensionError,
     DocumentUploadError,
     MilvusRepositoryError,
+    IngestJobOperationError,
 )
 from backend.main import create_app
+from backend.models.ingest_job import IngestJobStatus, IngestJobType
 
 
 class DocumentUploadApiTest(unittest.TestCase):
@@ -56,10 +63,14 @@ class DocumentUploadApiTest(unittest.TestCase):
 
         self.fake_upload_service = Mock()
         self.fake_upload_service.upload = AsyncMock()
+        self.fake_job_service = Mock()
 
         self.app = create_app()
         self.app.dependency_overrides[get_document_upload_service] = (
             lambda: self.fake_upload_service
+        )
+        self.app.dependency_overrides[get_ingest_job_service] = (
+            lambda: self.fake_job_service
         )
         # Phase 3.5 Step 2-E：upload 端点需插件认证 + 插件工作空间 API Key 注入
         self.fake_plugin = SimpleNamespace(plugin_id="plugin-42")
@@ -98,6 +109,66 @@ class DocumentUploadApiTest(unittest.TestCase):
         doc.chunk_count = chunk_count
         doc.error_message = error_message
         return doc
+
+    def _make_upload_job(self, document_id: int = 1) -> Mock:
+        now = datetime(2026, 9, 20, 12, 0, 0)
+        return Mock(
+            id="22222222-2222-2222-2222-222222222222",
+            job_type=IngestJobType.FILE_UPLOAD,
+            status=IngestJobStatus.QUEUED,
+            stage="QUEUED",
+            progress=0,
+            attempt_count=0,
+            document_id=document_id,
+            error_message=None,
+            created_at=now,
+            updated_at=now,
+            started_at=None,
+            finished_at=None,
+        )
+
+    def test_upload_async_returns_202_and_prepared_document_job(self) -> None:
+        document = self._make_document(status="PENDING", chunk_count=0)
+        job = self._make_upload_job(document.id)
+        self.fake_upload_service.prepare_upload.return_value = document
+        self.fake_job_service.create_file_upload_job.return_value = job
+
+        response = self.client.post(
+            "/documents/upload/async",
+            files={"file": ("notes.txt", b"line1\nline2", "text/plain")},
+        )
+
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(response.json()["job_type"], IngestJobType.FILE_UPLOAD)
+        self.assertEqual(response.json()["document_id"], document.id)
+        self.fake_plugin_service.decrypt_api_key.assert_called_once_with(
+            self.fake_plugin
+        )
+        self.fake_upload_service.prepare_upload.assert_called_once_with(
+            filename="notes.txt",
+            content=b"line1\nline2",
+            plugin_id="plugin-42",
+            mime_type="text/plain",
+        )
+        self.fake_job_service.create_file_upload_job.assert_called_once_with(
+            "plugin-42",
+            document.id,
+        )
+
+    def test_upload_async_queue_failure_marks_document_failed(self) -> None:
+        document = self._make_document(status="PENDING", chunk_count=0)
+        self.fake_upload_service.prepare_upload.return_value = document
+        self.fake_job_service.create_file_upload_job.side_effect = (
+            IngestJobOperationError("redis down")
+        )
+
+        response = self.client.post(
+            "/documents/upload/async",
+            files={"file": ("notes.txt", b"body", "text/plain")},
+        )
+
+        self.assertEqual(response.status_code, 503)
+        self.fake_upload_service.fail_prepared_upload.assert_called_once()
 
     # ------------------------------------------------------- 1. 201 成功
     def test_upload_success_201(self) -> None:

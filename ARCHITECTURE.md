@@ -48,6 +48,8 @@
 
 - `background.js` 管理 Side Panel 行为和 Tab URL 变化通知。
 - `content.js` 按 `article → main → body` 选择正文容器，克隆后移除脚本、导航、页脚等噪声节点。
+- Side Panel 在提交前展示标题、正文和字符数；用户可编辑、取消或重新提取。预览期间如果 Tab 或 URL 变化，草稿会失效，防止正文与来源错绑。
+- `url-utils.js` 为扩展的“已剪藏”检测提供 URL 规范化；最终写入与查重仍以后端 `normalize_web_url()` 为权威。
 - `api-client.js` 集中添加 Plugin Header、解析错误和处理 401。
 - `session-store.js` 把会话、当前会话和 Tab 上下文存入 `chrome.storage.local`。
 - `sidepanel.js` 承担 Workspace 初始化、剪藏、知识库管理、问答和设置交互。
@@ -57,7 +59,7 @@ Plugin Secret 会保存在扩展本地存储以便认证，但不会写入聊天
 
 ### 3.2 FastAPI
 
-`backend.main:create_app()` 注册 ingest、rag、documents、clips、plugins 五组 Router。模块级 `app` 供 Uvicorn 直接引用。
+`backend.main:create_app()` 注册 ingest、rag、documents、clips、jobs、plugins 六组 Router。模块级 `app` 供 Uvicorn 直接引用。
 
 lifespan 启动阶段调用 `MilvusInitializer.initialize()`：连接 Milvus；Collection 不存在时创建 Schema 和索引；已存在时校验/复用；最后加载 Collection。它不会自动删除并重建已有 Collection。
 
@@ -68,7 +70,7 @@ lifespan 启动阶段调用 `MilvusInitializer.initialize()`：连接 Milvus；C
 - MySQL：权威保存 Workspace、Document 元数据、归属和生命周期状态。
 - Milvus：保存 chunk 文本及向量，用于近似最近邻检索。
 - MinIO + etcd：Milvus standalone 的对象存储与元数据依赖。
-- Redis：已编排，当前业务未读取。
+- Redis：保存待处理队列、processing 确认列表与限时 payload；不作为任务状态权威库。
 - 本地文件系统：仅上传文件落入 `uploads/`；网页剪藏不创建物理文件。
 - 百炼：Embedding 和 Chat Completion 均通过 OpenAI 兼容接口访问。
 
@@ -140,36 +142,49 @@ Workspace 隔离不只依赖一个过滤点：
 
 向量索引为 HNSW，距离度量为 COSINE，搜索参数 `ef=128`。代码中的 `distance` 实际承载相似度，值越大越相似。
 
+### 5.4 `ingest_jobs`
+
+`ingest_jobs` 持久化 `QUEUED → RUNNING → SUCCEEDED | FAILED` 状态机，包含 `stage`、`progress`、`attempt_count`、可选 `document_id`、错误摘要和开始/完成时间。Workspace 删除时通过外键级联清理任务；Document 删除时任务历史保留但 `document_id` 置空。
+
 ## 6. 写入链路
 
 ### 6.1 文件上传
 
 ```text
-POST /documents/upload
+Side Panel 选择文件 → POST /documents/upload/async
   → 校验名称、扩展名、大小
   → LocalFileStorage.save
   → INSERT Document(PENDING, source_type=upload)
+  → MySQL Job(QUEUED, type=FILE_UPLOAD, document_id) + Redis 引用 → 202
+  → Worker: processing list → Job(RUNNING)
   → status=PROCESSING
   → TextDocumentParser
   → RecursiveCharacterChunker
   → EmbeddingClient（每批最多 10 条）
   → Milvus re-ingest
   → status=SUCCESS + chunk_count
+  → Job(SUCCEEDED) → ack + 删除 payload
 ```
 
-失败后 Document 进入 `FAILED` 并记录最长 2048 字符的错误摘要。文件在 Document 创建成功后的处理失败场景中会保留以支持重试；若 Document 创建本身失败，会清理刚落盘的孤儿文件。
+失败后 Document 和 Job 都进入 `FAILED` 并记录错误摘要。文件在 Document 创建成功后的处理失败场景中会保留以支持重试；若 Document 创建本身失败，会清理刚落盘的孤儿文件。Redis payload 只包含 Workspace 和 Document 引用，不包含文件字节或 API Key。旧 `POST /documents/upload` 保留为同步兼容接口。
 
 ### 6.2 网页剪藏
 
 ```text
-POST /clips
-  → 按 (plugin_id, url) 查询既有网页
+Side Panel 提取正文 → 预览/编辑 → 用户确认
+  → POST /clips/async → MySQL Job(QUEUED) + Redis payload/queue → 202
+  → Worker: processing list → Job(RUNNING)
+  → 规范化 URL（移除 fragment / 跟踪参数 / 默认端口）
+  → 按 (plugin_id, normalized_url) 查询既有网页
   → 新建或复用 Document
   → Chunker → Embedding → Milvus
   → 更新 title/url/source_type/chunk_count/status
+  → Job(SUCCEEDED, document_id) → ack + 删除 payload
 ```
 
-网页文档固定使用 `filename=webclip.txt`，不写本地文件。同一 Workspace、同一 URL 的失败文档可原位重试；不同 Workspace 的相同 URL 相互独立。
+网页文档固定使用 `filename=webclip.txt`，不写本地文件。后端会在查重前移除 URL fragment、默认端口和 `utm_*` / `fbclid` / `gclid` 等跟踪参数。同一 Workspace、同一规范化 URL 的失败文档可原位重试；不同 Workspace 的相同 URL 相互独立。
+
+Worker 使用 Redis 待处理列表和 processing 列表实现确认语义。任务写入 MySQL 终态后才从 processing 移除；Worker 重启时会将未确认项恢复到队列并把中断的 `RUNNING` 任务置回 `QUEUED`。Redis payload 不包含用户 API Key，Worker 执行时才从 Workspace 解密当前 Key。
 
 ### 6.3 Milvus re-ingest
 
@@ -220,7 +235,7 @@ Workspace 删除要求 `confirm=true` 且提交名称与当前名称完全一致
 
 ## 9. API 与异常边界
 
-当前共有 16 个操作：Plugin 6、Document 6、Clip 1、Ingest 1、RAG 2。
+当前共有 20 个操作：Plugin 6、Document 7、Clip 2、Job 2、Ingest 1、RAG 2。
 
 | 状态码 | 典型场景 |
 |---:|---|
@@ -237,7 +252,7 @@ Workspace 删除要求 `confirm=true` 且提交名称与当前名称完全一致
 
 ## 10. 测试、可观测性与维护状态
 
-主测试集覆盖 Router、Service、Repository、DTO、安全工具、Workspace 隔离、评测计算和报告渲染。当前活动集实测为 510 passed，并包含 31 个 subtests。
+主测试集覆盖 Router、Service、Repository、DTO、安全工具、URL 规范化、异步队列/Worker、Workspace 隔离、评测计算和报告渲染。当前活动集实测为 550 passed，并包含 37 个 subtests。
 
 日志记录操作类型、Document ID 和候选数量等诊断信息；安全代码避免记录 Plugin Secret 与 API Key 明文。项目目前没有统一 metrics/tracing、结构化审计日志或请求 ID 中间件。
 
@@ -245,7 +260,7 @@ Workspace 删除要求 `confirm=true` 且提交名称与当前名称完全一致
 
 ## 11. 已知演进约束
 
-- 同步 ingest 会占用请求；异步化时需保持 Document 状态机和幂等 re-ingest 语义。
+- 网页和文件 ingest 已异步化；当前恢复策略假定只运行一个 Worker 进程。
 - 向量维度或 Collection Schema 改动不能仅改环境变量，必须重建 Collection 并全量重新 ingest。
 - 若启用公网访问，需要补齐 CORS、TLS、限流、Secret 轮换、审计和更严格的部署配置。
 - 新解析器应实现 `DocumentParser` Protocol，新存储或数据库适配应实现对应 Protocol。

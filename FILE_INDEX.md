@@ -27,6 +27,7 @@
 | `backend/api/routers/plugins.py` | Workspace 注册、详情、改名、API Key 与删除 |
 | `backend/api/routers/documents.py` | 文档列表/详情、创建、上传、ingest 与删除 |
 | `backend/api/routers/clips.py` | 网页正文剪藏 |
+| `backend/api/routers/jobs.py` | 异步入库任务查询与失败重试 |
 | `backend/api/routers/ingest.py` | 已切分 chunks 的底层 re-ingest |
 | `backend/api/routers/rag.py` | 语义检索与生成式问答 |
 | `backend/api/routers/auth.py` | 未接入的旧 User/Bearer 草稿；`main.py` 未注册 |
@@ -42,6 +43,7 @@
 | `backend/core/di.py` | Repository、Client、Service 和存储组件的 DI 工厂 |
 | `backend/core/exceptions.py` | Document、Plugin、Security、Milvus 等领域异常 |
 | `backend/core/security.py` | AES-256-GCM、SHA-256、Plugin ID/Secret 工具 |
+| `backend/core/url_normalization.py` | HTTP(S) URL 校验、跟踪参数清理与网页身份规范化 |
 
 ### Models 与契约
 
@@ -51,6 +53,8 @@
 | `backend/models/base.py` | SQLAlchemy Declarative Base |
 | `backend/models/document.py` | `documents` ORM、Document 状态与来源类型 |
 | `backend/models/plugin.py` | `plugin_workspaces` ORM 与 Workspace 状态 |
+| `backend/models/ingest_job.py` | `ingest_jobs` ORM、任务类型与状态机 |
+| `backend/models/ingest_job_api_schema.py` | 任务进度/结果 API Schema |
 | `backend/models/milvus_dto.py` | `ChunkVector` / `ChunkSearchResult` 严格 DTO |
 | `backend/models/api_schema.py` | Ingest、RAG、Plugin API Schema |
 | `backend/models/document_api_schema.py` | Document、Upload、Clip、列表与详情 Schema |
@@ -62,12 +66,13 @@
 |---|---|
 | `backend/services/__init__.py` | Service 包标记 |
 | `backend/services/plugin_service.py` | Workspace 注册、认证、改名、API Key 处理 |
-| `backend/services/document_upload.py` | 文件校验、落盘、解析、切块与生命周期编排 |
+| `backend/services/document_upload.py` | 可分阶段的文件校验/落盘与解析/切块/入库编排 |
 | `backend/services/document_ingest.py` | Document 状态机和 ingest 成功/失败收敛 |
 | `backend/services/document_delete.py` | Milvus → 文件 → MySQL 的幂等文档删除 |
 | `backend/services/workspace_delete.py` | 分批清理文档后删除 Workspace |
 | `backend/services/web_clip.py` | 网页文档创建/复用、切块、入库与元数据更新 |
 | `backend/services/ingest.py` | old IDs → upsert new → delete stale |
+| `backend/services/ingest_job.py` | 任务创建、Redis 入队、归属查询与重试编排 |
 | `backend/services/rag.py` | Query 向量化、范围过滤、搜索和 metadata 组装 |
 | `backend/services/rag_answer.py` | Retrieval、Context、Prompt、LLM、Sources 编排 |
 | `backend/services/user_service.py` | 未接入的旧 User/Bearer 草稿 Service |
@@ -82,6 +87,8 @@
 | `backend/repositories/mysql/impl.py` | SQLAlchemy Document Repository 与 Workspace 过滤 |
 | `backend/repositories/mysql/plugin_protocol.py` | Plugin Repository Protocol |
 | `backend/repositories/mysql/plugin_impl.py` | SQLAlchemy Plugin Workspace Repository |
+| `backend/repositories/mysql/ingest_job_protocol.py` | 异步入库任务 Repository Protocol |
+| `backend/repositories/mysql/ingest_job_impl.py` | 任务创建、原子 claim、终态与崩溃恢复持久化 |
 | `backend/repositories/mysql/user_protocol.py` | 未接入的旧 User Repository Protocol |
 | `backend/repositories/mysql/user_impl.py` | 未接入的旧 User Repository 实现 |
 | `backend/repositories/milvus/__init__.py` | 导出 Milvus Protocol、实现与初始化器 |
@@ -105,6 +112,8 @@
 | `backend/storage/__init__.py` | Storage 包标记 |
 | `backend/storage/protocol.py` | File Storage Protocol |
 | `backend/storage/local.py` | 本地保存/删除与路径穿越防护 |
+| `backend/tasks/redis_queue.py` | Redis 待处理/processing 队列、payload TTL 与 ack/recovery |
+| `backend/workers/ingest_worker.py` | 异步网页与文件入库 Worker CLI |
 | `backend/requirements.txt` | 后端依赖和 Milvus Client 版本约束 |
 
 ### 后端测试
@@ -117,6 +126,7 @@
 | `backend/tests/test_embedding_client.py` | 批处理、维度、异常和 Key 隔离 |
 | `backend/tests/test_llm_client.py` | LLM 参数、响应和异常包装 |
 | `backend/tests/test_security.py` | AES-GCM、哈希、随机凭证与篡改检测 |
+| `backend/tests/test_url_normalization.py` | URL 规范化、跟踪参数和非法 URL 边界 |
 | `backend/tests/test_document_repository.py` | CRUD、筛选、分页和 Workspace 隔离 |
 | `backend/tests/test_plugin_repository.py` | Plugin Repository 数据契约 |
 | `backend/tests/test_plugin_service.py` | 名称、认证、API Key 与敏感信息保护 |
@@ -132,9 +142,14 @@
 | `backend/tests/test_rag_api.py` | `/rag/search` 契约和隔离 |
 | `backend/tests/test_rag_answer_api.py` | `/rag/ask` 契约和异常映射 |
 | `backend/tests/test_document_api.py` | Document CRUD、列表/详情与分页 API |
-| `backend/tests/test_document_upload_api.py` | multipart 上传 API |
+| `backend/tests/test_document_upload_api.py` | 同步/异步 multipart 上传 API |
 | `backend/tests/test_web_clip_api.py` | Web Clip Schema 与响应 |
 | `backend/tests/test_plugin_api.py` | Plugin Workspace API |
+| `backend/tests/test_ingest_job_repository.py` | 任务状态机、原子 claim、恢复与归属 |
+| `backend/tests/test_ingest_job_service.py` | 入队失败补偿、payload 安全与重试上限 |
+| `backend/tests/test_ingest_job_api.py` | 异步提交、进度查询、重试和错误映射 |
+| `backend/tests/test_redis_ingest_queue.py` | Redis 原子入队、processing ack 与恢复 |
+| `backend/tests/test_ingest_worker.py` | Worker 成功、失败、重复投递与中断恢复 |
 | `backend/tests/test_evaluation_baseline.py` | 指标、数据对齐和隔离泄漏计算 |
 | `backend/tests/test_auth_api.py` | 未接入 User/Bearer 草稿测试；当前收集失败 |
 | `backend/tests/test_user_repository.py` | 未接入 User Repository 草稿测试；当前收集失败 |
@@ -146,6 +161,7 @@
 |---|---|
 | `extension/manifest.json` | Manifest V3、Side Panel、Service Worker 与权限 |
 | `extension/config.js` | 后端地址、存储键、Session 上限等常量 |
+| `extension/url-utils.js` | 与后端对齐的 URL 规范化查重辅助 |
 | `extension/background.js` | Side Panel 行为和 Tab 消息广播 |
 | `extension/content.js` | DOM 正文抽取、噪声清理和 SPA URL 监听 |
 | `extension/api-client.js` | Plugin Header、JSON/multipart 请求与错误分类 |
@@ -156,6 +172,7 @@
 | `extension/popup.html` | Popup 轻量入口结构 |
 | `extension/popup.css` | Popup 样式 |
 | `extension/popup.js` | 页面预览、快捷剪藏和打开 Side Panel |
+| `extension/tests/url-utils.test.js` | 扩展 URL 规范化的 Node.js 回归测试 |
 
 ## `alembic/` — 数据库迁移
 
@@ -171,6 +188,7 @@
 | `alembic/versions/0006_user_identity_rework.py` | 历史用户名/密码身份重构 |
 | `alembic/versions/0007_plugin_workspace.py` | 创建 Workspace，增加并回填 `documents.plugin_id` |
 | `alembic/versions/0008_documents_user_id_default.py` | 为旧 `user_id` 设置默认 0 |
+| `alembic/versions/0009_create_ingest_jobs.py` | 创建持久化异步入库任务表 |
 
 ## `evaluation/` — Retrieval 基线
 

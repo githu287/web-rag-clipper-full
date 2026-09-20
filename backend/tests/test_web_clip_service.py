@@ -66,6 +66,7 @@ class WebClipServiceTest(unittest.TestCase):
         # 默认成功路径返回值
         self.chunker.split.return_value = ["chunk-1", "chunk-2"]
         self.document_repo.get_webpage_by_url.return_value = None
+        self.document_repo.list_documents.return_value = []
 
         self.service = WebClipService(
             document_repository=self.document_repo,
@@ -184,6 +185,113 @@ class WebClipServiceTest(unittest.TestCase):
             42, ["chunk-1", "chunk-2"], plugin_id="plugin-a", api_key="sk-test"
         )
         self.assertEqual(result.id, 42)
+
+    def test_normalized_url_is_used_for_lookup_and_create(self) -> None:
+        """锚点和跟踪参数不参与网页身份匹配。"""
+        pending = self._make_document(
+            url="https://example.com/article?id=7",
+        )
+        success = self._make_document(
+            status=DocumentStatus.SUCCESS,
+            chunk_count=2,
+            url="https://example.com/article?id=7",
+        )
+        self.document_repo.create_document.return_value = pending
+        self.document_repo.get_document.return_value = success
+
+        self.run_async(
+            self.service.clip(
+                url="HTTPS://Example.COM:443/article?id=7&utm_source=test#part",
+                raw_text="body",
+                plugin_id="plugin-a",
+            )
+        )
+
+        normalized = "https://example.com/article?id=7"
+        self.document_repo.get_webpage_by_url.assert_has_calls(
+            [
+                call("plugin-a", normalized),
+                call(
+                    "plugin-a",
+                    "HTTPS://Example.COM:443/article?id=7&utm_source=test#part",
+                ),
+            ]
+        )
+        self.assertEqual(
+            self.document_repo.create_document.call_args.kwargs["url"],
+            normalized,
+        )
+
+    def test_tracking_variant_reuses_normalized_existing_document(self) -> None:
+        """同一文章的跟踪参数变体复用既有 Document ID。"""
+        existing = self._make_document(
+            doc_id=51,
+            status=DocumentStatus.SUCCESS,
+            url="https://example.com/article?id=7",
+        )
+        updated = self._make_document(
+            doc_id=51,
+            status=DocumentStatus.SUCCESS,
+            url="https://example.com/article?id=7",
+        )
+        self.document_repo.get_webpage_by_url.return_value = existing
+        self.document_repo.update_webpage_metadata.return_value = updated
+        self.document_repo.get_document.return_value = updated
+
+        result = self.run_async(
+            self.service.clip(
+                url="https://example.com/article?utm_medium=email&id=7#comments",
+                raw_text="updated body",
+                plugin_id="plugin-a",
+            )
+        )
+
+        self.document_repo.create_document.assert_not_called()
+        self.document_repo.update_webpage_metadata.assert_called_once_with(
+            51,
+            title=None,
+            url="https://example.com/article?id=7",
+        )
+        self.assertEqual(result.id, 51)
+
+    def test_legacy_tracking_url_is_reused_and_upgraded_in_place(self) -> None:
+        """升级前保存的另一跟踪参数变体也不会创建重复行。"""
+        existing = self._make_document(
+            doc_id=61,
+            status=DocumentStatus.SUCCESS,
+            url="https://example.com/article?utm_campaign=old&id=7#legacy",
+        )
+        updated = self._make_document(
+            doc_id=61,
+            status=DocumentStatus.SUCCESS,
+            url="https://example.com/article?id=7",
+        )
+        self.document_repo.get_webpage_by_url.side_effect = [None, None]
+        self.document_repo.list_documents.return_value = [existing]
+        self.document_repo.update_webpage_metadata.return_value = updated
+        self.document_repo.get_document.return_value = updated
+
+        result = self.run_async(
+            self.service.clip(
+                url="https://example.com/article?utm_source=new&id=7#current",
+                raw_text="updated body",
+                plugin_id="plugin-a",
+            )
+        )
+
+        self.document_repo.create_document.assert_not_called()
+        self.document_repo.list_documents.assert_called_once_with(
+            "plugin-a",
+            page=1,
+            page_size=100,
+            source_type=DocumentSourceType.WEBPAGE,
+        )
+        self.document_repo.update_webpage_metadata.assert_called_once_with(
+            61,
+            title=None,
+            url="https://example.com/article?id=7",
+        )
+        self.assertEqual(result.id, 61)
 
     # ------------- 3.6.1 Step 3：re-clip gate / FAILED 重试 / URL 变化 / 跨插件隔离
     def test_reclip_rejects_processing_document(self) -> None:

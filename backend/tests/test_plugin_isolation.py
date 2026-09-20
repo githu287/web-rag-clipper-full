@@ -423,6 +423,7 @@ class PluginIsolationServiceTest(unittest.TestCase):
             filename=f"file-{doc_id}.txt",
             file_path=f"uploads/file-{doc_id}.txt",
             status=status,
+            source_type="upload",
         )
 
 

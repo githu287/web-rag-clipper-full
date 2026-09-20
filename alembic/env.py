@@ -28,6 +28,8 @@ from backend.core.config import get_settings
 from backend.core.db import build_mysql_url
 from backend.models.base import Base
 import backend.models.document  # noqa: F401
+import backend.models.ingest_job  # noqa: F401
+import backend.models.plugin  # noqa: F401
 
 # alembic 配置实例
 config = context.config
@@ -42,6 +44,8 @@ if "documents" not in Base.metadata.tables:
     raise RuntimeError(
         "Document ORM 未注册，请检查 backend.models.document import"
     )
+if "ingest_jobs" not in Base.metadata.tables:
+    raise RuntimeError("IngestJob ORM 未注册，请检查 backend.models.ingest_job import")
 
 target_metadata = Base.metadata
 

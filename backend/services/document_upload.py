@@ -58,7 +58,7 @@ from ..core.exceptions import (
     DocumentUploadError,
     DocumentUnsupportedExtensionError,
 )
-from ..models.document import Document, DocumentStatus
+from ..models.document import Document, DocumentSourceType, DocumentStatus
 from ..parsers import DocumentParser
 from ..repositories.mysql import DocumentRepository
 from ..storage import FileStorage
@@ -104,6 +104,66 @@ class DocumentUploadService:
         self._document_ingest_service = document_ingest_service
         self._max_content_bytes = max_content_bytes
 
+    def prepare_upload(
+        self,
+        filename: str,
+        content: bytes,
+        plugin_id: str,
+        mime_type: str | None,
+    ) -> Document:
+        """Validate and persist an upload without parsing or embedding it."""
+        if not filename or "/" in filename or "\\" in filename:
+            raise DocumentUploadError(
+                f"invalid filename: {filename!r} "
+                "(must be a plain file name without path separators)"
+            )
+        if content == b"":
+            raise DocumentFileEmptyError("uploaded file is empty (0 bytes)")
+        if len(content) > self._max_content_bytes:
+            raise DocumentFileTooLargeError(
+                f"file size {len(content)} bytes exceeds limit "
+                f"{self._max_content_bytes} bytes"
+            )
+        extension = os.path.splitext(filename)[1].lower()
+        if extension not in _SUPPORTED_EXTENSIONS:
+            raise DocumentUnsupportedExtensionError(
+                f"unsupported file extension: {extension!r}, "
+                f"supported: {sorted(_SUPPORTED_EXTENSIONS)}"
+            )
+
+        file_path = self._file_storage.save(filename, content)
+        try:
+            return self._document_repository.create_document(
+                filename=filename,
+                file_path=file_path,
+                plugin_id=plugin_id,
+                file_size=len(content),
+                mime_type=mime_type or "",
+            )
+        except Exception:
+            try:
+                self._file_storage.delete(file_path)
+            except Exception:
+                logger.exception(
+                    "failed to remove orphan upload after create_document failure: %s",
+                    file_path,
+                )
+            raise
+
+    async def process_upload(
+        self,
+        document_id: int,
+        plugin_id: str,
+        api_key: str | None = None,
+    ) -> Document:
+        """Parse and ingest a previously prepared upload."""
+        document = self._document_repository.get_document(document_id, plugin_id)
+        return await self._process_document(document, plugin_id, api_key)
+
+    def fail_prepared_upload(self, document_id: int, exc: Exception) -> None:
+        """Persist a terminal failure when a prepared upload cannot be queued."""
+        self._mark_failed(document_id, exc)
+
     async def upload(
         self,
         filename: str,
@@ -147,75 +207,28 @@ class DocumentUploadService:
             MilvusRepositoryError / EmbeddingClientError: 链路失败（Document 已置
             FAILED + error_message，原异常继续传播）。
         """
-        # ------------------------------------------------------------------
-        # 1) 输入校验：全部在落盘与建 Document 之前，失败不产生任何副作用
-        # ------------------------------------------------------------------
-        if not filename or "/" in filename or "\\" in filename:
+        document = self.prepare_upload(filename, content, plugin_id, mime_type)
+        return await self._process_document(document, plugin_id, api_key)
+
+    async def _process_document(
+        self,
+        document: Document,
+        plugin_id: str,
+        api_key: str | None,
+    ) -> Document:
+        """Shared processing phase for synchronous and queued uploads."""
+        if document.source_type != DocumentSourceType.UPLOAD:
             raise DocumentUploadError(
-                f"invalid filename: {filename!r} "
-                "(must be a plain file name without path separators)"
+                f"document is not an uploaded file: id={document.id}"
             )
-
-        if content == b"":
-            raise DocumentFileEmptyError("uploaded file is empty (0 bytes)")
-
-        if len(content) > self._max_content_bytes:
-            raise DocumentFileTooLargeError(
-                f"file size {len(content)} bytes exceeds limit "
-                f"{self._max_content_bytes} bytes"
-            )
-
-        extension = os.path.splitext(filename)[1].lower()
-        if extension not in _SUPPORTED_EXTENSIONS:
-            raise DocumentUnsupportedExtensionError(
-                f"unsupported file extension: {extension!r}, "
-                f"supported: {sorted(_SUPPORTED_EXTENSIONS)}"
-            )
-
-        # ------------------------------------------------------------------
-        # 2) 落盘（LocalFileStorage 安全校验：纯文件名 + upload_dir 边界内）
-        # ------------------------------------------------------------------
-        file_path = self._file_storage.save(filename, content)
-
-        # ------------------------------------------------------------------
-        # 3) 创建 Document(status=PENDING)，携带 file_size / mime_type
-        # ------------------------------------------------------------------
-        try:
-            document = self._document_repository.create_document(
-                filename=filename,
-                file_path=file_path,
-                plugin_id=plugin_id,
-                file_size=len(content),
-                mime_type=mime_type or "",
-            )
-        except Exception:
-            try:
-                self._file_storage.delete(file_path)
-            except Exception:
-                logger.exception(
-                    "failed to remove orphan upload after create_document failure: %s",
-                    file_path,
-                )
-            raise
-
-        # ------------------------------------------------------------------
-        # 3.1) 立即置 PROCESSING（Phase 2.10 Step 3.2 状态机修复）
-        # 保证 Parser / Chunker / 空 chunks 任一失败时迁移为 PROCESSING → FAILED，
-        # 杜绝 PENDING → FAILED 非法迁移。置位失败直接向上传播（与
-        # DocumentIngestService Step 2 行为一致），Document 保持 PENDING 不误标 FAILED。
-        # ------------------------------------------------------------------
         self._document_repository.update_status(
             document.id,
             DocumentStatus.PROCESSING,
         )
-
-        # ------------------------------------------------------------------
-        # 4) 解析 → 切分 → ingest；任一失败：PROCESSING → FAILED + error_message，不吞异常
-        #    Parser 前先 resolve()：save 返回的是相对 upload_dir 的逻辑路径，
-        #    需经 FileStorage 解析为物理路径（UploadService 不感知 upload_dir）。
-        # ------------------------------------------------------------------
         try:
-            text = self._parser.parse(self._file_storage.resolve(file_path))
+            text = self._parser.parse(
+                self._file_storage.resolve(document.file_path)
+            )
             chunks = self._chunker.split(text)
             if not chunks:
                 raise DocumentUploadError(
@@ -231,9 +244,6 @@ class DocumentUploadService:
             self._mark_failed(document.id, exc)
             raise
 
-        # ------------------------------------------------------------------
-        # 5) 返回终态（SUCCESS，error_message=None）
-        # ------------------------------------------------------------------
         return self._document_repository.get_document(document.id, plugin_id)
 
     def _mark_failed(self, document_id: int, exc: Exception) -> None:

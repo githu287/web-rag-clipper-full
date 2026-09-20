@@ -24,6 +24,7 @@ const els = {
 let currentTabId = null;
 let currentPage = null;
 let clipBusy = false;
+const JOB_POLL_INTERVAL_MS = 1500;
 
 // ================================================================ 工具
 async function getCurrentTab() {
@@ -105,52 +106,98 @@ async function clipCurrentPage() {
   setStatus("剪藏中…", null, "");
   try {
     const page = await extractCurrentPage();
-    const data = await webRagApiClient.clips.clip({
+    const job = await webRagApiClient.clips.clipAsync({
       url: page.url,
       title: page.title,
       raw_text: page.raw_text,
     });
-    if (data && data.id != null) {
-      const documentId = Number(data.id);
-      const tab = await getCurrentTab();
-      if (tab && tab.id != null) {
-        currentTabId = tab.id;
-        const b = await sessionStore.getTabBinding(tab.id);
-        if (b && b.pluginId === plugin.pluginId) {
-          b.documentId = documentId;
-          b.stale = false;
-          b.pageUrl = page.url;
-          b.pageTitle = page.title;
-          await sessionStore.setTabBinding(tab.id, b);
-        } else {
-          // Phase 3.6 Step 2-H：Tab Binding 不再包含 sessionId
-          await sessionStore.setTabBinding(tab.id, {
-            pluginId: plugin.pluginId,
-            documentId: documentId,
-            pageUrl: page.url,
-            pageTitle: page.title,
-            mode: "current",
-            stale: false,
-            updatedAt: Date.now(),
-          });
-        }
-        try {
-          chrome.runtime.sendMessage({
-            type: "WEB_RAG_CLIP_COMPLETED",
-            tabId: tab.id,
-            documentId: documentId,
-          });
-        } catch (_err) {}
-      }
-      setStatus("✓ 剪藏成功（Document #" + documentId + "）", "ok", "请在 Side Panel 中提问。");
+    if (job && job.id) {
+      await savePendingJobBinding(plugin.pluginId, page, job.id);
+      await monitorJobInPopup(job.id, page);
     } else {
-      setStatus("剪藏失败", "err", "后端未返回 document id");
+      setStatus("剪藏失败", "err", "后端未返回 job id");
     }
   } catch (err) {
     setStatus("剪藏失败", "err", errorText(err));
   } finally {
     clipBusy = false;
     els.clipBtn.disabled = false;
+  }
+}
+
+async function savePendingJobBinding(pluginId, page, jobId) {
+  const tab = await getCurrentTab();
+  if (!tab || tab.id == null) return;
+  currentTabId = tab.id;
+  const existing = await sessionStore.getTabBinding(tab.id);
+  const next = existing && existing.pluginId === pluginId ? existing : {
+    pluginId: pluginId,
+    mode: "current",
+  };
+  next.documentId = null;
+  next.ingestJobId = jobId;
+  next.ingestJobPageUrl = page.url;
+  next.pageUrl = page.url;
+  next.pageTitle = page.title;
+  next.stale = false;
+  next.updatedAt = Date.now();
+  await sessionStore.setTabBinding(tab.id, next);
+}
+
+function waitMilliseconds(milliseconds) {
+  return new Promise(function (resolve) {
+    setTimeout(resolve, milliseconds);
+  });
+}
+
+async function monitorJobInPopup(jobId, page) {
+  while (true) {
+    const job = await webRagApiClient.jobs.get(jobId);
+    if (job.status === "FAILED") {
+      throw new Error(job.error_message || "入库失败");
+    }
+    if (job.status === "SUCCEEDED") {
+      const document = await webRagApiClient.documents.get(job.document_id);
+      const binding = await sessionStore.getTabBinding(currentTabId);
+      if (binding && binding.ingestJobId === jobId) {
+        let pageStillMatches = !binding.stale;
+        try {
+          pageStillMatches = pageStillMatches && (
+            webRagUrlUtils.normalizeWebUrl(binding.pageUrl) ===
+            webRagUrlUtils.normalizeWebUrl(binding.ingestJobPageUrl)
+          );
+        } catch (_err) {
+          pageStillMatches = false;
+        }
+        binding.ingestJobId = null;
+        binding.ingestJobPageUrl = null;
+        if (pageStillMatches) {
+          binding.documentId = Number(job.document_id);
+          binding.documentUrl = document.url || webRagUrlUtils.normalizeWebUrl(page.url);
+          binding.stale = false;
+        }
+        await sessionStore.setTabBinding(currentTabId, binding);
+      }
+      try {
+        chrome.runtime.sendMessage({
+          type: "WEB_RAG_CLIP_COMPLETED",
+          tabId: currentTabId,
+          documentId: Number(job.document_id),
+        });
+      } catch (_err) {}
+      setStatus(
+        "✓ 剪藏成功（Document #" + job.document_id + "）",
+        "ok",
+        "请在 Side Panel 中提问。"
+      );
+      return;
+    }
+    setStatus(
+      job.status === "QUEUED" ? "等待后台 Worker…" : "正在向量化入库…",
+      null,
+      (Number(job.progress) || 0) + "%"
+    );
+    await waitMilliseconds(JOB_POLL_INTERVAL_MS);
   }
 }
 

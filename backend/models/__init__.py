@@ -18,5 +18,14 @@ from . import document  # noqa: F401  确保 Alembic 加载时 Document ORM 注�
 from .document import Document  # noqa: F401
 from . import plugin  # noqa: F401  确保 PluginWorkspace ORM 注册到 Base.metadata
 from .plugin import PluginWorkspace  # noqa: F401
+from . import ingest_job  # noqa: F401
+from .ingest_job import IngestJob  # noqa: F401
 
-__all__ = ["document", "Document", "plugin", "PluginWorkspace"]
+__all__ = [
+    "document",
+    "Document",
+    "plugin",
+    "PluginWorkspace",
+    "ingest_job",
+    "IngestJob",
+]

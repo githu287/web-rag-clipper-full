@@ -86,8 +86,51 @@
         <div class="pc-title" id="clip-title">—</div>
         <div class="pc-url" id="clip-url">—</div>
         <div class="pc-status" id="clip-status"></div>
-        <button type="button" class="clip-btn" id="clip-btn">剪藏当前网页</button>
+        <button type="button" class="clip-btn" id="clip-btn">提取并预览</button>
         <div class="pc-stale" id="clip-stale" hidden>⚠ 页面已变化，请重新剪藏当前网页</div>
+
+        <section class="clip-job" id="clip-job" hidden aria-live="polite">
+          <div class="clip-job-row">
+            <span id="clip-job-stage">等待处理</span>
+            <span id="clip-job-progress">0%</span>
+          </div>
+          <div class="clip-job-track" aria-hidden="true">
+            <div class="clip-job-bar" id="clip-job-bar"></div>
+          </div>
+          <div class="clip-job-error" id="clip-job-error"></div>
+          <button type="button" class="btn-secondary" id="clip-job-retry-btn" hidden>重试入库</button>
+        </section>
+
+        <section class="clip-preview" id="clip-preview" hidden aria-label="剪藏预览">
+          <div class="clip-preview-heading">
+            <div class="section-title">剪藏预览</div>
+            <span class="clip-preview-count" id="clip-preview-count">0 字</span>
+          </div>
+          <label class="clip-preview-label" for="clip-preview-title">标题</label>
+          <input
+            type="text"
+            id="clip-preview-title"
+            class="clip-preview-title"
+            maxlength="512"
+            autocomplete="off"
+            spellcheck="false"
+          >
+          <label class="clip-preview-label" for="clip-preview-text">正文</label>
+          <textarea
+            id="clip-preview-text"
+            class="clip-preview-text"
+            rows="14"
+            spellcheck="false"
+            placeholder="未提取到网页正文"
+          ></textarea>
+          <div class="hint">你可以在保存前删除广告、导航或其他无关内容。</div>
+          <div class="clip-preview-actions">
+            <button type="button" class="btn-secondary" id="clip-preview-cancel-btn">取消</button>
+            <button type="button" class="btn-secondary" id="clip-preview-refresh-btn">重新提取</button>
+            <button type="button" class="primary-btn" id="clip-preview-save-btn">确认剪藏</button>
+          </div>
+        </section>
+
         <button type="button" class="primary-btn goto-chat-btn" id="goto-chat-btn" hidden>去提问 →</button>
       </section>
     </div>
@@ -192,6 +235,7 @@
   </div>
 
   <script src="config.js"></script>
+  <script src="url-utils.js"></script>
   <script src="session-store.js"></script>
   <script src="api-client.js"></script>
   <script src="sidepanel.js"></script>

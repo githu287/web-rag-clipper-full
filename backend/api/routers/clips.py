@@ -36,18 +36,43 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, status
 
-from ...core.di import get_plugin_service, get_web_clip_service
+from ...core.di import (
+    get_ingest_job_service,
+    get_plugin_service,
+    get_web_clip_service,
+)
 from ...models import PluginWorkspace
 from ...models.document_api_schema import WebClipRequest, WebClipResponse
+from ...models.ingest_job_api_schema import IngestJobResponse
+from ...services.ingest_job import IngestJobService
 from ...services.plugin_service import PluginService
 from ...services.web_clip import WebClipService
 from ..deps import get_current_plugin
+from .jobs import build_job_response
 
 # 创建 Router（prefix + tags 与既有 documents/ingest/rag Router 风格一致）
 router: APIRouter = APIRouter(
     prefix="/clips",
     tags=["clips"],
 )
+
+
+@router.post(
+    "/async",
+    response_model=IngestJobResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="异步提交网页剪藏",
+)
+def create_clip_async(
+    request: WebClipRequest,
+    current_plugin: PluginWorkspace = Depends(get_current_plugin),
+    job_service: IngestJobService = Depends(get_ingest_job_service),
+    plugin_service: PluginService = Depends(get_plugin_service),
+) -> IngestJobResponse:
+    # 提交时就检查 Workspace 已配置 Key；明文 Key 不写入 Redis payload。
+    plugin_service.decrypt_api_key(current_plugin)
+    job = job_service.create_web_clip_job(current_plugin.plugin_id, request)
+    return build_job_response(job)
 
 
 @router.post(

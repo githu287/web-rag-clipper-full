@@ -34,6 +34,7 @@ from fastapi.responses import JSONResponse
 from .api.routers import clips as clips_router_module
 from .api.routers import documents as documents_router_module
 from .api.routers import ingest as ingest_router_module
+from .api.routers import jobs as jobs_router_module
 from .api.routers import plugins as plugins_router_module
 from .api.routers import rag as rag_router_module
 from .clients.embedding import EmbeddingClientError
@@ -53,6 +54,9 @@ from .core.exceptions import (
     DocumentStoragePathTraversalError,
     DocumentUnsupportedExtensionError,
     DocumentUploadError,
+    IngestJobConflictError,
+    IngestJobNotFoundError,
+    IngestJobOperationError,
     MilvusRepositoryError,
     SecurityConfigurationError,
     SecurityDecryptionError,
@@ -138,6 +142,7 @@ def create_app() -> FastAPI:
     app.include_router(rag_router_module.router)
     app.include_router(documents_router_module.router)
     app.include_router(clips_router_module.router)
+    app.include_router(jobs_router_module.router)
     app.include_router(plugins_router_module.router)  # Phase 3.5 Step 2-D：Plugin Workspace 身份体系
 
     return app
@@ -173,6 +178,34 @@ def _register_exception_handlers(app: FastAPI) -> None:
         - 其他 Exception 不在本处理器范围内，由 FastAPI 默认机制转 500 Internal Server Error；
         - 不使用 `except Exception: pass` 吞异常。
     """
+
+    @app.exception_handler(IngestJobNotFoundError)
+    async def handle_ingest_job_not_found(
+        request: Request, exc: IngestJobNotFoundError
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=404,
+            content={"detail": str(exc), "code": "INGEST_JOB_NOT_FOUND"},
+        )
+
+    @app.exception_handler(IngestJobConflictError)
+    async def handle_ingest_job_conflict(
+        request: Request, exc: IngestJobConflictError
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=409,
+            content={"detail": str(exc), "code": "INGEST_JOB_CONFLICT"},
+        )
+
+    @app.exception_handler(IngestJobOperationError)
+    async def handle_ingest_job_operation(
+        request: Request, exc: IngestJobOperationError
+    ) -> JSONResponse:
+        logger.exception("IngestJobOperationError: %s", exc)
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "ingest queue unavailable", "code": "INGEST_QUEUE_UNAVAILABLE"},
+        )
 
     @app.exception_handler(MilvusRepositoryError)
     async def handle_milvus_error(

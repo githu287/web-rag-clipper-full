@@ -17,10 +17,14 @@ from .impl import DocumentRepositoryImpl as DocumentRepositoryImpl
 # 重导出 Plugin 族 Protocol + Impl（Phase 3.5 Step 2-B 新增）
 from .plugin_protocol import PluginRepository as PluginRepository
 from .plugin_impl import PluginRepositoryImpl as PluginRepositoryImpl
+from .ingest_job_protocol import IngestJobRepository as IngestJobRepository
+from .ingest_job_impl import IngestJobRepositoryImpl as IngestJobRepositoryImpl
 
 __all__ = [
     "DocumentRepository",
     "DocumentRepositoryImpl",
     "PluginRepository",
     "PluginRepositoryImpl",
+    "IngestJobRepository",
+    "IngestJobRepositoryImpl",
 ]

@@ -162,6 +162,54 @@ const sessionStore = (() => {
     await chrome.storage.local.set({ [STORAGE_KEYS.CURRENT_SESSION]: map });
   }
 
+  // ------------------------------------------------------------ upload jobs
+  function normalizeUploadJobRecords(value) {
+    if (!value || typeof value !== "object") return {};
+    if (value.jobId && value.documentId != null) {
+      return { [String(value.documentId)]: value };
+    }
+    return value;
+  }
+  async function getUploadJobs(pluginId) {
+    if (!pluginId) return [];
+    const stored = await chrome.storage.local.get(STORAGE_KEYS.UPLOAD_JOBS);
+    const map = stored[STORAGE_KEYS.UPLOAD_JOBS] || {};
+    return Object.values(normalizeUploadJobRecords(map[pluginId])).sort(function (a, b) {
+      return (b.updatedAt || 0) - (a.updatedAt || 0);
+    });
+  }
+  async function getUploadJob(pluginId, documentId) {
+    const records = await getUploadJobs(pluginId);
+    if (documentId == null) return records[0] || null;
+    return records.find(function (record) {
+      return Number(record.documentId) === Number(documentId);
+    }) || null;
+  }
+  async function setUploadJob(pluginId, job) {
+    if (!pluginId || !job || job.documentId == null) return;
+    const stored = await chrome.storage.local.get(STORAGE_KEYS.UPLOAD_JOBS);
+    const map = stored[STORAGE_KEYS.UPLOAD_JOBS] || {};
+    const records = normalizeUploadJobRecords(map[pluginId]);
+    records[String(job.documentId)] = Object.assign({}, job, { updatedAt: Date.now() });
+    map[pluginId] = records;
+    await chrome.storage.local.set({ [STORAGE_KEYS.UPLOAD_JOBS]: map });
+  }
+  async function clearUploadJob(pluginId, documentId) {
+    if (!pluginId) return;
+    const stored = await chrome.storage.local.get(STORAGE_KEYS.UPLOAD_JOBS);
+    const map = stored[STORAGE_KEYS.UPLOAD_JOBS] || {};
+    if (!map[pluginId]) return;
+    if (documentId == null) {
+      delete map[pluginId];
+    } else {
+      const records = normalizeUploadJobRecords(map[pluginId]);
+      delete records[String(documentId)];
+      if (Object.keys(records).length > 0) map[pluginId] = records;
+      else delete map[pluginId];
+    }
+    await chrome.storage.local.set({ [STORAGE_KEYS.UPLOAD_JOBS]: map });
+  }
+
   return {
     newId,
     getTabBinding,
@@ -177,5 +225,9 @@ const sessionStore = (() => {
     getCurrentSessionId,
     setCurrentSessionId,
     clearCurrentSessionId,
+    getUploadJob,
+    getUploadJobs,
+    setUploadJob,
+    clearUploadJob,
   };
 })();
