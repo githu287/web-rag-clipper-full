@@ -6,7 +6,8 @@ Web RAG Clipper 是一个本地优先的网页剪藏与个人知识库 RAG 系�
 
 - Plugin Workspace 注册与双凭证认证
 - Workspace 级百炼 API Key 加密保存
-- Side Panel 网页正文提取与剪藏前预览编辑，以及 `.txt` / `.md` / `.markdown` 文件上传
+- 网页正文候选评分与噪声清理，保留标题、列表、引用、代码块和表格结构
+- Side Panel 剪藏前预览编辑、提取质量诊断，以及 `.txt` / `.md` / `.markdown` 文件上传
 - 网页 URL 规范化与重复识别；锚点、默认端口和常见跟踪参数不会产生新文档
 - Redis 异步网页/文件入库、持久化任务状态、进度轮询与失败重试
 - MySQL 文档生命周期与 Milvus 向量索引
@@ -223,6 +224,14 @@ MySQL 是文档状态和归属的权威来源；Milvus 只保存向量检索所�
 
 当前活动测试集结果为：`550 passed, 37 subtests passed`。
 
+扩展侧的纯 JavaScript 回归测试无需启动后端：
+
+```powershell
+node extension/tests/extractor.test.js
+node extension/tests/url-utils.test.js
+node extension/tests/session-store.test.js
+```
+
 仓库工作区中另有尚未接入主应用的旧 User/Bearer 迁移草稿（`auth.py`、`users.py`、`user_*` 及对应三个测试文件）。直接运行不带 ignore 的全量 `pytest` 会在这三个测试模块的收集阶段失败；当前产品身份模型以 Plugin Workspace 为准。
 
 ## Retrieval 评测
@@ -242,7 +251,7 @@ MySQL 是文档状态和归属的权威来源；Milvus 只保存向量检索所�
 - 扩展的网页剪藏和文件上传已使用 Redis Worker 异步入库；旧 `/clips` 与 `/documents/upload` 兼容接口仍是同步。
 - 当前 Worker 是单进程模式；启动时会恢复 Redis processing 列表中未确认的任务。
 - 仅解析 UTF-8 文本和 Markdown；PDF、DOCX、OCR 尚未接入。
-- 扩展正文提取是 DOM 启发式实现，复杂 SPA、分页、登录墙可能提取不完整。
+- 扩展正文提取采用 DOM 候选评分和启发式清理；复杂 SPA、Shadow DOM、跨域 iframe、分页和登录墙仍可能提取不完整。
 - 会话历史保存在浏览器 `chrome.storage.local`，后端没有会话表。
 - Milvus Collection 已存在时初始化器不会自动迁移 Schema；修改向量维度需重建并重新 ingest。
 - 文档删除和 Workspace 删除通过有序、可重试的补偿流程实现，不是跨 MySQL/Milvus/文件系统的分布式事务。

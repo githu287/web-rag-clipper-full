@@ -78,10 +78,22 @@ async function extractCurrentPage() {
     throw new Error("当前标签页不是可访问的网页");
   }
   currentTabId = tab.id;
+  const injectExtractionScripts = function () {
+    return chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      files: ["extractor.js", "content.js"],
+    });
+  };
   try {
-    await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["content.js"] });
+    await injectExtractionScripts();
   } catch (_err) {}
-  const response = await chrome.tabs.sendMessage(tab.id, { type: "WEB_CLIP_EXTRACT" });
+  let response;
+  try {
+    response = await chrome.tabs.sendMessage(tab.id, { type: "WEB_CLIP_EXTRACT_V3" });
+  } catch (_err) {
+    await injectExtractionScripts();
+    response = await chrome.tabs.sendMessage(tab.id, { type: "WEB_CLIP_EXTRACT_V3" });
+  }
   if (!response || response.ok !== true || typeof response.raw_text !== "string") {
     throw new Error("页面内容提取失败，请刷新页面后重试");
   }
@@ -89,6 +101,7 @@ async function extractCurrentPage() {
     url: response.url || tab.url || "",
     title: response.title || tab.title || "",
     raw_text: response.raw_text,
+    diagnostics: response.diagnostics || null,
   };
   return currentPage;
 }

@@ -426,8 +426,24 @@ input, textarea {
 .msg-bubble.rich-text p:last-child,
 .msg-bubble.rich-text ul:last-child,
 .msg-bubble.rich-text ol:last-child,
-.msg-bubble.rich-text pre:last-child {
+.msg-bubble.rich-text pre:last-child,
+.msg-bubble.rich-text blockquote:last-child {
   margin-bottom: 0;
+}
+
+.msg-bubble.rich-text hr {
+  margin: 10px 0;
+  border: 0;
+  border-top: 1px solid var(--border);
+}
+
+.msg-bubble.rich-text blockquote {
+  margin: 6px 0 10px;
+  padding: 7px 9px;
+  border-left: 3px solid #f59e0b;
+  border-radius: 0 5px 5px 0;
+  background: #fffbeb;
+  color: #78350f;
 }
 
 .msg-bubble.rich-text .answer-heading {
@@ -1173,6 +1189,25 @@ button.page-num:not(.current):hover {
   color: var(--text-sub);
   font-size: 12px;
   white-space: nowrap;
+}
+
+.clip-preview-diagnostics {
+  margin-bottom: 8px;
+  padding: 7px 9px;
+  border-radius: 6px;
+  background: #f3f4f6;
+  color: var(--text-sub);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.clip-preview-diagnostics[data-warning="true"] {
+  background: #fff7ed;
+  color: #9a3412;
+}
+
+.clip-preview-diagnostics[hidden] {
+  display: none;
 }
 
 .clip-preview-label {

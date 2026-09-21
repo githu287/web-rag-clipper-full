@@ -163,7 +163,8 @@
 | `extension/config.js` | 后端地址、存储键、Session 上限等常量 |
 | `extension/url-utils.js` | 与后端对齐的 URL 规范化查重辅助 |
 | `extension/background.js` | Side Panel 行为和 Tab 消息广播 |
-| `extension/content.js` | DOM 正文抽取、噪声清理和 SPA URL 监听 |
+| `extension/extractor.js` | 可测试的正文候选评分、DOM 清噪与结构化文本序列化引擎 |
+| `extension/content.js` | 提取消息入口、降级处理和 SPA URL 监听 |
 | `extension/api-client.js` | Plugin Header、JSON/multipart 请求与错误分类 |
 | `extension/session-store.js` | Session、当前 Session 和 Tab Binding 存储层 |
 | `extension/sidepanel.html` | 注册、剪藏、聊天、知识库和设置视图 |
@@ -172,7 +173,9 @@
 | `extension/popup.html` | Popup 轻量入口结构 |
 | `extension/popup.css` | Popup 样式 |
 | `extension/popup.js` | 页面预览、快捷剪藏和打开 Side Panel |
+| `extension/tests/extractor.test.js` | 正文候选评分、噪声识别和文本规范化回归测试 |
 | `extension/tests/url-utils.test.js` | 扩展 URL 规范化的 Node.js 回归测试 |
+| `extension/tests/session-store.test.js` | 文件上传任务持久化回归测试 |
 
 ## `alembic/` — 数据库迁移
 

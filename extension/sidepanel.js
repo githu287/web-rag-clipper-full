@@ -39,6 +39,7 @@ const els = {
   clipJobRetryBtn: document.getElementById("clip-job-retry-btn"),
   clipPreview: document.getElementById("clip-preview"),
   clipPreviewCount: document.getElementById("clip-preview-count"),
+  clipPreviewDiagnostics: document.getElementById("clip-preview-diagnostics"),
   clipPreviewTitle: document.getElementById("clip-preview-title"),
   clipPreviewText: document.getElementById("clip-preview-text"),
   clipPreviewCancelBtn: document.getElementById("clip-preview-cancel-btn"),
@@ -1183,6 +1184,9 @@ function clearClipDraft() {
     els.clipPreviewTitle.value = "";
     els.clipPreviewText.value = "";
     els.clipPreviewCount.textContent = "0 字";
+    els.clipPreviewDiagnostics.hidden = true;
+    els.clipPreviewDiagnostics.textContent = "";
+    delete els.clipPreviewDiagnostics.dataset.warning;
   }
 }
 
@@ -1198,6 +1202,31 @@ function renderClipDraftMeta() {
   const trimmedLength = text.trim().length;
   els.clipPreviewCount.textContent = trimmedLength.toLocaleString("zh-CN") + " 字";
   els.clipPreviewSaveBtn.disabled = clipBusy || trimmedLength === 0;
+  renderExtractionDiagnostics(trimmedLength);
+}
+
+function renderExtractionDiagnostics(trimmedLength) {
+  const diagnostics = clipDraft && clipDraft.diagnostics;
+  if (!diagnostics) {
+    els.clipPreviewDiagnostics.hidden = true;
+    return;
+  }
+  const sourceCount = Math.max(0, Number(diagnostics.source_char_count) || 0);
+  const removedCount = Math.max(0, Number(diagnostics.removed_node_count) || 0);
+  const strategy = diagnostics.strategy || "未知区域";
+  const warnings = [];
+  if (diagnostics.fallback) warnings.push("使用整页降级提取，请重点检查正文");
+  if (trimmedLength < 200) warnings.push("提取内容较短");
+  if (diagnostics.truncated) warnings.push("超长内容已截断");
+  const parts = [
+    (diagnostics.fallback ? "降级区域：" : "正文区域：") + strategy,
+    "原始 " + sourceCount.toLocaleString("zh-CN") + " 字 → 提取 " + trimmedLength.toLocaleString("zh-CN") + " 字",
+    "清理 " + removedCount.toLocaleString("zh-CN") + " 个噪声节点",
+  ];
+  if (warnings.length > 0) parts.push("⚠ " + warnings.join("；"));
+  els.clipPreviewDiagnostics.textContent = parts.join(" · ");
+  els.clipPreviewDiagnostics.hidden = false;
+  els.clipPreviewDiagnostics.dataset.warning = warnings.length > 0 ? "true" : "false";
 }
 
 // ================================================================ 聊天渲染
@@ -1252,7 +1281,10 @@ function appendInlineMarkdown(parent, text) {
 function normalizeAssistantText(content) {
   const normalized = String(content || "")
     .replace(/(?:&#x20;|&#32;|&nbsp;)/gi, " ")
-    .replace(/\*{3,}/g, "");
+    .replace(/^\\(?=(?:---|___|\*\*\*)\s*$)/gm, "")
+    .replace(/^\\>\s?/gm, "> ")
+    .replace(/\\([`<>])/g, "$1")
+    .replace(/\*{4,}/g, "***");
   const outerMarkdownFence = normalized
     .trim()
     .match(/^```(?:markdown|md)\s*\n([\s\S]*?)\n```$/i);
@@ -1296,6 +1328,21 @@ function renderAssistantMarkdown(container, content) {
 
     if (!line) {
       closeList();
+      continue;
+    }
+
+    if (/^(?:---|___|\*\*\*)$/.test(line)) {
+      closeList();
+      container.appendChild(document.createElement("hr"));
+      continue;
+    }
+
+    const blockquoteMatch = line.match(/^>\s?(.+)$/);
+    if (blockquoteMatch) {
+      closeList();
+      const quote = document.createElement("blockquote");
+      appendInlineMarkdown(quote, blockquoteMatch[1]);
+      container.appendChild(quote);
       continue;
     }
 
@@ -1654,18 +1701,24 @@ function sendMessageWithTimeout(tabId, message, timeoutMs) {
 
 /**
  * 从当前激活 Tab 提取网页正文。
- * 作用：1) 校验 Tab 可访问性；2) 注入 content.js；3) 请求正文提取；4) 返回结构化数据。
- * @returns {Promise<{url: string, title: string, raw_text: string}>} 提取结果
+ * 作用：1) 校验 Tab 可访问性；2) 注入提取器和 content.js；3) 请求正文提取；4) 返回结构化数据。
+ * @returns {Promise<{url: string, title: string, raw_text: string, diagnostics: object|null}>} 提取结果
  */
 async function extractCurrentPage() {
   const tab = await chrome.tabs.get(currentTabId).catch(() => null);
   if (!tab || tab.id == null || !/^https?:/.test(tab.url || "")) {
     throw new Error("当前标签页不是可访问的网页");
   }
-  // 尝试注入 content.js（幂等：content.js 内有 __WEB_RAG_CLIPPER_INJECTED__ 守卫）。
+  // 先注入可测试的提取引擎，再注入消息入口。
   // 此处不再静默吞掉错误：如果因权限/CSP 导致注入失败，直接向用户暴露明确原因。
+  const injectExtractionScripts = function () {
+    return chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      files: ["extractor.js", "content.js"],
+    });
+  };
   try {
-    await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["content.js"] });
+    await injectExtractionScripts();
   } catch (injectErr) {
     const msg = injectErr && injectErr.message ? injectErr.message : "未知注入错误";
     // Chrome 常见注入失败文案包含「Cannot access」「permission」等，统一翻译为用户可读提示
@@ -1677,7 +1730,18 @@ async function extractCurrentPage() {
     }
     throw new Error("页面注入失败：" + msg);
   }
-  const response = await sendMessageWithTimeout(tab.id, { type: "WEB_CLIP_EXTRACT" }, 10000);
+  // 使用版本化消息，避免页面中旧版 content.js 监听器抢先返回旧提取结果。
+  let response;
+  try {
+    response = await sendMessageWithTimeout(tab.id, { type: "WEB_CLIP_EXTRACT_V3" }, 10000);
+  } catch (messageError) {
+    const message = messageError && messageError.message ? messageError.message : "";
+    if (!/message port closed|receiving end does not exist|could not establish connection/i.test(message)) {
+      throw messageError;
+    }
+    await injectExtractionScripts();
+    response = await sendMessageWithTimeout(tab.id, { type: "WEB_CLIP_EXTRACT_V3" }, 10000);
+  }
   if (!response || response.ok !== true || typeof response.raw_text !== "string") {
     throw new Error("页面内容提取失败，请刷新页面后重试");
   }
@@ -1690,6 +1754,7 @@ async function extractCurrentPage() {
     url: response.url || tab.url || "",
     title: response.title || tab.title || "",
     raw_text: trimmed,
+    diagnostics: response.diagnostics || null,
   };
 }
 

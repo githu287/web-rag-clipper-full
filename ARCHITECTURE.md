@@ -47,8 +47,9 @@
 ### 3.1 浏览器扩展
 
 - `background.js` 管理 Side Panel 行为和 Tab URL 变化通知。
-- `content.js` 按 `article → main → body` 选择正文容器，克隆后移除脚本、导航、页脚等噪声节点。
-- Side Panel 在提交前展示标题、正文和字符数；用户可编辑、取消或重新提取。预览期间如果 Tab 或 URL 变化，草稿会失效，防止正文与来源错绑。
+- `extractor.js` 对 `article`、`main`、`role=main` 和常见正文容器计算文本长度、链接密度与结构评分；无有效候选时才降级到 `body`。
+- 提取器在 DOM 副本中移除脚本、导航、页脚、侧栏、推荐、分享、广告等噪声，并把标题、列表、引用、代码块、表格和图片替代文本序列化为结构化纯文本。
+- `content.js` 是消息入口和 SPA URL 监听层。Side Panel 在提交前展示标题、正文、字符数及提取诊断；用户可编辑、取消或重新提取。预览期间如果 Tab 或 URL 变化，草稿会失效，防止正文与来源错绑。
 - `url-utils.js` 为扩展的“已剪藏”检测提供 URL 规范化；最终写入与查重仍以后端 `normalize_web_url()` 为权威。
 - `api-client.js` 集中添加 Plugin Header、解析错误和处理 401。
 - `session-store.js` 把会话、当前会话和 Tab 上下文存入 `chrome.storage.local`。
@@ -171,7 +172,9 @@ Side Panel 选择文件 → POST /documents/upload/async
 ### 6.2 网页剪藏
 
 ```text
-Side Panel 提取正文 → 预览/编辑 → 用户确认
+Side Panel 注入 extractor.js + content.js
+  → 候选正文评分 → DOM 副本清噪 → 结构化文本序列化
+  → 预览/编辑 + 提取诊断 → 用户确认
   → POST /clips/async → MySQL Job(QUEUED) + Redis payload/queue → 202
   → Worker: processing list → Job(RUNNING)
   → 规范化 URL（移除 fragment / 跟踪参数 / 默认端口）
@@ -252,7 +255,7 @@ Workspace 删除要求 `confirm=true` 且提交名称与当前名称完全一致
 
 ## 10. 测试、可观测性与维护状态
 
-主测试集覆盖 Router、Service、Repository、DTO、安全工具、URL 规范化、异步队列/Worker、Workspace 隔离、评测计算和报告渲染。当前活动集实测为 550 passed，并包含 37 个 subtests。
+主测试集覆盖 Router、Service、Repository、DTO、安全工具、URL 规范化、异步队列/Worker、Workspace 隔离、评测计算和报告渲染。当前活动集实测为 550 passed，并包含 37 个 subtests。扩展另有 Node.js 回归测试，覆盖正文候选评分、噪声识别、结构化文本规范化、URL 规范化和任务持久化。
 
 日志记录操作类型、Document ID 和候选数量等诊断信息；安全代码避免记录 Plugin Secret 与 API Key 明文。项目目前没有统一 metrics/tracing、结构化审计日志或请求 ID 中间件。
 
@@ -261,6 +264,7 @@ Workspace 删除要求 `confirm=true` 且提交名称与当前名称完全一致
 ## 11. 已知演进约束
 
 - 网页和文件 ingest 已异步化；当前恢复策略假定只运行一个 Worker 进程。
+- 网页正文提取基于浏览器可见 DOM；Shadow DOM、跨域 iframe、分页内容、登录墙及尚未渲染完成的 SPA 需要后续专项适配。
 - 向量维度或 Collection Schema 改动不能仅改环境变量，必须重建 Collection 并全量重新 ingest。
 - 若启用公网访问，需要补齐 CORS、TLS、限流、Secret 轮换、审计和更严格的部署配置。
 - 新解析器应实现 `DocumentParser` Protocol，新存储或数据库适配应实现对应 Protocol。
