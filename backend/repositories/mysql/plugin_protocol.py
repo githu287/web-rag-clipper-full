@@ -197,6 +197,7 @@ class PluginRepository(Protocol):
         plugin_id: str,
         api_key_ciphertext: str,
         api_key_nonce: str,
+        embedding_config_fingerprint: str | None = None,
     ) -> PluginWorkspace:
         """
         更换模型的 API Key（只更新 api_key_ciphertext / api_key_nonce + updated_at）。

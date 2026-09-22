@@ -5,7 +5,7 @@ Web RAG Clipper 是一个本地优先的网页剪藏与个人知识库 RAG 系�
 当前仓库已经打通以下链路：
 
 - Plugin Workspace 注册与双凭证认证
-- Workspace 级百炼 API Key 加密保存
+- Workspace 级多模型服务配置：Embedding 与问答模型可分别选择服务商，API Key 加密保存
 - 网页正文候选评分与噪声清理，保留标题、列表、引用、代码块和表格结构
 - Side Panel 剪藏前预览编辑、提取质量诊断，以及 `.txt` / `.md` / `.markdown` 文件上传
 - 网页 URL 规范化与重复识别；锚点、默认端口和常见跟踪参数不会产生新文档
@@ -29,7 +29,7 @@ Chrome / Edge Extension (Manifest V3)
 FastAPI
   ├─ Plugin、Document、Clip、Ingest、RAG API
   ├─ Parser → Chunker → Embedding → Milvus
-  ├─ Retrieval → Context → qwen-plus
+  ├─ Retrieval → Context → OpenAI-compatible LLM
   └─ MySQL 状态与归属校验
           │                         │
           ▼                         ▼
@@ -46,12 +46,30 @@ FastAPI
 | API | Python 3.11、FastAPI、Uvicorn、Pydantic v2 |
 | 关系数据 | MySQL 8.0、SQLAlchemy 2.0、PyMySQL、Alembic |
 | 向量检索 | Milvus 2.4.4、pymilvus 2.4.15、HNSW + COSINE |
-| 模型服务 | 阿里云百炼 OpenAI 兼容 API；`text-embedding-v3`、`qwen-plus` |
+| 模型服务 | OpenAI 兼容 API；百炼、OpenAI、Gemini、DeepSeek、硅基流动、OpenRouter、自定义 HTTPS 端点 |
 | 安全 | Plugin ID + Secret；Secret SHA-256；API Key AES-256-GCM |
 | 浏览器端 | Chrome Extension Manifest V3、Side Panel、原生 JavaScript |
 | 测试与评测 | pytest、150 条 Retrieval/隔离评测样本 |
 
 Redis 用于异步入库队列和临时 payload；MySQL `ingest_jobs` 是任务状态的权威来源。
+
+### 支持的模型服务
+
+Embedding 与 LLM 独立配置，因此可以使用“OpenAI Embedding + DeepSeek 问答”等组合。
+
+| 服务商 | Embedding | LLM |
+|---|:---:|:---:|
+| 阿里云百炼 | ✓ | ✓ |
+| OpenAI | ✓ | ✓ |
+| Google Gemini | ✓ | ✓ |
+| 硅基流动 | ✓ | ✓ |
+| DeepSeek | — | ✓ |
+| OpenRouter | — | ✓ |
+| 自定义 OpenAI 兼容 HTTPS 端点 | ✓ | ✓ |
+
+预设服务商的官方 Base URL 由后端锁定，客户端不能覆盖；自定义端点必须使用不含凭据、查询串和 fragment 的 HTTPS URL。模型名称可以按服务商实际开放的模型修改。Milvus Schema 固定为 1024 维，因此所选 Embedding 模型必须能返回 1024 维向量。
+
+为防止不同模型的向量在同一知识库中混用，Workspace 已有文档时不能直接更换 Embedding 服务商或模型；更换同一 Embedding 配置的 Key、或更换 LLM 不受影响。确需切换 Embedding 时，应先删除当前 Workspace 的旧文档，再保存新配置并重新剪藏。
 
 ## 快速开始
 
@@ -59,7 +77,7 @@ Redis 用于异步入库队列和临时 payload；MySQL `ingest_jobs` 是任务�
 
 - Docker Desktop 或兼容的 Docker Compose 环境
 - Python 3.11
-- 可用的阿里云百炼 API Key
+- 至少一个可用的 Embedding API Key 和一个可用的问答模型 API Key；若服务商同时支持二者，可填写同一个 Key
 - Chrome 或 Edge（加载浏览器扩展时需要）
 
 ### 2. 启动基础设施
@@ -102,15 +120,15 @@ python -m pip install -r backend\requirements.txt
 alembic upgrade head
 ```
 
-当前 Alembic head 为 `0009`。
+当前 Alembic head 为 `0010`。该迁移会扩展加密配置字段，并为已有百炼配置补写 Embedding 指纹。
 
 ### 5. 启动 API
 
 ```powershell
-uvicorn backend.main:app --host 0.0.0.0 --port 8000
+uvicorn backend.main:app --host 0.0.0.0 --port 18000
 ```
 
-启动阶段会幂等初始化并加载 Milvus `page_chunks` Collection。打开 <http://localhost:8000/docs> 可查看和调用完整 API。
+启动阶段会幂等初始化并加载 Milvus `page_chunks` Collection。打开 <http://localhost:18000/docs> 可查看和调用完整 API。
 
 ### 6. 启动异步 Worker
 
@@ -129,9 +147,10 @@ Worker 会初始化 Milvus，恢复上次意外中断且未确认的任务，然
 1. `POST /plugins/register`，请求体为 `{"plugin_name":"My Workspace"}`。
 2. 立即保存响应中的 `plugin_id` 和只返回一次的 `plugin_secret`。
 3. 后续请求携带 `X-Plugin-ID` 与 `X-Plugin-Secret`。
-4. 调用 `PUT /plugins/me/api-key`，请求体为 `{"api_key":"sk-..."}`。
+4. 调用 `GET /plugins/model-providers` 查看内置服务商，或直接在扩展设置页选择服务商。
+5. 调用 `PUT /plugins/me/model-config`，分别提交 Embedding 与 LLM 的服务商、模型和 API Key。
 
-后端会先验证 Key，再使用 `APP_MASTER_KEY` 进行 AES-256-GCM 加密。数据库不保存 Plugin Secret 或百炼 API Key 明文。
+后端会分别验证 Embedding 与 LLM 配置，再使用 `APP_MASTER_KEY` 对完整配置做 AES-256-GCM 加密。数据库不保存 Plugin Secret 或模型 API Key 明文。旧的单百炼 Key 会自动按百炼 Embedding + 百炼 LLM 继续读取，无需手工迁移。
 
 ### 8. 加载扩展
 
@@ -139,21 +158,24 @@ Worker 会初始化 Milvus，恢复上次意外中断且未确认的任务，然
 2. 打开 `chrome://extensions/` 或 `edge://extensions/`。
 3. 开启开发者模式，选择“加载已解压的扩展程序”。
 4. 选择仓库中的 `extension/` 目录。
-5. 点击扩展图标打开 Side Panel，创建 Workspace、配置百炼 Key 后即可剪藏和问答。
+5. 点击扩展图标打开 Side Panel，创建 Workspace，在“模型配置”中分别选择 Embedding 与问答服务后即可剪藏和问答。
 
-若后端不在 `http://localhost:8000`，同时修改 `extension/config.js` 的 `API_BASE_URL` 与 `extension/manifest.json` 的 `host_permissions`。
+若后端不在 `http://localhost:18000`，同时修改 `extension/config.js` 的 `API_BASE_URL` 与 `extension/manifest.json` 的 `host_permissions`。
 
 ## API 概览
 
-仓库当前公开 20 个操作。只有 `POST /plugins/register` 无需认证；其余操作都要求 `X-Plugin-ID` 和 `X-Plugin-Secret`。
+仓库当前注册 23 个操作。`POST /plugins/register` 和 `GET /plugins/model-providers` 无需认证；其余操作都要求 `X-Plugin-ID` 和 `X-Plugin-Secret`。
 
 | 方法 | 路径 | 用途 |
 |---|---|---|
 | POST | `/plugins/register` | 创建 Workspace，返回一次性明文 Secret |
 | GET | `/plugins/me` | 获取当前 Workspace |
 | PUT | `/plugins/me` | 修改 Workspace 名称 |
-| PUT | `/plugins/me/api-key` | 验证并保存百炼 API Key |
-| DELETE | `/plugins/me/api-key` | 清除百炼 API Key |
+| GET | `/plugins/model-providers` | 获取内置 Embedding/LLM 服务商预设 |
+| GET | `/plugins/me/model-config` | 获取不含 Key 的当前模型配置摘要 |
+| PUT | `/plugins/me/model-config` | 分别验证并保存 Embedding 与 LLM 配置 |
+| PUT | `/plugins/me/api-key` | 旧版兼容：保存单个百炼 API Key |
+| DELETE | `/plugins/me/api-key` | 清除模型配置 |
 | DELETE | `/plugins/me` | 双重确认后级联删除 Workspace 资源 |
 | GET | `/documents` | 分页列出文档；支持 keyword/status/source_type |
 | POST | `/documents` | 创建 `PENDING` 文档元数据 |
@@ -176,7 +198,7 @@ Worker 会初始化 Milvus，恢复上次意外中断且未确认的任务，然
 
 MySQL 是文档状态和归属的权威来源；Milvus 只保存向量检索所需字段。
 
-- `plugin_workspaces`：Workspace 身份、Secret 哈希、加密后的百炼 Key、状态。
+- `plugin_workspaces`：Workspace 身份、Secret 哈希、加密后的模型配置、Embedding 指纹和状态。
 - `documents`：来源信息、文件元数据、Workspace 归属和生命周期状态。
 - `ingest_jobs`：异步任务类型、进度、尝试次数、Document 结果和错误摘要。
 - `page_chunks`：`id`、`page_id`、`chunk_index`、`chunk_text`、1024 维 `embedding`。
@@ -196,10 +218,10 @@ MySQL 是文档状态和归属的权威来源；Milvus 只保存向量检索所�
 | `MILVUS_HOST` / `MILVUS_PORT` | `localhost` / `19530` | Milvus 连接信息 |
 | `MILVUS_COLLECTION` | `page_chunks` | Collection 名称 |
 | `APP_MASTER_KEY` | 空 | API Key 加密主密钥，必须恰好 32 字节 |
-| `BAILIAN_BASE_URL` | 百炼兼容端点 | OpenAI 兼容 Base URL |
-| `BAILIAN_EMBEDDING_MODEL` | `text-embedding-v3` | Embedding 模型 |
+| `BAILIAN_BASE_URL` | 百炼兼容端点 | 旧版单 Key 配置的兼容 Base URL |
+| `BAILIAN_EMBEDDING_MODEL` | `text-embedding-v3` | 旧版单 Key 配置的 Embedding 模型 |
 | `BAILIAN_EMBEDDING_DIMENSION` | `1024` | 必须与 Milvus Schema 一致 |
-| `BAILIAN_LLM_MODEL` | `qwen-plus` | 问答模型 |
+| `BAILIAN_LLM_MODEL` | `qwen-plus` | 旧版单 Key 配置的问答模型 |
 | `EMBEDDING_BATCH_SIZE` | `10` | 配置校验上限也是 10 |
 | `UPLOAD_DIR` | `uploads` | 上传文件存储目录 |
 | `CHUNK_SIZE` / `CHUNK_OVERLAP` | `700` / `100` | 字符级递归切块参数 |
@@ -222,7 +244,7 @@ MySQL 是文档状态和归属的权威来源；Milvus 只保存向量检索所�
   --ignore=backend/tests/test_user_service.py
 ```
 
-当前活动测试集结果为：`550 passed, 37 subtests passed`。
+当前活动测试集结果为：`563 passed, 37 subtests passed`。
 
 扩展侧的纯 JavaScript 回归测试无需启动后端：
 
@@ -262,7 +284,7 @@ node extension/tests/session-store.test.js
 ```text
 backend/       FastAPI、业务服务、Repository、模型与测试
 extension/     Chrome/Edge Manifest V3 扩展
-alembic/       MySQL Schema 迁移（0001 → 0009）
+alembic/       MySQL Schema 迁移（0001 → 0010）
 evaluation/    Retrieval/隔离评测数据与工具
 docs/          历史设计、数据模型和运行手册
 uploads/       本地运行时上传目录（Git 忽略）

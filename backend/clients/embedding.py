@@ -31,6 +31,7 @@ from openai import OpenAI
 
 from ..core.config import Settings
 from ..core.security import sha256_hex
+from ..models.model_provider import ModelEndpointCredential, WorkspaceModelCredentials
 
 logger: logging.Logger = logging.getLogger(__name__)
 
@@ -150,32 +151,48 @@ class EmbeddingClient:
 
         经验库 153832：延迟真实连接，避免 import 阶段 / __init__ 阶段对百炼服务的硬依赖。
         """
-        if not api_key:
+        endpoint = self._resolve_endpoint(api_key)
+        effective_key = endpoint.api_key
+        if not effective_key:
             raise EmbeddingConfigError(
-                "User API Key is required：调用方必须显式提供当前用户的百炼 API Key"
+                "User API Key is required：调用方必须显式提供当前 Workspace 的模型凭证"
             )
-        effective_key = api_key
-
-        client_key = sha256_hex(effective_key)
+        client_key = sha256_hex(
+            f"{endpoint.base_url}\0{endpoint.model}\0{effective_key}"
+        )
         cached = self._clients.get(client_key)
         if cached is not None:
             return cached
 
-        base_url = self._settings.bailian_base_url
-        model = self._settings.bailian_embedding_model
+        base_url = endpoint.base_url
+        model = endpoint.model
         if not base_url or not model:
             raise EmbeddingConfigError(
-                f"bailian_base_url 或 bailian_embedding_model 配置为空：base_url={base_url!r}, model={model!r}"
+                f"Embedding base_url 或 model 配置为空：base_url={base_url!r}, model={model!r}"
             )
 
         logger.info(
-            "初始化百炼 Embedding OpenAI 兼容客户端：base_url=%s, model=%s",
+            "初始化 Embedding OpenAI 兼容客户端：provider=%s, base_url=%s, model=%s",
+            endpoint.provider,
             base_url,
             model,
         )
         client = OpenAI(api_key=effective_key, base_url=base_url)
         self._clients[client_key] = client
         return client
+
+    def _resolve_endpoint(
+        self, api_key: str | None
+    ) -> ModelEndpointCredential:
+        if isinstance(api_key, WorkspaceModelCredentials):
+            return api_key.embedding
+        return ModelEndpointCredential(
+            provider="dashscope",
+            api_key=str(api_key or ""),
+            base_url=self._settings.bailian_base_url,
+            model=self._settings.bailian_embedding_model,
+            send_dimensions=True,
+        )
 
     def _embed_batch(
         self,
@@ -197,18 +214,23 @@ class EmbeddingClient:
             EmbeddingAPIError: API 调用失败。
             EmbeddingResponseError: 返回结构/条数/维度不匹配。
         """
+        endpoint = self._resolve_endpoint(api_key)
         client = self._get_client(api_key)
-        model = self._settings.bailian_embedding_model
+        model = endpoint.model
 
         try:
+            request_kwargs: dict[str, object] = {
+                "model": model,
+                "input": batch,
+            }
+            if endpoint.send_dimensions:
+                request_kwargs["dimensions"] = expected_dim
             response = client.embeddings.create(
-                model=model,
-                input=batch,
-                dimensions=expected_dim,
+                **request_kwargs,
             )
         except Exception as exc:  # noqa: BLE001 — 统一包装，保留 __cause__
             raise EmbeddingAPIError(
-                f"百炼 Embedding API 调用失败（model={model}, batch_size={len(batch)}）：{exc}"
+                f"Embedding API 调用失败（provider={endpoint.provider}, model={model}, batch_size={len(batch)}）：{exc}"
             ) from exc
 
         # 解析返回：openai SDK 1.x 的 EmbeddingResponse.data 是 list[EmbeddingData]，每条含 .embedding
@@ -216,12 +238,12 @@ class EmbeddingClient:
             data_items = response.data
         except AttributeError as exc:
             raise EmbeddingResponseError(
-                f"百炼返回缺少 data 字段：response={response!r}"
+                f"Embedding API 返回缺少 data 字段：response={response!r}"
             ) from exc
 
         if len(data_items) != len(batch):
             raise EmbeddingResponseError(
-                f"百炼返回条数 {len(data_items)} 与输入 {len(batch)} 不匹配"
+                f"Embedding API 返回条数 {len(data_items)} 与输入 {len(batch)} 不匹配"
             )
 
         # 按 index 排序防御（百炼通常按输入顺序返回，但规范上应按 response.data[].index 排序后取 embedding）
@@ -229,7 +251,7 @@ class EmbeddingClient:
             sorted_items = sorted(data_items, key=lambda d: d.index)
         except (AttributeError, TypeError) as exc:
             raise EmbeddingResponseError(
-                f"百炼返回 data[].index 字段缺失或类型异常：{exc}"
+                f"Embedding API 返回 data[].index 字段缺失或类型异常：{exc}"
             ) from exc
 
         vectors: list[list[float]] = []
@@ -238,13 +260,13 @@ class EmbeddingClient:
                 vec = list(item.embedding)
             except (AttributeError, TypeError) as exc:
                 raise EmbeddingResponseError(
-                    f"百炼返回 data[].embedding 字段缺失或类型异常：{exc}"
+                    f"Embedding API 返回 data[].embedding 字段缺失或类型异常：{exc}"
                 ) from exc
 
             if len(vec) != expected_dim:
                 raise EmbeddingResponseError(
-                    f"百炼返回向量维度 {len(vec)} 与期望 {expected_dim} 不匹配"
-                    "（不可重试；请检查 BAILIAN_EMBEDDING_DIMENSION 与 Milvus Collection dim 是否一致）"
+                    f"Embedding API 返回向量维度 {len(vec)} 与期望 {expected_dim} 不匹配"
+                    "（不可重试；请检查模型输出维度与 Milvus Collection dim 是否一致）"
                 )
             vectors.append(vec)
 

@@ -48,7 +48,7 @@ function errorText(err) {
       case "DISABLED":
         return "插件已被禁用，请联系管理员";
       case "API_KEY_NOT_CONFIGURED":
-        return "请前往设置配置阿里云百炼 API Key";
+        return "请前往设置配置模型服务";
       case "NETWORK":
         return "网络错误，请重试";
       default:

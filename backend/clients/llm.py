@@ -26,6 +26,7 @@ from openai import OpenAI
 
 from ..core.config import Settings
 from ..core.security import sha256_hex
+from ..models.model_provider import ModelEndpointCredential, WorkspaceModelCredentials
 
 logger: logging.Logger = logging.getLogger(__name__)
 
@@ -137,8 +138,9 @@ class BailianLLMClient:
         if not isinstance(user_prompt, str) or not user_prompt.strip():
             raise LLMClientConfigError("user_prompt 必须为非空字符串")
 
+        endpoint = self._resolve_endpoint(api_key)
         client = self._get_client(api_key)
-        model = self._settings.bailian_llm_model
+        model = endpoint.model
 
         try:
             response = client.chat.completions.create(
@@ -151,7 +153,7 @@ class BailianLLMClient:
             )
         except Exception as exc:  # noqa: BLE001 — 统一包装，保留 __cause__
             raise LLMClientRequestError(
-                f"百炼 Chat API 调用失败（model={model}）：{exc}"
+                f"LLM API 调用失败（provider={endpoint.provider}, model={model}）：{exc}"
             ) from exc
 
         # 解析返回：openai SDK 1.x 的 ChatCompletion 含 .choices（list[Choice]），
@@ -160,24 +162,24 @@ class BailianLLMClient:
             choices = response.choices
         except AttributeError as exc:
             raise LLMClientResponseError(
-                f"百炼返回缺少 choices 字段：response={response!r}"
+                f"LLM API 返回缺少 choices 字段：response={response!r}"
             ) from exc
 
         if not choices:
-            raise LLMClientResponseError("百炼返回 choices 为空列表")
+            raise LLMClientResponseError("LLM API 返回 choices 为空列表")
 
         try:
             content = choices[0].message.content
         except (AttributeError, IndexError, TypeError) as exc:
             raise LLMClientResponseError(
-                f"百炼返回 choices[0].message.content 字段缺失或类型异常：{exc}"
+                f"LLM API 返回 choices[0].message.content 字段缺失或类型异常：{exc}"
             ) from exc
 
         if content is None:
-            raise LLMClientEmptyResponseError("百炼返回 content 为 None")
+            raise LLMClientEmptyResponseError("LLM API 返回 content 为 None")
         answer = content.strip()
         if not answer:
-            raise LLMClientEmptyResponseError("百炼返回 content 为空字符串")
+            raise LLMClientEmptyResponseError("LLM API 返回 content 为空字符串")
         return answer
 
     # ------------------------------------------------------------------ 内部辅助
@@ -195,29 +197,45 @@ class BailianLLMClient:
 
         经验库 153832：延迟真实连接，避免 __init__ 阶段对百炼服务的硬依赖。
         """
-        if not api_key:
+        endpoint = self._resolve_endpoint(api_key)
+        effective_key = endpoint.api_key
+        if not effective_key:
             raise LLMClientConfigError(
-                "User API Key is required：调用方必须显式提供当前用户的百炼 API Key"
+                "User API Key is required：调用方必须显式提供当前 Workspace 的模型凭证"
             )
-        effective_key = api_key
-
-        client_key = sha256_hex(effective_key)
+        client_key = sha256_hex(
+            f"{endpoint.base_url}\0{endpoint.model}\0{effective_key}"
+        )
         cached = self._clients.get(client_key)
         if cached is not None:
             return cached
 
-        base_url = self._settings.bailian_base_url
-        model = self._settings.bailian_llm_model
+        base_url = endpoint.base_url
+        model = endpoint.model
         if not base_url or not model:
             raise LLMClientConfigError(
-                f"bailian_base_url 或 bailian_llm_model 配置为空：base_url={base_url!r}, model={model!r}"
+                f"LLM base_url 或 model 配置为空：base_url={base_url!r}, model={model!r}"
             )
 
         logger.info(
-            "初始化百炼 LLM OpenAI 兼容客户端：base_url=%s, model=%s",
+            "初始化 LLM OpenAI 兼容客户端：provider=%s, base_url=%s, model=%s",
+            endpoint.provider,
             base_url,
             model,
         )
         client = OpenAI(api_key=effective_key, base_url=base_url)
         self._clients[client_key] = client
         return client
+
+    def _resolve_endpoint(
+        self, api_key: str | None
+    ) -> ModelEndpointCredential:
+        if isinstance(api_key, WorkspaceModelCredentials):
+            return api_key.llm
+        return ModelEndpointCredential(
+            provider="dashscope",
+            api_key=str(api_key or ""),
+            base_url=self._settings.bailian_base_url,
+            model=self._settings.bailian_llm_model,
+            send_dimensions=False,
+        )

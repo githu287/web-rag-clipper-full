@@ -20,7 +20,7 @@
 └──────────────┬─────────────────┬─────────────────┬───────────┘
                │                 │                 │
                ▼                 ▼                 ▼
-        MySQL 8.0          Milvus 2.4.4      Bailian API
+        MySQL 8.0          Milvus 2.4.4      Model APIs
   identity/metadata/state   vectors/chunks   embedding/chat
                │
                ▼
@@ -36,7 +36,7 @@
 | 接口层 | `backend/api/routers` | HTTP 契约、请求校验、依赖注入、响应组装 |
 | 业务层 | `backend/services` | 生命周期、跨存储编排、Workspace 隔离、RAG 流程 |
 | 抽象/数据层 | `backend/repositories/*/protocol.py`、`backend/models` | Repository Protocol、ORM、DTO、API Schema |
-| 基础设施层 | `backend/repositories/*/impl.py`、`clients`、`storage` | MySQL、Milvus、百炼、本地文件系统适配 |
+| 基础设施层 | `backend/repositories/*/impl.py`、`clients`、`storage` | MySQL、Milvus、OpenAI 兼容模型服务、本地文件系统适配 |
 | 装配层 | `backend/core/di.py` | 根据 Settings 创建并连接依赖 |
 | 应用入口 | `backend/main.py` | Router、异常处理器、lifespan、模块级 app |
 
@@ -73,7 +73,7 @@ lifespan 启动阶段调用 `MilvusInitializer.initialize()`：连接 Milvus；C
 - MinIO + etcd：Milvus standalone 的对象存储与元数据依赖。
 - Redis：保存待处理队列、processing 确认列表与限时 payload；不作为任务状态权威库。
 - 本地文件系统：仅上传文件落入 `uploads/`；网页剪藏不创建物理文件。
-- 百炼：Embedding 和 Chat Completion 均通过 OpenAI 兼容接口访问。
+- 模型服务：Embedding 和 Chat Completion 均通过 OpenAI 兼容接口访问。Workspace 可分别配置两个服务；内置百炼、OpenAI、Gemini、DeepSeek、硅基流动和 OpenRouter 预设，也支持自定义 HTTPS 兼容端点。
 
 ## 4. 身份、凭证与隔离
 
@@ -83,14 +83,19 @@ lifespan 启动阶段调用 `MilvusInitializer.initialize()`：连接 Milvus；C
 
 除注册外，所有业务 API 都通过 `get_current_plugin()` 读取 `X-Plugin-ID` 与 `X-Plugin-Secret`，再由 `PluginService.authenticate()` 校验。禁用的 Workspace 返回 403；无效凭证返回 401。
 
-### 4.2 模型 API Key
+### 4.2 模型服务配置
 
-Workspace 的百炼 API Key 不参与身份识别。更新 Key 时：
+Workspace 的模型 API Key 不参与身份识别。Embedding 与 LLM 各自保存 `provider`、`base_url`、`model` 和 `api_key`，可以来自不同服务商。更新配置时：
 
-1. 使用提交的 Key 发起最小 Embedding 验证。
-2. 使用 `APP_MASTER_KEY` 做 AES-256-GCM 加密。
-3. 将 ciphertext 与独立 nonce 保存到 `plugin_workspaces`。
-4. 业务请求中按当前 Workspace 解密，再显式传给 Embedding/LLM Client。
+1. `model_provider.py` 将服务商预设转换为两个端点；预设 Base URL 不接受客户端覆盖，自定义端点只接受安全的 HTTPS URL。
+2. 使用提交的 Embedding Key 发起最小向量请求，并校验返回维度为 1024。
+3. 使用提交的 LLM Key 发起最小 Chat Completion 请求。
+4. 使用 `APP_MASTER_KEY` 对版本化 JSON 配置做 AES-256-GCM 加密，将 ciphertext 与独立 nonce 保存到 `plugin_workspaces`。
+5. 业务请求中按当前 Workspace 解密；EmbeddingClient 与 LLMClient 各自选择对应的 Key、Base URL 和模型。
+
+旧版单百炼 Key 仍可读取，并在运行时映射成百炼 Embedding + 百炼 LLM 双端点。数据库和 API 响应均不保存或回显明文 Key。
+
+`embedding_config_fingerprint` 记录不含 Key 的向量空间指纹。Workspace 已有文档时，配置服务会拒绝改变 Embedding 服务商、Base URL、模型或维度参数，避免同一 Milvus Collection 中混入不可比较的向量；仅轮换 Key 或修改 LLM 不受影响。清除凭证时保留该指纹。
 
 `APP_MASTER_KEY` 必须是 UTF-8 编码后恰好 32 字节的字符串。
 
@@ -115,7 +120,8 @@ Workspace 隔离不只依赖一个过滤点：
 | `plugin_id` | 对外 Workspace 标识，唯一 |
 | `plugin_name` / `plugin_name_norm` | 展示名与唯一归一化名 |
 | `plugin_secret_hash` | Secret 的 SHA-256 哈希 |
-| `api_key_ciphertext` / `api_key_nonce` | AES-GCM 加密的百炼 Key；可为空 |
+| `api_key_ciphertext` / `api_key_nonce` | AES-GCM 加密的版本化模型配置；可为空，兼容旧百炼 Key 密文 |
+| `embedding_config_fingerprint` | 不含 Key 的 Embedding 空间 SHA-256 指纹；可为空 |
 | `status` | `ACTIVE` / `DISABLED` / `DELETING` |
 | `created_at` / `updated_at` | 时间戳 |
 
@@ -139,7 +145,7 @@ Workspace 隔离不只依赖一个过滤点：
 | `page_id` | `INT64` | 等于 `documents.id` |
 | `chunk_index` | `INT64` | 从 0 开始 |
 | `chunk_text` | `VARCHAR(4096)` | DTO 按 UTF-8 字节校验 |
-| `embedding` | `FLOAT_VECTOR(1024)` | 与百炼维度一致 |
+| `embedding` | `FLOAT_VECTOR(1024)` | 与所有可选 Embedding 服务的输出维度一致 |
 
 向量索引为 HNSW，距离度量为 COSINE，搜索参数 `ef=128`。代码中的 `distance` 实际承载相似度，值越大越相似。
 
@@ -218,7 +224,7 @@ POST /rag/ask
   → RagService.search(top_k=5)
   → 最多 4000 字符 Context
   → 固定六条约束 System Prompt
-  → qwen-plus
+  → 当前 Workspace 配置的 OpenAI-compatible LLM
   → answer + sources
 ```
 
@@ -250,7 +256,7 @@ Workspace 删除要求 `confirm=true` 且提交名称与当前名称完全一致
 | 413 | 上传超过 2 MiB |
 | 415 | 上传类型不支持 |
 | 422 | Pydantic/FastAPI 契约校验失败 |
-| 502 | 百炼 Embedding 或 LLM 调用异常 |
+| 502 | Embedding 或 LLM 上游调用异常 |
 | 503 | MySQL/Milvus 操作异常 |
 
 ## 10. 测试、可观测性与维护状态

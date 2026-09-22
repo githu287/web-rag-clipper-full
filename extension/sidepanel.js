@@ -83,7 +83,15 @@ const els = {
   deleteStatus: document.getElementById("delete-status"),
   modelStatus: document.getElementById("model-status"),
   apiKeyForm: document.getElementById("api-key-form"),
-  apiKeyInput: document.getElementById("api-key-input"),
+  embeddingProvider: document.getElementById("embedding-provider"),
+  embeddingBaseUrl: document.getElementById("embedding-base-url"),
+  embeddingModel: document.getElementById("embedding-model"),
+  embeddingApiKey: document.getElementById("embedding-api-key"),
+  embeddingSendDimensions: document.getElementById("embedding-send-dimensions"),
+  llmProvider: document.getElementById("llm-provider"),
+  llmBaseUrl: document.getElementById("llm-base-url"),
+  llmModel: document.getElementById("llm-model"),
+  llmApiKey: document.getElementById("llm-api-key"),
   apiKeySaveBtn: document.getElementById("api-key-save-btn"),
   apiKeyConfigBtn: document.getElementById("api-key-config-btn"),
   apiKeyRemoveBtn: document.getElementById("api-key-remove-btn"),
@@ -113,6 +121,8 @@ let clipJobPollToken = 0;
 let currentView = "chat";
 let registerBusy = false;
 let apiKeyBusy = false;
+let modelProviderCatalog = null;
+let currentModelConfig = null;
 let uploadBusy = false;
 let activeUploadJob = null;
 let uploadJobPollToken = 0;
@@ -1903,7 +1913,7 @@ function errorText(err) {
       case "DISABLED":
         return "插件已被禁用，请联系管理员";
       case "API_KEY_NOT_CONFIGURED":
-        return "请前往设置配置阿里云百炼 API Key";
+        return "请前往设置配置模型服务";
       case "PLUGIN_NAME_TAKEN":
         return "这个插件名称已经被使用，请换一个名称";
       case "NETWORK":
@@ -1929,14 +1939,18 @@ function renderSettings() {
   els.pluginIdField.textContent = pid.length > 12 ? pid.slice(0, 6) + "…" + pid.slice(-6) : pid || "—";
   els.pluginAuthStatus.textContent = "● 已连接";
   if (plugin.apiKeyConfigured) {
-    els.modelStatus.textContent = "✓ 已配置";
+    const embedding = currentModelConfig && currentModelConfig.embedding;
+    const llm = currentModelConfig && currentModelConfig.llm;
+    els.modelStatus.textContent = embedding && llm
+      ? "✓ Embedding：" + embedding.provider + " / " + embedding.model + "；问答：" + llm.provider + " / " + llm.model
+      : "✓ 已配置（旧版百炼配置）";
     els.modelStatus.className = "model-status ok";
-    els.apiKeyConfigBtn.textContent = "更换 API Key";
+    els.apiKeyConfigBtn.textContent = "修改模型服务";
     els.apiKeyRemoveBtn.hidden = false;
   } else {
     els.modelStatus.textContent = "⚠ 尚未配置";
     els.modelStatus.className = "model-status warn";
-    els.apiKeyConfigBtn.textContent = "配置 API Key";
+    els.apiKeyConfigBtn.textContent = "配置模型服务";
     els.apiKeyRemoveBtn.hidden = true;
   }
 }
@@ -1948,38 +1962,122 @@ function renderWarnBanner() {
 
 function toggleApiKeyForm(show) {
   els.apiKeyForm.hidden = !show;
-  if (show) {
-    els.apiKeyInput.value = "";
-    els.apiKeyInput.focus();
+  if (!show) clearModelKeyInputs();
+}
+
+function clearModelKeyInputs() {
+  els.embeddingApiKey.value = "";
+  els.llmApiKey.value = "";
+}
+
+function providerPreset(kind, providerId) {
+  const list = modelProviderCatalog && modelProviderCatalog[kind];
+  return Array.isArray(list) ? list.find(function (item) { return item.id === providerId; }) : null;
+}
+
+function populateProviderSelect(select, providers) {
+  select.textContent = "";
+  (providers || []).forEach(function (provider) {
+    const option = document.createElement("option");
+    option.value = provider.id;
+    option.textContent = provider.label;
+    select.appendChild(option);
+  });
+}
+
+function applyProviderPreset(kind, keepModel) {
+  const isEmbedding = kind === "embedding";
+  const select = isEmbedding ? els.embeddingProvider : els.llmProvider;
+  const baseInput = isEmbedding ? els.embeddingBaseUrl : els.llmBaseUrl;
+  const modelInput = isEmbedding ? els.embeddingModel : els.llmModel;
+  const preset = providerPreset(kind, select.value);
+  if (!preset) return;
+  baseInput.readOnly = preset.id !== "custom";
+  if (preset.id !== "custom") baseInput.value = preset.base_url || "";
+  if (!keepModel || !modelInput.value) modelInput.value = preset.default_model || "";
+  if (isEmbedding) {
+    els.embeddingSendDimensions.checked = !!preset.send_dimensions;
+    els.embeddingSendDimensions.disabled = preset.id !== "custom";
+  }
+}
+
+async function openModelConfigForm() {
+  if (apiKeyBusy) return;
+  setApiKeyStatus("正在加载服务商配置…", null);
+  try {
+    if (!modelProviderCatalog) {
+      modelProviderCatalog = await webRagApiClient.plugins.modelProviders();
+    }
+    currentModelConfig = await webRagApiClient.plugins.modelConfig();
+    populateProviderSelect(els.embeddingProvider, modelProviderCatalog.embedding);
+    populateProviderSelect(els.llmProvider, modelProviderCatalog.llm);
+    const embedding = currentModelConfig && currentModelConfig.embedding;
+    const llm = currentModelConfig && currentModelConfig.llm;
+    els.embeddingProvider.value = embedding ? embedding.provider : "dashscope";
+    els.llmProvider.value = llm ? llm.provider : "dashscope";
+    applyProviderPreset("embedding", false);
+    applyProviderPreset("llm", false);
+    if (embedding) {
+      els.embeddingBaseUrl.value = embedding.base_url;
+      els.embeddingModel.value = embedding.model;
+      els.embeddingSendDimensions.checked = !!embedding.send_dimensions;
+    }
+    if (llm) {
+      els.llmBaseUrl.value = llm.base_url;
+      els.llmModel.value = llm.model;
+    }
+    clearModelKeyInputs();
+    toggleApiKeyForm(true);
+    els.embeddingApiKey.focus();
+    setApiKeyStatus("请输入两个服务的 API Key；Key 不会回显。", null);
+  } catch (err) {
+    setApiKeyStatus(errorText(err), "err");
   }
 }
 
 function setApiKeyStatus(text, type) {
   els.apiKeyStatus.textContent = text;
+  els.apiKeyStatus.classList.remove("ok", "err");
   if (type) {
-    els.apiKeyStatus.classList.remove("ok", "err");
     els.apiKeyStatus.classList.add(type);
   }
 }
 
 async function saveApiKey() {
   if (apiKeyBusy) return;
-  const apiKey = els.apiKeyInput.value.trim();
-  if (!apiKey) {
-    setApiKeyStatus("请输入 API Key", "err");
+  const embeddingKey = els.embeddingApiKey.value.trim();
+  const llmKey = els.llmApiKey.value.trim();
+  if (!embeddingKey || !llmKey) {
+    setApiKeyStatus("请输入 Embedding 和问答服务的 API Key", "err");
     return;
   }
-  if (!/^sk-/.test(apiKey)) {
-    setApiKeyStatus("API Key 无效，请确认你使用的是阿里云百炼 DashScope API Key。", "err");
+  const payload = {
+    embedding: {
+      provider: els.embeddingProvider.value,
+      base_url: els.embeddingBaseUrl.value.trim() || null,
+      model: els.embeddingModel.value.trim(),
+      api_key: embeddingKey,
+      send_dimensions: els.embeddingSendDimensions.checked,
+    },
+    llm: {
+      provider: els.llmProvider.value,
+      base_url: els.llmBaseUrl.value.trim() || null,
+      model: els.llmModel.value.trim(),
+      api_key: llmKey,
+      send_dimensions: false,
+    },
+  };
+  if (!payload.embedding.model || !payload.llm.model) {
+    setApiKeyStatus("模型名称不能为空", "err");
     return;
   }
   apiKeyBusy = true;
   els.apiKeySaveBtn.disabled = true;
-  els.apiKeySaveBtn.textContent = "保存中...";
-  setApiKeyStatus("正在验证 API Key…", null);
+  els.apiKeySaveBtn.textContent = "验证中...";
+  setApiKeyStatus("正在分别验证 Embedding 与问答服务…", null);
   try {
-    await webRagApiClient.plugins.updateApiKey(apiKey);
-    els.apiKeyInput.value = ""; // Key 只在内存短暂存在，提交后立即清空
+    currentModelConfig = await webRagApiClient.plugins.updateModelConfig(payload);
+    clearModelKeyInputs();
     toggleApiKeyForm(false);
     let me = null;
     try {
@@ -1998,20 +2096,20 @@ async function saveApiKey() {
     renderSettings();
     renderWarnBanner();
     updateSendState();
-    setApiKeyStatus("API Key 配置成功", "ok");
+    setApiKeyStatus("模型服务配置成功", "ok");
   } catch (err) {
-    els.apiKeyInput.value = "";
+    clearModelKeyInputs();
     if (err instanceof webRagApiClient.ApiRequestError && err.code === "UNAUTHENTICATED") {
       // 已自动登出
     } else if (err instanceof webRagApiClient.ApiRequestError && (err.status === 400 || err.status === 422)) {
-      setApiKeyStatus("API Key 无效，请确认你使用的是阿里云百炼 DashScope API Key。", "err");
+      setApiKeyStatus(err.message || "模型服务验证失败，请检查配置。", "err");
     } else {
       setApiKeyStatus(err instanceof webRagApiClient.ApiRequestError ? err.message : "保存失败，请稍后重试", "err");
     }
   } finally {
     apiKeyBusy = false;
     els.apiKeySaveBtn.disabled = false;
-    els.apiKeySaveBtn.textContent = "保存";
+    els.apiKeySaveBtn.textContent = "验证并保存";
   }
 }
 
@@ -2022,12 +2120,13 @@ async function removeApiKey() {
   setApiKeyStatus("正在移除…", null);
   try {
     await webRagApiClient.plugins.removeApiKey();
+    currentModelConfig = null;
     webRagApiClient.setPluginDetails({ apiKeyConfigured: false });
     await webRagApiClient.persistPlugin();
     renderSettings();
     renderWarnBanner();
     updateSendState();
-    setApiKeyStatus("已移除 API Key", "ok");
+    setApiKeyStatus("已移除模型配置", "ok");
   } catch (err) {
     if (err instanceof webRagApiClient.ApiRequestError && err.code === "UNAUTHENTICATED") {
       // 已自动登出
@@ -2049,7 +2148,7 @@ function handleSendRequest() {
   }
   if (isSending) return;
   if (plugin.apiKeyConfigured === false) {
-    showInlineHint("请先在「设置」中配置阿里云百炼 API Key");
+    showInlineHint("请先在「设置」中配置 Embedding 与问答服务");
     switchView("settings");
     return;
   }
@@ -2183,7 +2282,7 @@ function bindEvents() {
     savePluginName();
   });
   els.apiKeyConfigBtn.addEventListener("click", function () {
-    toggleApiKeyForm(true);
+    openModelConfigForm();
   });
   els.apiKeySaveBtn.addEventListener("click", function () {
     saveApiKey();
@@ -2191,11 +2290,27 @@ function bindEvents() {
   els.apiKeyRemoveBtn.addEventListener("click", function () {
     removeApiKey();
   });
-  els.apiKeyInput.addEventListener("keydown", function (e) {
-    if (e.key === "Enter") {
-      e.preventDefault();
-      saveApiKey();
-    }
+  [els.embeddingApiKey, els.llmApiKey].forEach(function (input) {
+    input.addEventListener("keydown", function (e) {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        saveApiKey();
+      }
+    });
+  });
+  els.embeddingProvider.addEventListener("change", function () {
+    els.embeddingModel.value = "";
+    applyProviderPreset("embedding", false);
+  });
+  els.llmProvider.addEventListener("change", function () {
+    els.llmModel.value = "";
+    applyProviderPreset("llm", false);
+  });
+  els.embeddingBaseUrl.addEventListener("input", function () {
+    if (els.embeddingProvider.value !== "custom") applyProviderPreset("embedding", true);
+  });
+  els.llmBaseUrl.addEventListener("input", function () {
+    if (els.llmProvider.value !== "custom") applyProviderPreset("llm", true);
   });
   els.deletePluginBtn.addEventListener("click", function () {
     openDeleteModal();
@@ -2257,6 +2372,12 @@ async function validatePlugin() {
       pluginName: me.plugin_name,
       apiKeyConfigured: me.api_key_configured,
     });
+    currentModelConfig = null;
+    if (me.api_key_configured) {
+      try {
+        currentModelConfig = await webRagApiClient.plugins.modelConfig();
+      } catch (_err) {}
+    }
     await webRagApiClient.persistPlugin();
     renderAppView();
     const tab = await getCurrentTab();

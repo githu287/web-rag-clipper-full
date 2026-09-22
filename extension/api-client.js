@@ -151,7 +151,7 @@ const webRagApiClient = (() => {
     }
     // 409 + API Key 文案 → API Key 未配置
     if (response.status === 409 && isApiKeyNotConfiguredError(data)) {
-      throw new ApiRequestError(409, "API_KEY_NOT_CONFIGURED", "请前往设置配置阿里云百炼 API Key");
+      throw new ApiRequestError(409, "API_KEY_NOT_CONFIGURED", "请前往设置配置模型服务");
     }
     if (!response.ok) {
       if (response.status === 401) {
@@ -221,7 +221,7 @@ const webRagApiClient = (() => {
       throw new ApiRequestError(403, "DISABLED", "插件已被禁用，请联系管理员");
     }
     if (response.status === 409 && isApiKeyNotConfiguredError(data)) {
-      throw new ApiRequestError(409, "API_KEY_NOT_CONFIGURED", "请前往设置配置阿里云百炼 API Key");
+      throw new ApiRequestError(409, "API_KEY_NOT_CONFIGURED", "请前往设置配置模型服务");
     }
     if (response.status === 413) {
       throw new ApiRequestError(413, "FILE_TOO_LARGE", parseErrorMessage(data, "文件过大，超出限制"));
@@ -273,9 +273,21 @@ const webRagApiClient = (() => {
         const result = await request("/plugins/me", { method: "PUT", body: { plugin_name: pluginName } });
         return result.data;
       },
-      // PUT /plugins/me/api-key：保存并校验阿里云百炼 API Key
+      // 旧版兼容端点：保存并校验单个阿里云百炼 API Key
       async updateApiKey(apiKey) {
         const result = await request("/plugins/me/api-key", { method: "PUT", body: { api_key: apiKey } });
+        return result.data;
+      },
+      async modelProviders() {
+        const result = await request("/plugins/model-providers", { method: "GET", auth: false });
+        return result.data;
+      },
+      async modelConfig() {
+        const result = await request("/plugins/me/model-config", { method: "GET" });
+        return result.data;
+      },
+      async updateModelConfig(payload) {
+        const result = await request("/plugins/me/model-config", { method: "PUT", body: payload });
         return result.data;
       },
       // DELETE /plugins/me/api-key：移除 API Key

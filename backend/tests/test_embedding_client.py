@@ -35,6 +35,7 @@ from backend.clients.embedding import (
     EmbeddingResponseError,
 )
 from backend.core.config import Settings
+from backend.models.model_provider import WorkspaceModelCredentials, build_endpoint
 
 _EMBED_DIM = 4  # 测试用小维度（生产为 1024，由 Settings 注入）
 
@@ -306,6 +307,22 @@ class EmbeddingClientUserKeyTest(unittest.TestCase):
         self.assertIs(client_a1, client_a2)
         self.assertEqual(self.mock_openai_cls.call_count, 1)
         self.assertEqual(len(self.client._clients), 1)  # noqa: SLF001
+
+    def test_workspace_config_uses_embedding_endpoint(self) -> None:
+        credentials = WorkspaceModelCredentials(
+            build_endpoint(
+                kind="embedding", provider="custom", api_key="embedding-key",
+                model="embed-model", base_url="https://embedding.example/v1",
+            ),
+            build_endpoint(
+                kind="llm", provider="custom", api_key="llm-key",
+                model="chat-model", base_url="https://chat.example/v1",
+            ),
+        )
+        self.client._get_client(credentials)
+        self.mock_openai_cls.assert_called_once_with(
+            api_key="embedding-key", base_url="https://embedding.example/v1"
+        )
 
 
 if __name__ == "__main__":

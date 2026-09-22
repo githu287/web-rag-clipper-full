@@ -29,7 +29,7 @@ PluginService 专项测试（Phase 3.5 Step 2-C）。
 
 import hmac
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import ANY, Mock, patch
 
 from backend.core.exceptions import (
     ApiKeyNotConfiguredError,
@@ -276,13 +276,17 @@ class TestPluginServiceApiKey(unittest.TestCase):
         # 最小验证使用「用户提交的 Key」（embedding，非 LLM）
         _, kwargs = embedding.embed.call_args
         self.assertEqual(kwargs.get("api_key"), "sk-new-key")
-        repo.update_api_key.assert_called_once_with("plugin-id-1", "ct-new", "nonce-new")
+        repo.update_api_key.assert_called_once_with(
+            "plugin-id-1", "ct-new", "nonce-new", ANY
+        )
 
     def test_update_api_key_decryptable(self):
         # 真实 AES-256-GCM 闭环：update 后 decrypt 可还原明文
         repo = Mock()
         repo.update_api_key.side_effect = (
-            lambda pid, ct, n: _make_workspace(api_key_ciphertext=ct, api_key_nonce=n)
+            lambda pid, ct, n, fingerprint: _make_workspace(
+                api_key_ciphertext=ct, api_key_nonce=n
+            )
         )
         embedding = Mock()
         embedding.embed.return_value = [[0.1]]

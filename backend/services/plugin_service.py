@@ -26,7 +26,7 @@ Plugin Workspace 身份体系业务编排服务（Phase 3.5 Step 2-C 新增）�
     plugin_id            = 标识（明文存 DB / X-Plugin-ID header，非凭证）
     plugin_secret        = 身份认证凭证（SHA-256 后仅存 hash）
     plugin_secret_hash   = 认证比对目标（SHA-256，hmac.compare_digest 恒时比较）
-    api_key_ciphertext/nonce = 百炼模型调用凭证（AES-256-GCM 加密副本）
+    api_key_ciphertext/nonce = 模型服务配置（AES-256-GCM 加密副本）
 
 安全红线：
     - plugin_secret 明文只存在于 register() 返回值（本次调用内存），
@@ -47,11 +47,13 @@ Plugin Workspace 身份体系业务编排服务（Phase 3.5 Step 2-C 新增）�
 from __future__ import annotations
 
 import hmac
+import json
 import logging
 import re
 from typing import Final
 
 from ..clients.embedding import EmbeddingClient
+from ..clients.llm import LLMClient
 from ..core.config import Settings
 from ..core.exceptions import (
     ApiKeyNotConfiguredError,
@@ -73,13 +75,22 @@ from ..core.security import (
     hash_plugin_secret,
 )
 from ..models.plugin import PluginStatus, PluginWorkspace
+from ..models.model_provider import (
+    WorkspaceModelCredentials,
+    credentials_from_payload,
+    embedding_config_fingerprint,
+    legacy_dashscope_credentials,
+)
 from ..repositories.mysql.plugin_protocol import PluginRepository
+from ..repositories.mysql.protocol import DocumentRepository
 
 logger: logging.Logger = logging.getLogger(__name__)
 
 # update_api_key 最小验证用的探针文本（单条最小 embedding 请求，不调 LLM；
 # 复用现有 EmbeddingClient，不创建第二套 HTTP Client）
 _API_KEY_VALIDATION_PROBE: Final[str] = "api-key-validation-probe"
+_LLM_VALIDATION_SYSTEM_PROMPT: Final[str] = "Reply with OK only."
+_LLM_VALIDATION_USER_PROMPT: Final[str] = "OK"
 
 # plugin_name 规则（Phase 3.5 §7）：
 #   - trim 后长度 2 ≤ n ≤ 32；
@@ -149,6 +160,8 @@ class PluginService:
         plugin_repository: PluginRepository,
         settings: Settings,
         embedding_client: EmbeddingClient | None = None,
+        llm_client: LLMClient | None = None,
+        document_repository: DocumentRepository | None = None,
     ) -> None:
         """
         构造 PluginService。
@@ -162,6 +175,29 @@ class PluginService:
         self._plugin_repository: PluginRepository = plugin_repository
         self._master_key: str = settings.app_master_key
         self._embedding_client: EmbeddingClient | None = embedding_client
+        self._llm_client: LLMClient | None = llm_client
+        self._document_repository: DocumentRepository | None = document_repository
+
+    def _ensure_embedding_space_compatible(
+        self, plugin_id: str, next_fingerprint: str
+    ) -> None:
+        """已有向量时禁止改变 Embedding 空间；更换同配置的 Key 不受影响。"""
+        current_workspace = self._plugin_repository.get_by_plugin_id(plugin_id)
+        if current_workspace is None:
+            raise PluginNotFoundError("plugin workspace not found")
+        current_fingerprint = getattr(
+            current_workspace, "embedding_config_fingerprint", None
+        )
+        if (
+            current_fingerprint
+            and current_fingerprint != next_fingerprint
+            and self._document_repository is not None
+            and self._document_repository.count_documents(plugin_id) > 0
+        ):
+            raise ApiKeyValidationError(
+                "当前 Workspace 已有文档，不能直接更换 Embedding 服务商或模型。"
+                "请先删除已有文档，再保存新的 Embedding 配置。"
+            )
 
     # ------------------------------------------------------------------ register
     def register(self, plugin_name: str) -> tuple[PluginWorkspace, str]:
@@ -302,6 +338,10 @@ class PluginService:
             raise ApiKeyValidationError("api_key must not be empty")
         if not api_key.startswith("sk-"):
             raise ApiKeyValidationError("api_key must start with 'sk-'")
+        legacy_fingerprint = embedding_config_fingerprint(
+            legacy_dashscope_credentials(api_key).embedding
+        )
+        self._ensure_embedding_space_compatible(plugin_id, legacy_fingerprint)
         if self._embedding_client is not None:
             try:
                 self._embedding_client.embed(
@@ -319,7 +359,7 @@ class PluginService:
         ciphertext, nonce = encrypt_api_key(api_key, self._master_key)
         try:
             workspace = self._plugin_repository.update_api_key(
-                plugin_id, ciphertext, nonce
+                plugin_id, ciphertext, nonce, legacy_fingerprint
             )
         except PluginNotFoundError:
             raise
@@ -332,7 +372,7 @@ class PluginService:
     # ------------------------------------------------------------ decrypt_api_key
     def decrypt_api_key(self, plugin: PluginWorkspace) -> str:
         """
-        解密 Workspace 的百炼 API Key（仅业务链路 Embedding / LLM 使用）。
+        解密 Workspace 的模型凭证（仅业务链路 Embedding / LLM 使用）。
 
         规则：
             - ciphertext 或 nonce 任一为 None → ApiKeyNotConfiguredError（409）；
@@ -353,16 +393,92 @@ class PluginService:
         """
         if plugin.api_key_ciphertext is None or plugin.api_key_nonce is None:
             raise ApiKeyNotConfiguredError(
-                "当前 Workspace 尚未配置阿里云百炼 API Key，请前往设置配置。"
+                "当前 Workspace 尚未配置模型服务，请前往设置配置。"
             )
-        return _decrypt_ciphertext(
+        plaintext = _decrypt_ciphertext(
             plugin.api_key_ciphertext, plugin.api_key_nonce, self._master_key
         )
+        if not plaintext.lstrip().startswith("{"):
+            return plaintext
+        try:
+            payload = json.loads(plaintext)
+            if not isinstance(payload, dict):
+                raise ValueError("model config payload must be an object")
+            return credentials_from_payload(payload)
+        except (json.JSONDecodeError, ValueError, TypeError) as exc:
+            logger.error(
+                "decrypt model config failed: plugin_id=%s, error_type=%s",
+                plugin.plugin_id,
+                type(exc).__name__,
+            )
+            raise ApiKeyValidationError("已保存的模型配置无效，请重新配置。") from exc
+
+    def get_model_config(
+        self, plugin: PluginWorkspace
+    ) -> WorkspaceModelCredentials | None:
+        """返回解密后的双端点配置；旧百炼 Key 返回 None，由 API 显示 legacy。"""
+        if plugin.api_key_ciphertext is None or plugin.api_key_nonce is None:
+            return None
+        value = self.decrypt_api_key(plugin)
+        return value if isinstance(value, WorkspaceModelCredentials) else None
+
+    def update_model_config(
+        self,
+        plugin_id: str,
+        credentials: WorkspaceModelCredentials,
+    ) -> PluginWorkspace:
+        """验证并加密保存 Embedding/LLM 独立 OpenAI 兼容配置。"""
+        if not isinstance(credentials, WorkspaceModelCredentials):
+            raise ApiKeyValidationError("模型配置格式无效")
+        next_fingerprint = embedding_config_fingerprint(credentials.embedding)
+        self._ensure_embedding_space_compatible(plugin_id, next_fingerprint)
+        try:
+            if self._embedding_client is not None:
+                self._embedding_client.embed(
+                    [_API_KEY_VALIDATION_PROBE], api_key=credentials
+                )
+            if self._llm_client is not None:
+                self._llm_client.generate(
+                    _LLM_VALIDATION_SYSTEM_PROMPT,
+                    _LLM_VALIDATION_USER_PROMPT,
+                    api_key=credentials,
+                )
+        except Exception as exc:  # noqa: BLE001 - 统一隐藏上游凭证相关细节
+            logger.warning(
+                "model config validation failed: plugin_id=%s, error_type=%s",
+                plugin_id,
+                type(exc).__name__,
+            )
+            raise ApiKeyValidationError(
+                "模型服务验证失败，请检查服务商、Base URL、模型名称和 API Key。"
+            ) from exc
+        plaintext = json.dumps(
+            credentials.to_encrypted_payload(),
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        ciphertext, nonce = encrypt_api_key(plaintext, self._master_key)
+        try:
+            workspace = self._plugin_repository.update_api_key(
+                plugin_id, ciphertext, nonce, next_fingerprint
+            )
+        except PluginNotFoundError:
+            raise
+        except PluginOperationError:
+            logger.warning("update_model_config failed: plugin_id=%s", plugin_id)
+            raise
+        logger.info(
+            "update_model_config success: plugin_id=%s, embedding_provider=%s, llm_provider=%s",
+            plugin_id,
+            credentials.embedding.provider,
+            credentials.llm.provider,
+        )
+        return workspace
 
     # ------------------------------------------------------------- remove_api_key
     def remove_api_key(self, plugin_id: str) -> PluginWorkspace:
         """
-        清除 Workspace 的百炼 API Key（api_key_ciphertext / nonce → NULL）。
+        清除 Workspace 的模型配置（api_key_ciphertext / nonce → NULL）。
 
         明确不改变：plugin_id / plugin_name / plugin_name_norm /
         plugin_secret_hash / status；不删除 documents、不修改任何知识库数据。

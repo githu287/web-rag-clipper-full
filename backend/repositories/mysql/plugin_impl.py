@@ -238,6 +238,7 @@ class PluginRepositoryImpl(PluginRepository):
         plugin_id: str,
         api_key_ciphertext: str,
         api_key_nonce: str,
+        embedding_config_fingerprint: str | None = None,
     ) -> PluginWorkspace:
         """
         更换模型 API Key：只更新 api_key_ciphertext / api_key_nonce
@@ -251,6 +252,8 @@ class PluginRepositoryImpl(PluginRepository):
                 plugin = self._get_by_plugin_id_in_session(session, plugin_id)
                 plugin.api_key_ciphertext = api_key_ciphertext
                 plugin.api_key_nonce = api_key_nonce
+                if embedding_config_fingerprint is not None:
+                    plugin.embedding_config_fingerprint = embedding_config_fingerprint
                 session.commit()
                 session.refresh(plugin)
                 return plugin

@@ -24,7 +24,7 @@
 | `backend/api/__init__.py` | API 包标记 |
 | `backend/api/deps.py` | 从双请求头解析当前 Workspace |
 | `backend/api/routers/__init__.py` | Router 子包标记；文件内路由清单注释已落后 |
-| `backend/api/routers/plugins.py` | Workspace 注册、详情、改名、API Key 与删除 |
+| `backend/api/routers/plugins.py` | Workspace 注册、详情、改名、多服务商模型配置与删除 |
 | `backend/api/routers/documents.py` | 文档列表/详情、创建、上传、ingest 与删除 |
 | `backend/api/routers/clips.py` | 网页正文剪藏 |
 | `backend/api/routers/jobs.py` | 异步入库任务查询与失败重试 |
@@ -53,10 +53,11 @@
 | `backend/models/base.py` | SQLAlchemy Declarative Base |
 | `backend/models/document.py` | `documents` ORM、Document 状态与来源类型 |
 | `backend/models/plugin.py` | `plugin_workspaces` ORM 与 Workspace 状态 |
+| `backend/models/model_provider.py` | Embedding/LLM 服务商预设、端点校验、加密载荷与向量空间指纹 |
 | `backend/models/ingest_job.py` | `ingest_jobs` ORM、任务类型与状态机 |
 | `backend/models/ingest_job_api_schema.py` | 任务进度/结果 API Schema |
 | `backend/models/milvus_dto.py` | `ChunkVector` / `ChunkSearchResult` 严格 DTO |
-| `backend/models/api_schema.py` | Ingest、RAG、Plugin API Schema |
+| `backend/models/api_schema.py` | Ingest、RAG、Plugin 与模型配置 API Schema |
 | `backend/models/document_api_schema.py` | Document、Upload、Clip、列表与详情 Schema |
 | `backend/models/user.py` | 未接入的旧 User/Bearer 草稿 ORM |
 
@@ -65,7 +66,7 @@
 | 文件 | 说明 |
 |---|---|
 | `backend/services/__init__.py` | Service 包标记 |
-| `backend/services/plugin_service.py` | Workspace 注册、认证、改名、API Key 处理 |
+| `backend/services/plugin_service.py` | Workspace 注册、认证、改名、双模型配置加密与向量空间切换保护 |
 | `backend/services/document_upload.py` | 可分阶段的文件校验/落盘与解析/切块/入库编排 |
 | `backend/services/document_ingest.py` | Document 状态机和 ingest 成功/失败收敛 |
 | `backend/services/document_delete.py` | Milvus → 文件 → MySQL 的幂等文档删除 |
@@ -101,8 +102,8 @@
 | 文件 | 说明 |
 |---|---|
 | `backend/clients/__init__.py` | Client 包标记 |
-| `backend/clients/embedding.py` | 百炼 Embedding Client、batch 与 Key 隔离 |
-| `backend/clients/llm.py` | LLM Protocol 与百炼 Chat Completion 实现 |
+| `backend/clients/embedding.py` | 多服务商 OpenAI-compatible Embedding Client、batch、维度与 Key 隔离 |
+| `backend/clients/llm.py` | LLM Protocol 与多服务商 OpenAI-compatible Chat Completion 实现 |
 | `backend/parsers/__init__.py` | Parser 包标记 |
 | `backend/parsers/protocol.py` | Document Parser Protocol |
 | `backend/parsers/text.py` | UTF-8/BOM 文本与 Markdown Parser |
@@ -125,6 +126,7 @@
 | `backend/tests/test_file_storage.py` | 保存/删除、幂等与路径穿越 |
 | `backend/tests/test_embedding_client.py` | 批处理、维度、异常和 Key 隔离 |
 | `backend/tests/test_llm_client.py` | LLM 参数、响应和异常包装 |
+| `backend/tests/test_model_provider.py` | 服务商预设、端点安全、配置加密兼容与向量空间切换保护 |
 | `backend/tests/test_security.py` | AES-GCM、哈希、随机凭证与篡改检测 |
 | `backend/tests/test_url_normalization.py` | URL 规范化、跟踪参数和非法 URL 边界 |
 | `backend/tests/test_document_repository.py` | CRUD、筛选、分页和 Workspace 隔离 |
@@ -192,6 +194,7 @@
 | `alembic/versions/0007_plugin_workspace.py` | 创建 Workspace，增加并回填 `documents.plugin_id` |
 | `alembic/versions/0008_documents_user_id_default.py` | 为旧 `user_id` 设置默认 0 |
 | `alembic/versions/0009_create_ingest_jobs.py` | 创建持久化异步入库任务表 |
+| `alembic/versions/0010_expand_model_config_ciphertext.py` | 扩展加密模型配置字段并增加 Embedding 指纹 |
 
 ## `evaluation/` — Retrieval 基线
 

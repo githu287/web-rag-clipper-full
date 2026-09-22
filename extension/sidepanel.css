@@ -748,21 +748,57 @@ input, textarea {
 .model-status.warn { color: #b45309; }
 
 .api-key-form {
-  display: flex;
+  display: grid;
   gap: 8px;
   margin-top: 8px;
 }
 
-.api-key-form input {
-  flex: 1;
+.model-config-card {
+  display: grid;
+  gap: 7px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: #f8fafc;
+}
+
+.model-config-title {
+  font-weight: 600;
+  color: var(--text);
+}
+
+.model-config-card label {
+  display: grid;
+  gap: 4px;
+  color: var(--text-sub);
+  font-size: 12px;
+}
+
+.api-key-form input,
+.api-key-form select {
+  width: 100%;
   padding: 8px 10px;
   border: 1px solid var(--border);
   border-radius: var(--radius);
+  background: #fff;
+  color: var(--text);
 }
 
-.api-key-form input:focus {
+.api-key-form input:focus,
+.api-key-form select:focus {
   outline: none;
   border-color: var(--primary);
+}
+
+.model-config-card .model-config-checkbox {
+  display: flex;
+  align-items: center;
+  grid-template-columns: none;
+  gap: 7px;
+}
+
+.model-config-checkbox input {
+  width: auto;
 }
 
 .api-key-form .primary-btn {

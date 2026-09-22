@@ -31,6 +31,7 @@ from backend.clients.llm import (
     LLMClientResponseError,
 )
 from backend.core.config import Settings
+from backend.models.model_provider import WorkspaceModelCredentials, build_endpoint
 
 
 def _make_settings(**overrides: object) -> Settings:
@@ -282,6 +283,24 @@ class BailianLLMClientUserKeyTest(unittest.TestCase):
         self.client.generate("s", "u", api_key="sk-user-a")
         self.assertEqual(self.mock_openai_cls.call_count, 1)
         self.assertEqual(len(self.client._clients), 1)  # noqa: SLF001
+
+    def test_workspace_config_uses_llm_endpoint(self) -> None:
+        credentials = WorkspaceModelCredentials(
+            build_endpoint(
+                kind="embedding", provider="custom", api_key="embedding-key",
+                model="embed-model", base_url="https://embedding.example/v1",
+            ),
+            build_endpoint(
+                kind="llm", provider="custom", api_key="llm-key",
+                model="chat-model", base_url="https://chat.example/v1",
+            ),
+        )
+        self.client.generate("s", "u", api_key=credentials)
+        self.mock_openai_cls.assert_called_once_with(
+            api_key="llm-key", base_url="https://chat.example/v1"
+        )
+        call = self.mock_client.chat.completions.create.call_args
+        self.assertEqual(call.kwargs["model"], "chat-model")
 
 
 if __name__ == "__main__":

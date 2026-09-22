@@ -49,7 +49,7 @@
     </header>
 
     <div class="warn-banner" id="warn-banner" hidden>
-      <span class="warn-text">⚠ 尚未配置阿里云百炼 API Key</span>
+      <span class="warn-text">⚠ 尚未配置模型服务</span>
       <button type="button" class="warn-btn" id="warn-goto-settings">去设置</button>
     </div>
 
@@ -160,14 +160,29 @@
         <div class="section-title">模型配置</div>
         <div class="model-status" id="model-status">—</div>
         <div class="api-key-form" id="api-key-form" hidden>
-          <input type="password" id="api-key-input" placeholder="阿里云百炼 API Key（sk-…）" autocomplete="off" spellcheck="false">
-          <button type="button" class="primary-btn" id="api-key-save-btn">保存</button>
+          <div class="model-config-card">
+            <div class="model-config-title">Embedding 服务</div>
+            <label>服务商<select id="embedding-provider"></select></label>
+            <label>Base URL<input type="url" id="embedding-base-url" autocomplete="off" spellcheck="false"></label>
+            <label>模型<input type="text" id="embedding-model" autocomplete="off" spellcheck="false"></label>
+            <label>API Key<input type="password" id="embedding-api-key" autocomplete="off" spellcheck="false"></label>
+            <label class="model-config-checkbox"><input type="checkbox" id="embedding-send-dimensions">请求中发送 1024 维参数</label>
+          </div>
+          <div class="model-config-card">
+            <div class="model-config-title">AI 问答服务</div>
+            <label>服务商<select id="llm-provider"></select></label>
+            <label>Base URL<input type="url" id="llm-base-url" autocomplete="off" spellcheck="false"></label>
+            <label>模型<input type="text" id="llm-model" autocomplete="off" spellcheck="false"></label>
+            <label>API Key<input type="password" id="llm-api-key" autocomplete="off" spellcheck="false"></label>
+          </div>
+          <button type="button" class="primary-btn" id="api-key-save-btn">验证并保存</button>
         </div>
-        <button type="button" class="btn-secondary" id="api-key-config-btn">配置 API Key</button>
-        <button type="button" class="btn-danger" id="api-key-remove-btn" hidden>移除 API Key</button>
+        <button type="button" class="btn-secondary" id="api-key-config-btn">配置模型服务</button>
+        <button type="button" class="btn-danger" id="api-key-remove-btn" hidden>移除模型配置</button>
         <div class="api-key-status" id="api-key-status"></div>
-        <div class="hint">仅支持阿里云百炼 DashScope API Key。</div>
-        <div class="hint">API Key 仅用于当前插件的 Embedding 与 AI 问答，不参与插件身份识别。</div>
+        <div class="hint">Embedding 固定使用 1024 维；可与问答模型使用不同服务商。</div>
+        <div class="hint">已有文档后不能直接更换 Embedding 服务商或模型；如需更换，请先删除旧文档。</div>
+        <div class="hint">API Key 会加密保存，仅用于当前 Workspace，不参与插件身份识别。</div>
 
         <div class="section-title">危险区域</div>
         <button type="button" class="btn-danger" id="delete-plugin-btn">删除插件空间</button>

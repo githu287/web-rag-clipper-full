@@ -20,13 +20,14 @@ Step 2-A migration 0007 已建 plugin_workspaces 表并回填历史数据；
    展示名 + 归一化名（strip → 连续空白压缩 → lower）；归一化名唯一保证「一名一 Workspace」；
 3) plugin_secret_hash（CHAR(64) UNIQUE NOT NULL）：SHA-256(plugin_secret)，
    **数据库与日志绝不存明文 secret**；
-4) api_key_ciphertext / api_key_nonce（**NULLABLE**）：百炼模型调用凭证的
+4) api_key_ciphertext / api_key_nonce（**NULLABLE**）：版本化模型配置的
    AES-256-GCM 密文 + nonce，**绝不参与身份识别**；NULL = 未配置；
-5) status 双层默认（default + server_default），对齐 Document.status / User.status 风格；
+5) embedding_config_fingerprint：不含 Key 的向量空间指纹，防止混用模型；
+6) status 双层默认（default + server_default），对齐 Document.status / User.status 风格；
    不用 SQLAlchemy Enum，用 String(16) + 应用层常量（PluginStatus）。
 
-字段严格对齐 migration 0007：不加 migration 中不存在的字段
-（无 username / password / token / plugin_secret 明文 / secret_rotation）。
+字段对齐 migration 0007 与 0010（无 username / password / token /
+plugin_secret 明文 / secret_rotation）。
 """
 
 from __future__ import annotations
@@ -34,7 +35,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Final
 
-from sqlalchemy import BigInteger, DateTime, Integer, String, func, text
+from sqlalchemy import BigInteger, DateTime, Integer, String, Text, func, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .base import Base
@@ -74,12 +75,17 @@ class PluginWorkspace(Base):
     # UNIQUE 禁止哈希碰撞复用；明文 secret 不落库、不进日志
     plugin_secret_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
 
-    # 百炼模型调用凭证（不参与身份识别）：AES-256-GCM 密文 + tag（base64）；
-    # NULL = 未配置 API Key
-    api_key_ciphertext: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    # 版本化模型配置（不参与身份识别）：AES-256-GCM 密文 + tag（base64）；
+    # 兼容旧百炼 Key 密文；NULL = 未配置模型服务
+    api_key_ciphertext: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # 每条记录独立的 12B 随机 nonce（base64）：AES-GCM 解密必需；NULL = 未配置
     api_key_nonce: Mapped[str | None] = mapped_column(String(32), nullable=True)
+
+    # 不含 API Key 的 Embedding 配置指纹；清除 Key 时保留，防止已有向量与新模型混用。
+    embedding_config_fingerprint: Mapped[str | None] = mapped_column(
+        String(64), nullable=True
+    )
 
     # 状态：ACTIVE / DISABLED / DELETING；双层默认（default + server_default）
     status: Mapped[str] = mapped_column(

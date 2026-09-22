@@ -46,6 +46,7 @@ from backend.core.exceptions import (
 from backend.core.security import hash_plugin_secret
 from backend.main import create_app
 from backend.models.plugin import PluginStatus, PluginWorkspace
+from backend.models.model_provider import WorkspaceModelCredentials
 from backend.services.plugin_service import PluginService
 
 
@@ -328,6 +329,77 @@ class PluginApiTest(unittest.TestCase):
         self.fake_plugin_service.remove_api_key.assert_called_once_with(
             "plugin-id-1"
         )
+
+    def test_model_provider_catalog(self) -> None:
+        response = self.client.get("/plugins/model-providers")
+        self.assertEqual(response.status_code, 200)
+        llm_ids = {item["id"] for item in response.json()["llm"]}
+        self.assertIn("deepseek", llm_ids)
+        self.assertIn("openrouter", llm_ids)
+
+    def test_update_and_get_model_config_never_returns_keys(self) -> None:
+        payload = {
+            "embedding": {
+                "provider": "openai",
+                "api_key": "embedding-secret",
+                "model": "text-embedding-3-small",
+                "base_url": None,
+                "send_dimensions": True,
+            },
+            "llm": {
+                "provider": "deepseek",
+                "api_key": "llm-secret",
+                "model": "deepseek-chat",
+                "base_url": None,
+                "send_dimensions": False,
+            },
+        }
+        response = self.client.put(
+            "/plugins/me/model-config", json=payload, headers=self._headers()
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        body = response.json()
+        self.assertEqual(body["embedding"]["provider"], "openai")
+        self.assertEqual(body["llm"]["provider"], "deepseek")
+        self.assertNotIn("api_key", body["embedding"])
+        self.assertNotIn("api_key", body["llm"])
+        self.assertNotIn("embedding-secret", response.text)
+        self.assertNotIn("llm-secret", response.text)
+        credentials = self.fake_plugin_service.update_model_config.call_args.args[1]
+        self.assertIsInstance(credentials, WorkspaceModelCredentials)
+        self.assertEqual(credentials.embedding.api_key, "embedding-secret")
+        self.assertEqual(credentials.llm.api_key, "llm-secret")
+
+        configured = SimpleNamespace(
+            plugin_id="plugin-id-1",
+            api_key_ciphertext="encrypted",
+            api_key_nonce="nonce",
+        )
+        self.fake_plugin_service.get_plugin.return_value = configured
+        self.fake_plugin_service.decrypt_api_key.return_value = credentials
+        get_response = self.client.get(
+            "/plugins/me/model-config", headers=self._headers()
+        )
+        self.assertEqual(get_response.status_code, 200)
+        self.assertNotIn("embedding-secret", get_response.text)
+        self.assertNotIn("llm-secret", get_response.text)
+
+    def test_custom_model_config_rejects_http_base_url(self) -> None:
+        response = self.client.put(
+            "/plugins/me/model-config",
+            json={
+                "embedding": {
+                    "provider": "custom", "api_key": "key", "model": "embed",
+                    "base_url": "http://localhost:8080/v1",
+                },
+                "llm": {
+                    "provider": "deepseek", "api_key": "key", "model": "deepseek-chat",
+                },
+            },
+            headers=self._headers(),
+        )
+        self.assertEqual(response.status_code, 400)
+        self.fake_plugin_service.update_model_config.assert_not_called()
 
     def test_remove_api_key_then_get_me_configured_false(self) -> None:
         self.fake_plugin_service.get_plugin.return_value = self.fake_plugin

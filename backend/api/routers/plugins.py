@@ -6,6 +6,7 @@ Plugin Workspace HTTP 路由（Phase 3.5 Step 2-D 新增）。
     GET    /plugins/me            —— 当前 Workspace 信息（需 X-Plugin-ID + X-Plugin-Secret）
     PUT    /plugins/me            —— 修改显示名
     PUT    /plugins/me/api-key    —— 配置 / 更换百炼 API Key
+    GET/PUT /plugins/me/model-config —— 读取 / 保存多服务商模型配置
     DELETE /plugins/me/api-key    —— 清除 API Key（204）
     DELETE /plugins/me            —— 删除 Workspace（双重确认，204）
 
@@ -36,17 +37,27 @@ from fastapi import APIRouter, Depends, Response
 
 from ...api.deps import get_current_plugin
 from ...core.di import get_plugin_service, get_workspace_delete_service
+from ...core.exceptions import ApiKeyValidationError
 from ...models.api_schema import (
+    ModelEndpointConfigResponse,
     PluginDeleteRequest,
     PluginMeResponse,
+    PluginModelConfigResponse,
     PluginRegisterRequest,
     PluginRegisterResponse,
     PluginUpdateApiKeyRequest,
     PluginUpdateApiKeyResponse,
+    PluginUpdateModelConfigRequest,
     PluginUpdateNameRequest,
     PluginUpdateNameResponse,
 )
 from ...models.plugin import PluginWorkspace
+from ...models.model_provider import (
+    WorkspaceModelCredentials,
+    build_endpoint,
+    legacy_dashscope_credentials,
+    provider_catalog,
+)
 from ...services.plugin_service import PluginService
 from ...services.workspace_delete import WorkspaceDeleteService
 
@@ -56,6 +67,28 @@ router = APIRouter(prefix="/plugins", tags=["plugins"])
 def _api_key_configured(plugin: PluginWorkspace) -> bool:
     """ciphertext 与 nonce 均非 NULL 才视为已配置 API Key。"""
     return plugin.api_key_ciphertext is not None and plugin.api_key_nonce is not None
+
+
+def _model_config_response(
+    credentials: WorkspaceModelCredentials | None,
+) -> PluginModelConfigResponse:
+    if credentials is None:
+        return PluginModelConfigResponse(configured=False)
+
+    def endpoint(value) -> ModelEndpointConfigResponse:
+        return ModelEndpointConfigResponse(**value.safe_dict())
+
+    return PluginModelConfigResponse(
+        configured=True,
+        embedding=endpoint(credentials.embedding),
+        llm=endpoint(credentials.llm),
+    )
+
+
+@router.get("/model-providers")
+def get_model_providers() -> dict[str, list[dict[str, object]]]:
+    """返回不含凭证的内置服务商预设；自定义兼容端点也始终可用。"""
+    return provider_catalog()
 
 
 @router.post(
@@ -180,6 +213,46 @@ def update_plugin_api_key(
     )
 
 
+@router.get(
+    "/me/model-config",
+    response_model=PluginModelConfigResponse,
+)
+def get_plugin_model_config(
+    current_plugin: PluginWorkspace = Depends(get_current_plugin),
+    plugin_service: PluginService = Depends(get_plugin_service),
+) -> PluginModelConfigResponse:
+    plugin = plugin_service.get_plugin(current_plugin.plugin_id)
+    if not _api_key_configured(plugin):
+        return _model_config_response(None)
+    value = plugin_service.decrypt_api_key(plugin)
+    credentials = (
+        value
+        if isinstance(value, WorkspaceModelCredentials)
+        else legacy_dashscope_credentials(str(value))
+    )
+    return _model_config_response(credentials)
+
+
+@router.put(
+    "/me/model-config",
+    response_model=PluginModelConfigResponse,
+)
+def update_plugin_model_config(
+    body: PluginUpdateModelConfigRequest,
+    current_plugin: PluginWorkspace = Depends(get_current_plugin),
+    plugin_service: PluginService = Depends(get_plugin_service),
+) -> PluginModelConfigResponse:
+    """验证并加密保存独立的 Embedding 与 LLM OpenAI 兼容配置。"""
+    try:
+        embedding = build_endpoint(kind="embedding", **body.embedding.model_dump())
+        llm = build_endpoint(kind="llm", **body.llm.model_dump())
+    except ValueError as exc:
+        raise ApiKeyValidationError(str(exc)) from exc
+    credentials = WorkspaceModelCredentials(embedding, llm)
+    plugin_service.update_model_config(current_plugin.plugin_id, credentials)
+    return _model_config_response(credentials)
+
+
 @router.delete(
     "/me/api-key",
     status_code=204,
@@ -189,7 +262,7 @@ def remove_plugin_api_key(
     plugin_service: PluginService = Depends(get_plugin_service),
 ) -> Response:
     """
-    清除当前 Workspace 的百炼 API Key（204 No Content）。
+    清除当前 Workspace 的模型配置（204 No Content）。
 
     仅清除 api_key_ciphertext / nonce → NULL；plugin_id / plugin_name /
     plugin_secret_hash / documents / Milvus 均不变。

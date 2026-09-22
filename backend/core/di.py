@@ -760,10 +760,13 @@ def get_plugin_service() -> PluginService:
     plugin_repository = get_plugin_repository()
     settings = get_settings()
     embedding_client = get_embedding_client()
+    llm_client = get_llm_client()
     return PluginService(
         plugin_repository=plugin_repository,
         settings=settings,
         embedding_client=embedding_client,
+        llm_client=llm_client,
+        document_repository=get_document_repository(),
     )
 
 

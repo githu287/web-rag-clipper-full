@@ -405,6 +405,49 @@ class PluginUpdateApiKeyResponse(BaseModel):
     )
 
 
+class ModelEndpointConfigRequest(BaseModel):
+    """单个 OpenAI 兼容模型端点配置；API Key 仅用于本次保存请求。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    provider: str = Field(..., min_length=1, max_length=32)
+    api_key: str = Field(..., min_length=1, max_length=1024)
+    model: str = Field(..., min_length=1, max_length=128)
+    base_url: str | None = Field(default=None, max_length=512)
+    send_dimensions: bool | None = None
+
+
+class PluginUpdateModelConfigRequest(BaseModel):
+    """Embedding 与 LLM 可独立选择服务商的 Workspace 模型配置。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    embedding: ModelEndpointConfigRequest
+    llm: ModelEndpointConfigRequest
+
+
+class ModelEndpointConfigResponse(BaseModel):
+    """不包含 Key 的模型端点安全摘要。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    provider: str
+    base_url: str
+    model: str
+    send_dimensions: bool = False
+    api_key_configured: bool
+
+
+class PluginModelConfigResponse(BaseModel):
+    """Workspace 当前模型配置安全摘要。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    configured: bool
+    embedding: ModelEndpointConfigResponse | None = None
+    llm: ModelEndpointConfigResponse | None = None
+
+
 class PluginDeleteRequest(BaseModel):
     """
     DELETE /plugins/me 请求体：危险操作双重确认。
