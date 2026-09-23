@@ -1,6 +1,8 @@
 # Web RAG Clipper
 
-Web RAG Clipper 是一个本地优先的网页剪藏与个人知识库 RAG 系统。Chrome/Edge 扩展负责采集网页、管理知识库和发起问答；FastAPI 后端负责文档解析、切块、向量化、检索及生成回答。
+Web RAG Clipper 是一个本地优先、以网页剪藏为核心的个人知识库 RAG 系统。Chrome/Edge 扩展负责提取网页正文、管理知识库和发起问答；FastAPI 后端负责异步入库、切块、向量化、检索与回答生成。
+
+项目的首要场景是“浏览网页时剪藏，稍后基于已剪藏内容提问”。文本和 Markdown 上传是辅助能力，PDF、DOCX 与 OCR 暂不作为当前重点。
 
 当前仓库已经打通以下链路：
 
@@ -20,7 +22,7 @@ Web RAG Clipper 是一个本地优先的网页剪藏与个人知识库 RAG 系�
 
 ```text
 Chrome / Edge Extension (Manifest V3)
-  ├─ 网页正文提取、剪藏、文件上传
+  ├─ 网页正文提取、预览编辑与剪藏
   ├─ 知识库列表、筛选、删除与失败重试
   └─ 当前文档 / 全知识库问答
                     │
@@ -28,13 +30,14 @@ Chrome / Edge Extension (Manifest V3)
                     ▼
 FastAPI
   ├─ Plugin、Document、Clip、Ingest、RAG API
-  ├─ Parser → Chunker → Embedding → Milvus
-  ├─ Retrieval → Context → OpenAI-compatible LLM
+  ├─ MySQL Job → Redis Queue → Ingest Worker
+  ├─ Parser → Chunker → Embedding API → Milvus
+  ├─ Retrieval → Context → LLM API
   └─ MySQL 状态与归属校验
-          │                         │
-          ▼                         ▼
-     MySQL 8.0                 Milvus 2.4.4
-  元数据/状态/凭证              chunk/embedding
+          │              │              │
+          ▼              ▼              ▼
+     MySQL 8.0       Redis 7       Milvus 2.4.4
+  元数据/任务/凭证    异步队列      chunk/embedding
 ```
 
 更完整的组件边界、数据流和一致性策略见 [ARCHITECTURE.md](ARCHITECTURE.md)，逐文件说明见 [FILE_INDEX.md](FILE_INDEX.md)。
@@ -92,8 +95,8 @@ Compose 会启动 MySQL、Redis、etcd、MinIO 和 Milvus。默认宿主端口�
 | 服务 | 端口 |
 |---|---:|
 | MySQL | `33066` |
-| Redis | `6379` |
-| MinIO API / Console | `9000` / `9001` |
+| Redis | `16379` |
+| MinIO API / Console | `19000` / `19001` |
 | Milvus gRPC / Health | `19530` / `9091` |
 
 ### 3. 配置后端
@@ -105,11 +108,13 @@ python -c "import secrets; print(secrets.token_hex(16))"
 
 编辑 `.env`：
 
-- 将 `MYSQL_PORT` 改为 `33066`，与本仓库的 Compose 映射一致。
+- 将 `MYSQL_PORT` 改为 `33066`、`REDIS_PORT` 改为 `16379`，与本仓库的 Compose 映射一致。
 - 将上一步生成的 32 个 ASCII 字符填入 `APP_MASTER_KEY`。
 - 不要把真实密钥提交到 Git。
 
-`BAILIAN_API_KEY` 是服务端兼容/预留配置。正常产品流程使用每个 Workspace 通过 `PUT /plugins/me/api-key` 保存的独立 Key。
+`APP_MASTER_KEY` 不是模型 API Key，而是后端用于加密 Workspace 模型凭证的主密钥。报错 `must be exactly 32 bytes` 表示它未配置或 UTF-8 编码后并非恰好 32 字节。
+
+`BAILIAN_API_KEY` 是旧流程的兼容/预留配置。当前产品流程通过扩展设置页或 `PUT /plugins/me/model-config` 保存每个 Workspace 自己的 Embedding 与 LLM 凭证。
 
 ### 4. 安装依赖并迁移数据库
 
@@ -125,7 +130,7 @@ alembic upgrade head
 ### 5. 启动 API
 
 ```powershell
-uvicorn backend.main:app --host 0.0.0.0 --port 18000
+python -m uvicorn backend.main:app --host 0.0.0.0 --port 18000
 ```
 
 启动阶段会幂等初始化并加载 Milvus `page_chunks` Collection。打开 <http://localhost:18000/docs> 可查看和调用完整 API。
@@ -161,6 +166,16 @@ Worker 会初始化 Milvus，恢复上次意外中断且未确认的任务，然
 5. 点击扩展图标打开 Side Panel，创建 Workspace，在“模型配置”中分别选择 Embedding 与问答服务后即可剪藏和问答。
 
 若后端不在 `http://localhost:18000`，同时修改 `extension/config.js` 的 `API_BASE_URL` 与 `extension/manifest.json` 的 `host_permissions`。
+
+## 使用流程
+
+1. 打开普通 HTTP(S) 网页，在扩展 Side Panel 中点击“提取并预览”。
+2. 检查标题、正文和提取诊断；必要时手工删除导航、广告等内容。
+3. 确认剪藏后，API 创建任务，Worker 完成切块、Embedding 和 Milvus 入库。
+4. 在“当前网页”模式只检索这篇文档，或切换“全部知识库”跨文档提问。
+5. 在“我的知识库”查看状态、重试失败任务或删除文档。
+
+适合剪藏文章、技术文档、博客和语义结构清晰的 SPA 页面。浏览器内部页、扩展商店页、登录墙、跨域 iframe，以及主要内容位于 Shadow DOM 的页面可能无法完整提取。
 
 ## API 概览
 
@@ -266,7 +281,29 @@ node extension/tests/session-store.test.js
 - 两个 Workspace、共 40 篇源文档
 - 数据校验、运行时 ID 对齐、基线执行和 Markdown 报告渲染工具
 
-当前公开数据的 chunk 标注仍有部分需要人工重标，因此应把现有结果视为文档级临时基线，不应宣称为完整 chunk 级基线。具体流程见 [evaluation/README.md](evaluation/README.md) 与 [docs/REAL_BASELINE_RUNBOOK.md](docs/REAL_BASELINE_RUNBOOK.md)。
+当前公开数据的 chunk 标注仍有部分需要人工重标，因此应把现有结果视为文档级临时基线，不应宣称为完整 chunk 级基线。具体流程见 [evaluation/README.md](evaluation/README.md)。
+
+## 常见问题
+
+### 保存模型配置时报 `APP_MASTER_KEY ... got 0 bytes`
+
+在项目根目录的 `.env` 中设置 `APP_MASTER_KEY`，值必须是 UTF-8 编码后恰好 32 字节的字符串，然后重启 API 和 Worker：
+
+```powershell
+python -c "import secrets; print(secrets.token_hex(16))"
+```
+
+### 剪藏任务一直排队
+
+确认 `.env` 中的 `REDIS_PORT=16379`，并且第二个终端中的 Worker 正在运行。只有 API 没有 Worker 时，异步任务不会被消费。
+
+### Embedding 或 LLM 显示 `Connection error`
+
+先确认所选服务商、模型和 Key 匹配，再检查系统代理是否允许 Python 访问对应 HTTPS API。配置页会分别验证 Embedding 与 LLM，因此可以判断是哪一侧失败。
+
+### 为什么不能直接更换 Embedding 模型
+
+不同 Embedding 模型产生的向量空间通常不可比较。已有文档时系统会阻止切换；请先删除旧文档，保存新配置后重新剪藏。只更换相同配置的 Key 或更换 LLM 不受影响。
 
 ## 已知限制
 

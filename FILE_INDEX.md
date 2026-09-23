@@ -1,12 +1,12 @@
 # Web RAG Clipper 文件索引
 
-本索引按职责说明当前仓库文件。运行时生成的 `.env`、`.venv/`、`uploads/`、缓存和 evaluation 私有输出均被 Git 忽略，不属于源代码。
+本索引按职责列出当前运行链路和主要维护入口，不重复展开每一份评测语料。运行时生成的 `.env`、`.venv/`、`uploads/`、缓存和 evaluation 私有输出均被 Git 忽略，不属于源代码。
 
 ## 根目录
 
 | 文件 | 说明 |
 |---|---|
-| `README.md` | 项目能力、安装、运行、API、测试与限制 |
+| `README.md` | 项目定位、快速启动、模型配置、使用流程、测试与排障 |
 | `ARCHITECTURE.md` | 当前实现的分层、数据流、隔离与一致性设计 |
 | `FILE_INDEX.md` | 本文件 |
 | `.env.example` | 环境变量模板；部分字段是尚未消费的预留配置 |
@@ -221,55 +221,12 @@
 
 ### 评测源文档
 
-`evaluation/datasets/source_docs/plugin-a/` 是 LangChain/LangGraph Workspace：
-
-| 文件 | 主题 |
+| 目录 | 内容 |
 |---|---|
-| `A01_langgraph_stategraph_definition.md` | StateGraph 定义与 reducer |
-| `A02_langgraph_nodes_best_practices.md` | Node 编写实践 |
-| `A03_langgraph_conditional_edges.md` | 条件边与路由 |
-| `A04_langgraph_end_exit_conditions.md` | END 与退出条件 |
-| `A05_langgraph_memory_checkpointer.md` | Memory 与 Checkpointer 基础 |
-| `A06_langchain_runnable_lcel.md` | Runnable 与 LCEL |
-| `A07_langchain_prompt_templates.md` | Prompt Template |
-| `A08_langchain_output_parsers.md` | Output Parser 与降级 |
-| `A09_langchain_retrievers_comparison.md` | Retriever 对比 |
-| `A10_langchain_embeddings_bailian_v3.md` | 百炼 Embedding v3 |
-| `A11_langgraph_tool_calling_mechanism.md` | Tool Calling |
-| `A12_agent_executor_vs_langgraph.md` | AgentExecutor 与 LangGraph 对比 |
-| `A13_langgraph_multi_agent_supervisor.md` | Multi-Agent Supervisor |
-| `A14_langgraph_human_in_the_loop.md` | Human in the Loop |
-| `A15_langgraph_streaming_modes.md` | Streaming 模式 |
-| `A16_langgraph_persistence_production_best_practices.md` | 生产级持久化 |
-| `A17_langchain_callbacks_langsmith_tracing.md` | Callback 与 LangSmith tracing |
-| `A18_langchain_error_handling_fallbacks.md` | 错误处理与 fallback |
-| `A19_langchain_chunking_strategies.md` | Chunking 策略 |
-| `A20_langgraph_production_deployment_k8s.md` | K8s 生产部署 |
+| `evaluation/datasets/source_docs/plugin-a/` | 20 篇 LangChain/LangGraph 主题语料（A01–A20） |
+| `evaluation/datasets/source_docs/plugin-b/` | 20 篇 Java/Spring 主题语料（B01–B20） |
 
-`evaluation/datasets/source_docs/plugin-b/` 是 Java/Spring Workspace：
-
-| 文件 | 主题 |
-|---|---|
-| `B01_springboot_autoconfiguration.md` | Spring Boot 自动配置 |
-| `B02_spring_ioc_bean_lifecycle.md` | IoC Bean 生命周期 |
-| `B03_spring_dependency_injection_modes.md` | 依赖注入模式 |
-| `B04_spring_application_event_stategraph.md` | Application Event 与状态图术语陷阱 |
-| `B05_spring_bean_factorybean_comparison.md` | BeanFactory / FactoryBean |
-| `B06_spring_mvc_rest_controllers.md` | MVC REST Controller |
-| `B07_resttemplate_vs_webclient_migration.md` | RestTemplate / WebClient 迁移 |
-| `B08_spring_webflux_reactive_core.md` | WebFlux 响应式核心 |
-| `B09_spring_filter_interceptor_comparison.md` | Filter / Interceptor |
-| `B10_spring_actuator_health_metrics.md` | Actuator 健康与指标 |
-| `B11_spring_data_jpa_nplusone.md` | JPA N+1 |
-| `B12_hibernate_entity_states_flush.md` | Hibernate 状态与 flush |
-| `B13_spring_transactional_traps_best_practices.md` | Transactional 陷阱 |
-| `B14_flyway_database_migration_best_practices.md` | Flyway 迁移实践 |
-| `B15_spring_jdbctemplate_namedparameter.md` | JdbcTemplate / NamedParameter |
-| `B16_spring_security_jwt_filterchain.md` | Spring Security JWT FilterChain |
-| `B17_spring_boot_testing_slices.md` | Spring Boot Test Slices |
-| `B18_spring_aop_aspect_around_audit.md` | AOP Around 与审计 |
-| `B19_springboot_deploy_docker_jvm_k8s.md` | Docker/JVM/K8s 部署 |
-| `B20_spring_ai_vs_langchain_python_rag.md` | Spring AI 与 LangChain RAG 对比陷阱 |
+具体主题、占位符和人工复核状态以 `evaluation/datasets/DATASET_MANIFEST.md` 为准。
 
 ## 根级评测测试
 
@@ -278,7 +235,9 @@
 | `tests/conftest.py` | 根级 pytest 路径/fixture 配置 |
 | `tests/test_render_report.py` | Markdown 报告结构与输出测试 |
 
-## `docs/` — 设计记录与手册
+## `docs/` — 历史设计记录
+
+该目录用于设计追溯，不是当前运行规范。当前行为以根目录 `README.md`、`ARCHITECTURE.md` 和代码为准。
 
 | 文件 | 说明 |
 |---|---|

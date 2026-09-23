@@ -1,6 +1,6 @@
 # Web RAG Clipper 架构
 
-本文描述当前代码实际采用的架构。`docs/PHASE*.md` 是阶段性设计记录；当历史描述与当前代码冲突时，以本文件、根目录 `README.md` 和代码为准。
+本文描述当前代码实际采用的架构。历史阶段文档只用于追溯设计过程；当描述冲突时，以本文件、根目录 `README.md`、最新 Alembic 迁移和代码为准。
 
 ## 1. 架构目标与边界
 
@@ -244,7 +244,7 @@ Workspace 删除要求 `confirm=true` 且提交名称与当前名称完全一致
 
 ## 9. API 与异常边界
 
-当前共有 20 个操作：Plugin 6、Document 7、Clip 2、Job 2、Ingest 1、RAG 2。
+当前共有 23 个操作：Plugin 9、Document 7、Clip 2、Job 2、Ingest 1、RAG 2。其中 `POST /plugins/register` 与 `GET /plugins/model-providers` 不要求 Plugin Header。
 
 | 状态码 | 典型场景 |
 |---:|---|
@@ -261,7 +261,7 @@ Workspace 删除要求 `confirm=true` 且提交名称与当前名称完全一致
 
 ## 10. 测试、可观测性与维护状态
 
-主测试集覆盖 Router、Service、Repository、DTO、安全工具、URL 规范化、异步队列/Worker、Workspace 隔离、评测计算和报告渲染。当前活动集实测为 550 passed，并包含 37 个 subtests。扩展另有 Node.js 回归测试，覆盖正文候选评分、噪声识别、结构化文本规范化、URL 规范化和任务持久化。
+主测试集覆盖 Router、Service、Repository、DTO、安全工具、URL 规范化、异步队列/Worker、Workspace 隔离、评测计算和报告渲染。当前活动集实测为 563 passed，并包含 37 个 subtests。扩展另有 Node.js 回归测试，覆盖正文候选评分、噪声识别、结构化文本规范化、URL 规范化和任务持久化。
 
 日志记录操作类型、Document ID 和候选数量等诊断信息；安全代码避免记录 Plugin Secret 与 API Key 明文。项目目前没有统一 metrics/tracing、结构化审计日志或请求 ID 中间件。
 
@@ -274,4 +274,4 @@ Workspace 删除要求 `confirm=true` 且提交名称与当前名称完全一致
 - 向量维度或 Collection Schema 改动不能仅改环境变量，必须重建 Collection 并全量重新 ingest。
 - 若启用公网访问，需要补齐 CORS、TLS、限流、Secret 轮换、审计和更严格的部署配置。
 - 新解析器应实现 `DocumentParser` Protocol，新存储或数据库适配应实现对应 Protocol。
-- `docs/ARCHITECTURE.md` 是较早阶段的实现快照，已落后于当前扩展与 Workspace 架构。
+- 根目录 `ARCHITECTURE.md` 是当前架构单一入口；历史阶段文档不作为运行规范。
