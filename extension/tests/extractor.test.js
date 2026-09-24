@@ -118,4 +118,15 @@ test("行内代码会选择比内容中反引号更长的分隔符", function ()
   assert.equal(extractor.formatInlineCode("use `code` here"), "``use `code` here``");
 });
 
+test("正文规范化会保留嵌套列表缩进并移除孤立装饰星号", function () {
+  assert.equal(
+    extractor.normalizeStructuredText("- 父项目\n  - 子项目\n\n*\n\n正文"),
+    "- 父项目\n  - 子项目\n\n正文",
+  );
+});
+
+test("星号形式的装饰列表会规范为 Markdown 列表", function () {
+  assert.equal(extractor.normalizeStructuredText("* 第一项\n* 第二项"), "- 第一项\n- 第二项");
+});
+
 console.log("extractor tests passed");

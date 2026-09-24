@@ -6,7 +6,7 @@
   if (typeof module === "object" && module.exports) module.exports = api;
   if (root) root.webRagPageExtractor = api;
 })(typeof globalThis !== "undefined" ? globalThis : this, function () {
-  const VERSION = "1.3.0";
+  const VERSION = "1.4.0";
   const MIN_MEANINGFUL_CHARS = 180;
   const MAX_EXTRACTED_CHARS = 500000;
 
@@ -35,6 +35,7 @@
   const HARD_REMOVE_SELECTOR = [
     "script", "style", "noscript", "template", "nav",
     "iframe", "form", "button", "svg", "canvas", "dialog",
+    "interactive-example", "mdn-live-sample-result",
     "[role='navigation']", "[role='banner']", "[role='dialog']",
   ].join(", ");
 
@@ -102,9 +103,16 @@
       } else if (inCodeFence) {
         line = line.replace(/[ \t]+$/g, "");
       } else {
-        line = line.replace(/[ \t\f\v]+/g, " ").trim();
+        line = line.replace(/^\s*\*\s+/, "- ");
+        const nestedList = line.match(/^(\s+)((?:[-+*]|\d+\.)\s+.*)$/);
+        if (nestedList) {
+          line = nestedList[1].replace(/\t/g, "  ") + nestedList[2].replace(/[ \t\f\v]+/g, " ").trimEnd();
+        } else {
+          line = line.replace(/[ \t\f\v]+/g, " ").trim();
+        }
       }
       const blank = line.length === 0;
+      if (!inCodeFence && line.trim() === "*") continue;
       if (blank && previousBlank) continue;
       output.push(line);
       previousBlank = blank;
@@ -180,24 +188,60 @@
     return !belongsToArticle || isNoiseElement(element);
   }
 
+  function isShadowCodeExample(element) {
+    return element && element.tagName === "MDN-CODE-EXAMPLE" &&
+      element.shadowRoot && element.shadowRoot.querySelector("pre");
+  }
+
+  function cloneForExtraction(rootElement) {
+    const pairs = [];
+    let shadowRootCount = 0;
+
+    function cloneNode(source) {
+      if (source.nodeType !== 1) return source.cloneNode(true);
+      const target = source.cloneNode(false);
+      pairs.push({ source, target });
+
+      if (source.shadowRoot) {
+        shadowRootCount += 1;
+        const container = source.ownerDocument.createElement("div");
+        container.setAttribute("data-web-rag-shadow-root", "");
+        target.appendChild(container);
+        const shadowChildren = isShadowCodeExample(source)
+          ? [source.shadowRoot.querySelector("pre")]
+          : Array.from(source.shadowRoot.childNodes || []);
+        shadowChildren.filter(Boolean).forEach(function (child) {
+          container.appendChild(cloneNode(child));
+        });
+      }
+
+      Array.from(source.childNodes || []).forEach(function (child) {
+        target.appendChild(cloneNode(child));
+      });
+      return target;
+    }
+
+    return { clone: cloneNode(rootElement), pairs, shadowRootCount };
+  }
+
   function cleanClone(rootElement, doc) {
-    const clone = rootElement.cloneNode(true);
-    const sourceNodes = [rootElement].concat(Array.from(rootElement.querySelectorAll("*")));
-    const cloneNodes = [clone].concat(Array.from(clone.querySelectorAll("*")));
+    const materialized = cloneForExtraction(rootElement);
+    const clone = materialized.clone;
     const marked = new Set();
     let hiddenRemovedNodes = 0;
     let noiseRemovedNodes = 0;
 
-    sourceNodes.forEach(function (source, index) {
+    materialized.pairs.forEach(function (pair, index) {
       if (index === 0) return;
-      const target = cloneNodes[index];
-      if (!target) return;
+      const source = pair.source;
+      const target = pair.target;
       let ancestor = target.parentElement;
       while (ancestor && !marked.has(ancestor)) ancestor = ancestor.parentElement;
       if (ancestor) return;
 
-      const hidden = isElementHidden(source, doc && doc.defaultView);
-      const hardNoise = source.matches && source.matches(HARD_REMOVE_SELECTOR);
+      const hidden = !isShadowCodeExample(source) && isElementHidden(source, doc && doc.defaultView);
+      const meaningfulTableButton = source.tagName === "BUTTON" && source.closest && source.closest("td,th");
+      const hardNoise = source.matches && source.matches(HARD_REMOVE_SELECTOR) && !meaningfulTableButton;
       const namedNoise = isNoiseElement(source);
       const semanticNoise = shouldRemoveSemanticContainer(source, rootElement);
       if (!hidden && !hardNoise && !namedNoise && !semanticNoise) return;
@@ -222,6 +266,7 @@
       removedNodes: hiddenRemovedNodes + noiseRemovedNodes,
       hiddenRemovedNodes,
       noiseRemovedNodes,
+      shadowRootCount: materialized.shadowRootCount,
     };
   }
 
@@ -309,15 +354,21 @@
       let language = "";
       let ancestor = node;
       for (let depth = 0; ancestor && depth < 3 && !language; depth += 1) {
-        const match = String(ancestor.className || "").match(/(?:^|\s)language-([a-z0-9_+-]+)/i);
-        language = match ? match[1].toLowerCase() : "";
+        const classes = String(ancestor.className || "");
+        const match = classes.match(/(?:^|\s)language-([a-z0-9_+-]+)/i) ||
+          classes.match(/(?:^|\s)brush:\s*([a-z0-9_+-]+)/i);
+        language = match ? normalizeCodeLanguage(match[1]) : "";
         ancestor = ancestor.parentElement;
       }
       return code ? `\n\n\`\`\`${language}\n${code}\n\`\`\`\n\n` : "";
     }
     if (/^H[1-6]$/.test(tag)) {
       const level = Number(tag.slice(1));
-      return `\n\n${"#".repeat(level)} ${String(node.textContent || "").trim()}\n\n`;
+      const previousSuppressLinks = context.suppressLinks;
+      context.suppressLinks = true;
+      const heading = formatHeadingContent(serializeChildren(node, context).trim());
+      context.suppressLinks = previousSuppressLinks;
+      return `\n\n${"#".repeat(level)} ${heading}\n\n`;
     }
     if (tag === "BLOCKQUOTE") {
       const quote = serializeChildren(node, context).trim().split("\n").map(function (line) {
@@ -325,22 +376,10 @@
       }).join("\n");
       return `\n\n${quote}\n\n`;
     }
-    if (tag === "LI") {
-      const ordered = node.parentElement && node.parentElement.tagName === "OL";
-      const index = ordered ? Array.from(node.parentElement.children).indexOf(node) + 1 : null;
-      const prefix = ordered ? `${index}. ` : "- ";
-      return `\n${prefix}${serializeChildren(node, context).trim()}`;
-    }
+    if (tag === "UL" || tag === "OL") return serializeList(node, context, 0);
+    if (tag === "LI") return serializeListItem(node, context, 0, 1, false);
     if (tag === "TABLE") {
-      const rows = [];
-      node.querySelectorAll("tr").forEach(function (row) {
-        const cells = Array.from(row.children || [])
-          .filter(function (cell) { return cell.tagName === "TH" || cell.tagName === "TD"; })
-          .map(function (cell) { return String(cell.textContent || "").replace(/\s+/g, " ").trim(); })
-          .filter(Boolean);
-        if (cells.length > 0) rows.push(cells.join(" | "));
-      });
-      return rows.length > 0 ? `\n\n${rows.join("\n")}\n\n` : "";
+      return serializeTable(node, context);
     }
     if (tag === "IMG") {
       const alt = String(node.getAttribute("alt") || "").trim();
@@ -351,6 +390,7 @@
       return formatInlineCode(node.textContent || "");
     }
     if (tag === "A") {
+      if (context.suppressLinks) return serializeChildren(node, context);
       context.linkCount += 1;
       const label = String(node.textContent || "").replace(/\s+/g, " ").trim() ||
         String(node.querySelector("img[alt]") && node.querySelector("img[alt]").getAttribute("alt") || "").trim();
@@ -376,6 +416,10 @@
     }
 
     const content = serializeChildren(node, context);
+    if (!content.trim()) {
+      const accessibleLabel = String(node.getAttribute("aria-label") || node.getAttribute("title") || "").trim();
+      if (accessibleLabel) return accessibleLabel;
+    }
     if (tag === "P" || BLOCK_TAGS.has(tag)) return `\n\n${content}\n\n`;
     return content;
   }
@@ -384,6 +428,77 @@
     return Array.from(element.childNodes || []).map(function (child) {
       return serializeNode(child, context);
     }).join("");
+  }
+
+  function normalizeCodeLanguage(language) {
+    return String(language || "").toLowerCase();
+  }
+
+  function formatHeadingContent(value) {
+    return String(value || "").replace(/(^|[^`])(<\/?[a-z][^>\n]*>)(?!`)/gi, "$1`$2`");
+  }
+
+  function serializeList(list, context, depth) {
+    const ordered = list.tagName === "OL";
+    return Array.from(list.children || []).filter(function (child) {
+      return child.tagName === "LI";
+    }).map(function (item, index) {
+      return serializeListItem(item, context, depth, index + 1, ordered);
+    }).join("");
+  }
+
+  function serializeListItem(item, context, depth, index, ordered) {
+    const nestedLists = [];
+    const content = Array.from(item.childNodes || []).map(function (child) {
+      if (child.nodeType === 1 && (child.tagName === "UL" || child.tagName === "OL")) {
+        nestedLists.push(child);
+        return "";
+      }
+      return serializeNode(child, context);
+    }).join("").trim();
+    const indent = "  ".repeat(depth);
+    const prefix = ordered ? `${index}. ` : "- ";
+    const continuationIndent = "  ".repeat(depth + 1);
+    const line = content.replace(/\n+/g, "\n" + continuationIndent);
+    return `\n${indent}${prefix}${line}` + nestedLists.map(function (nested) {
+      return serializeList(nested, context, depth + 1);
+    }).join("");
+  }
+
+  function serializeTable(table, context) {
+    const rowElements = Array.from(table.querySelectorAll("tr")).filter(function (row) {
+      return row.closest("table") === table;
+    });
+    const rows = rowElements.map(function (row) {
+      return Array.from(row.children || [])
+        .filter(function (cell) { return cell.tagName === "TH" || cell.tagName === "TD"; })
+        .map(function (cell) {
+          return normalizeStructuredText(serializeChildren(cell, context))
+            .replace(/\n+/g, "<br>")
+            .replace(/\|/g, "\\|")
+            .trim();
+        });
+    }).filter(function (cells) { return cells.length > 0; });
+    if (rows.length === 0) return "";
+
+    const columnCount = rows.reduce(function (maximum, row) {
+      return Math.max(maximum, row.length);
+    }, 0);
+    rows.forEach(function (row) {
+      while (row.length < columnCount) row.push("");
+    });
+    const firstRowIsHeader = Array.from(rowElements[0].children || []).some(function (cell) {
+      return cell.tagName === "TH";
+    });
+    if (!firstRowIsHeader) rows.unshift(Array(columnCount).fill(""));
+    const separator = Array(columnCount).fill("---");
+    rows.splice(1, 0, separator);
+    const caption = Array.from(table.children || []).find(function (child) {
+      return child.tagName === "CAPTION";
+    });
+    const captionText = caption ? normalizeStructuredText(serializeChildren(caption, context)) : "";
+    const markdownRows = rows.map(function (row) { return `| ${row.join(" | ")} |`; }).join("\n");
+    return `\n\n${captionText ? `*${captionText}*\n\n` : ""}${markdownRows}\n\n`;
   }
 
   function normalizeLinkDestination(anchor) {
@@ -487,6 +602,7 @@
         removed_node_count: cleaned.removedNodes,
         hidden_removed_node_count: cleaned.hiddenRemovedNodes,
         noise_removed_node_count: cleaned.noiseRemovedNodes,
+        shadow_root_count: cleaned.shadowRootCount,
         heading_count: selected.metrics.headingCount || 0,
         paragraph_count: selected.metrics.paragraphCount || 0,
         list_item_count: selected.metrics.listItemCount || 0,

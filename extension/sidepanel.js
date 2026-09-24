@@ -1224,6 +1224,7 @@ function renderExtractionDiagnostics(trimmedLength) {
   const sourceCount = Math.max(0, Number(diagnostics.source_char_count) || 0);
   const removedCount = Math.max(0, Number(diagnostics.removed_node_count) || 0);
   const hiddenCount = Math.max(0, Number(diagnostics.hidden_removed_node_count) || 0);
+  const shadowRootCount = Math.max(0, Number(diagnostics.shadow_root_count) || 0);
   const strategy = diagnostics.strategy || "未知区域";
   const warningLabels = {
     fallback_root: "使用整页降级提取，请重点检查正文",
@@ -1248,6 +1249,7 @@ function renderExtractionDiagnostics(trimmedLength) {
       (Number(diagnostics.inline_code_count) || 0) + " 行内代码 / " +
       (Number(diagnostics.preserved_link_count) || 0) + " 链接",
   ];
+  if (shadowRootCount > 0) parts.push("读取 " + shadowRootCount.toLocaleString("zh-CN") + " 个组件内容区");
   if (diagnostics.expanded_from) parts.push("已从 " + diagnostics.expanded_from + " 扩展正文范围");
   if (uniqueWarnings.length > 0) parts.push("⚠ " + uniqueWarnings.join("；"));
   els.clipPreviewDiagnostics.textContent = parts.join(" · ");

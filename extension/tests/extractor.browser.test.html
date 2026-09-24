@@ -98,6 +98,44 @@
     assert(inlineResult.diagnostics.inline_code_count === 2, "应统计行内代码数量");
     assert(inlineResult.diagnostics.emphasis_count === 3, "应统计强调节点数量");
 
+    document.body.innerHTML = `
+      <article id="complex-article">
+        <h1><code>&lt;table&gt;</code> 结构测试</h1>
+        <p>${fill("正文段落用于保证文章节点达到正文候选的最低长度要求。", 12)}</p>
+        <ul>
+          <li>父项目
+            <ul><li>子项目</li></ul>
+          </li>
+        </ul>
+        <table>
+          <thead><tr><th>名称</th><th>说明</th></tr></thead>
+          <tbody><tr><td><code>table</code></td><td><a href="https://example.com/table">表格元素</a></td></tr></tbody>
+        </table>
+        <p>*</p>
+      </article>`;
+    const complexArticle = document.getElementById("complex-article");
+    const codeExample = document.createElement("mdn-code-example");
+    codeExample.hidden = true;
+    codeExample.className = "brush: html interactive-example notranslate";
+    codeExample.attachShadow({ mode: "open" }).innerHTML =
+      `<div class="example-header">html 运行</div><pre class="brush: html"><code>&lt;table&gt;\n  &lt;tr&gt;&lt;td&gt;示例&lt;/td&gt;&lt;/tr&gt;\n&lt;/table&gt;</code></pre>`;
+    complexArticle.appendChild(codeExample);
+    const compatibility = document.createElement("browser-compatibility-table");
+    compatibility.attachShadow({ mode: "open" }).innerHTML =
+      `<table><tr><th>Chrome</th><th>Firefox</th></tr><tr><td><button aria-label="完全支持"></button></td><td>52</td></tr></table>`;
+    complexArticle.appendChild(compatibility);
+    const complexResult = webRagPageExtractor.extract(document);
+    assert(complexResult.text.includes("# `<table>` 结构测试"), "标题内应保留行内代码");
+    assert(complexResult.text.includes("  - 子项目"), "应保留嵌套列表层级");
+    assert(complexResult.text.includes("| 名称 | 说明 |\n| --- | --- |"), "应输出标准 Markdown 表格");
+    assert(complexResult.text.includes("| `table` | [表格元素](<https://example.com/table>) |"), "表格单元格应保留行内格式和链接");
+    assert(complexResult.text.includes("```html\n<table>"), "应读取隐藏 MDN 代码组件的开放 Shadow DOM");
+    assert(!complexResult.text.includes("html 运行"), "不应包含代码组件的操作栏");
+    assert(complexResult.text.includes("| Chrome | Firefox |"), "应读取普通组件的开放 Shadow DOM 表格");
+    assert(complexResult.text.includes("| 完全支持 | 52 |"), "表格按钮应保留无障碍状态文字");
+    assert(!complexResult.text.split("\n").some(function (line) { return line.trim() === "*"; }), "应移除孤立装饰星号");
+    assert(complexResult.diagnostics.shadow_root_count === 2, "应统计读取的开放 Shadow DOM 数量");
+
     document.body.innerHTML = `<pre id="test-result">${failures.length === 0
       ? "EXTRACTOR_BROWSER_TESTS_PASSED"
       : "EXTRACTOR_BROWSER_TESTS_FAILED\n" + failures.join("\n")}</pre>`;
