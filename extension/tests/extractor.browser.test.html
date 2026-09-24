@@ -82,6 +82,22 @@
     assert(linkResult.diagnostics.link_count === 3, "应统计正文中的链接数量");
     assert(linkResult.diagnostics.preserved_link_count === 2, "应统计成功保留的安全链接数量");
 
+    document.body.innerHTML = `
+      <article>
+        <h1>行内语义测试</h1>
+        <p>${fill("正文段落用于保证文章节点达到正文候选的最低长度要求。", 12)}</p>
+        <p><strong>单文件组件</strong>使用 <code>*.vue</code> 扩展名，包含
+          <code>&lt;template&gt;</code>、<em>逻辑</em>和 <del>旧写法</del>。</p>
+      </article>`;
+    const inlineResult = webRagPageExtractor.extract(document);
+    assert(inlineResult.text.includes("**单文件组件**"), "应保留粗体语义");
+    assert(inlineResult.text.includes("`*.vue`"), "应保留行内代码语义");
+    assert(inlineResult.text.includes("`<template>`"), "行内 HTML 标签应作为代码保留");
+    assert(inlineResult.text.includes("*逻辑*"), "应保留斜体语义");
+    assert(inlineResult.text.includes("~~旧写法~~"), "应保留删除线语义");
+    assert(inlineResult.diagnostics.inline_code_count === 2, "应统计行内代码数量");
+    assert(inlineResult.diagnostics.emphasis_count === 3, "应统计强调节点数量");
+
     document.body.innerHTML = `<pre id="test-result">${failures.length === 0
       ? "EXTRACTOR_BROWSER_TESTS_PASSED"
       : "EXTRACTOR_BROWSER_TESTS_FAILED\n" + failures.join("\n")}</pre>`;

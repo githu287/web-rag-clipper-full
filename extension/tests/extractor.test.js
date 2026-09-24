@@ -113,4 +113,9 @@ test("Markdown 链接文字会转义方括号和反斜杠", function () {
   assert.equal(extractor.escapeMarkdownLinkLabel("Vue [SFC] \\ guide"), "Vue \\[SFC\\] \\\\ guide");
 });
 
+test("行内代码会选择比内容中反引号更长的分隔符", function () {
+  assert.equal(extractor.formatInlineCode("*.vue"), "`*.vue`");
+  assert.equal(extractor.formatInlineCode("use `code` here"), "``use `code` here``");
+});
+
 console.log("extractor tests passed");

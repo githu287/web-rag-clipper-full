@@ -6,7 +6,7 @@
   if (typeof module === "object" && module.exports) module.exports = api;
   if (root) root.webRagPageExtractor = api;
 })(typeof globalThis !== "undefined" ? globalThis : this, function () {
-  const VERSION = "1.2.0";
+  const VERSION = "1.3.0";
   const MIN_MEANINGFUL_CHARS = 180;
   const MAX_EXTRACTED_CHARS = 500000;
 
@@ -140,6 +140,9 @@
 
   function collectMetrics(element, semanticElement) {
     const textLength = (element.textContent || "").trim().length;
+    const inlineCodeCount = Array.from(element.querySelectorAll("code")).filter(function (node) {
+      return !node.closest("pre");
+    }).length;
     let linkTextLength = 0;
     element.querySelectorAll("a").forEach(function (link) {
       linkTextLength += (link.textContent || "").trim().length;
@@ -153,6 +156,8 @@
       headingCount: element.querySelectorAll("h1,h2,h3,h4,h5,h6").length,
       listItemCount: element.querySelectorAll("li").length,
       codeBlockCount: element.querySelectorAll("pre").length,
+      inlineCodeCount,
+      emphasisCount: element.querySelectorAll("strong,b,em,i,del,s").length,
       tableCount: element.querySelectorAll("table").length,
     };
   }
@@ -341,6 +346,10 @@
       const alt = String(node.getAttribute("alt") || "").trim();
       return alt ? ` [图片：${alt}] ` : "";
     }
+    if (tag === "CODE") {
+      context.inlineCodeCount += 1;
+      return formatInlineCode(node.textContent || "");
+    }
     if (tag === "A") {
       context.linkCount += 1;
       const label = String(node.textContent || "").replace(/\s+/g, " ").trim() ||
@@ -349,6 +358,18 @@
       if (!label || !destination) return serializeChildren(node, context);
       context.preservedLinkCount += 1;
       return `[${escapeMarkdownLinkLabel(label)}](<${destination}>)`;
+    }
+    if (tag === "STRONG" || tag === "B") {
+      context.emphasisCount += 1;
+      return wrapInlineMarkdown(serializeChildren(node, context), "**");
+    }
+    if (tag === "EM" || tag === "I") {
+      context.emphasisCount += 1;
+      return wrapInlineMarkdown(serializeChildren(node, context), "*");
+    }
+    if (tag === "DEL" || tag === "S") {
+      context.emphasisCount += 1;
+      return wrapInlineMarkdown(serializeChildren(node, context), "~~");
     }
     if (tag === "SPAN" && node.classList && node.classList.contains("lang") && node.parentElement && node.parentElement.querySelector("pre")) {
       return "";
@@ -386,6 +407,28 @@
       .replace(/\]/g, "\\]");
   }
 
+  function formatInlineCode(value) {
+    const code = String(value || "").replace(/\s+/g, " ");
+    if (!code.trim()) return code;
+    const runs = code.match(/`+/g) || [];
+    const longestRun = runs.reduce(function (maximum, run) {
+      return Math.max(maximum, run.length);
+    }, 0);
+    const delimiter = "`".repeat(longestRun + 1);
+    const needsPadding = /^\s|\s$|^`|`$/.test(code);
+    const padding = needsPadding ? " " : "";
+    return delimiter + padding + code + padding + delimiter;
+  }
+
+  function wrapInlineMarkdown(value, marker) {
+    const content = String(value || "");
+    if (!content.trim()) return content;
+    const leading = (content.match(/^\s*/) || [""])[0];
+    const trailing = (content.match(/\s*$/) || [""])[0];
+    const core = content.slice(leading.length, content.length - trailing.length);
+    return leading + marker + core + marker + trailing;
+  }
+
   function buildQualityWarnings(details) {
     const warnings = [];
     if (details.fallback) warnings.push("fallback_root");
@@ -413,7 +456,12 @@
       };
     }
     const cleaned = selected.cleaned;
-    const serializationContext = { linkCount: 0, preservedLinkCount: 0 };
+    const serializationContext = {
+      linkCount: 0,
+      preservedLinkCount: 0,
+      inlineCodeCount: 0,
+      emphasisCount: 0,
+    };
     let text = normalizeStructuredText(serializeChildren(cleaned.clone, serializationContext));
     let truncated = false;
     if (text.length > MAX_EXTRACTED_CHARS) {
@@ -443,6 +491,8 @@
         paragraph_count: selected.metrics.paragraphCount || 0,
         list_item_count: selected.metrics.listItemCount || 0,
         code_block_count: selected.metrics.codeBlockCount || 0,
+        inline_code_count: serializationContext.inlineCodeCount,
+        emphasis_count: serializationContext.emphasisCount,
         table_count: selected.metrics.tableCount || 0,
         link_count: serializationContext.linkCount,
         preserved_link_count: serializationContext.preservedLinkCount,
@@ -460,6 +510,7 @@
     extract,
     buildQualityWarnings,
     escapeMarkdownLinkLabel,
+    formatInlineCode,
     isElementHidden,
     isNoiseName,
     normalizeStructuredText,

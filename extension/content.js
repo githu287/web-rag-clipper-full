@@ -15,7 +15,7 @@
 (() => {
   "use strict";
 
-  const CONTENT_SCRIPT_VERSION = "0.7.2";
+  const CONTENT_SCRIPT_VERSION = "0.7.3";
   window.__WEB_RAG_CLIPPER_INJECTED__ = CONTENT_SCRIPT_VERSION;
 
   function extractPage() {
@@ -40,6 +40,8 @@
         paragraph_count: 0,
         list_item_count: 0,
         code_block_count: 0,
+        inline_code_count: 0,
+        emphasis_count: 0,
         table_count: 0,
         link_count: 0,
         preserved_link_count: 0,
