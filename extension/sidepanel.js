@@ -1244,7 +1244,8 @@ function renderExtractionDiagnostics(trimmedLength) {
     "清理 " + removedCount.toLocaleString("zh-CN") + " 个节点（隐藏 " + hiddenCount.toLocaleString("zh-CN") + "）",
     "结构：" + (Number(diagnostics.heading_count) || 0) + " 标题 / " +
       (Number(diagnostics.paragraph_count) || 0) + " 段落 / " +
-      (Number(diagnostics.code_block_count) || 0) + " 代码块",
+      (Number(diagnostics.code_block_count) || 0) + " 代码块 / " +
+      (Number(diagnostics.preserved_link_count) || 0) + " 链接",
   ];
   if (diagnostics.expanded_from) parts.push("已从 " + diagnostics.expanded_from + " 扩展正文范围");
   if (uniqueWarnings.length > 0) parts.push("⚠ " + uniqueWarnings.join("；"));

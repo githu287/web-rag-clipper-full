@@ -64,6 +64,24 @@
     assert(semanticResult.text.includes("参考资料"), "应保留文章内部的参考资料");
     assert(!semanticResult.text.includes("无关推荐"), "应移除明确标记的相关推荐");
 
+    document.body.innerHTML = `
+      <article>
+        <h1>正文链接测试</h1>
+        <p>${fill("正文段落用于保证文章节点达到正文候选的最低长度要求。", 12)}</p>
+        <p>请阅读 <a href="https://cn.vuejs.org/api/sfc-spec.html">单文件组件语法说明</a>，
+          或打开 <a href="https://play.vuejs.org/">Vue 演练场</a>。</p>
+        <p><a href="javascript:alert('unsafe')">不安全链接</a>仍应保留文字。</p>
+      </article>`;
+    const linkResult = webRagPageExtractor.extract(document);
+    assert(
+      linkResult.text.includes("[单文件组件语法说明](<https://cn.vuejs.org/api/sfc-spec.html>)"),
+      "应把正文链接序列化为带绝对地址的 Markdown 链接",
+    );
+    assert(linkResult.text.includes("不安全链接"), "无效链接仍应保留可读文字");
+    assert(!linkResult.text.includes("javascript:"), "不应输出 javascript 链接");
+    assert(linkResult.diagnostics.link_count === 3, "应统计正文中的链接数量");
+    assert(linkResult.diagnostics.preserved_link_count === 2, "应统计成功保留的安全链接数量");
+
     document.body.innerHTML = `<pre id="test-result">${failures.length === 0
       ? "EXTRACTOR_BROWSER_TESTS_PASSED"
       : "EXTRACTOR_BROWSER_TESTS_FAILED\n" + failures.join("\n")}</pre>`;

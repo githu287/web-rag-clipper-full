@@ -6,7 +6,7 @@
   if (typeof module === "object" && module.exports) module.exports = api;
   if (root) root.webRagPageExtractor = api;
 })(typeof globalThis !== "undefined" ? globalThis : this, function () {
-  const VERSION = "1.1.0";
+  const VERSION = "1.2.0";
   const MIN_MEANINGFUL_CHARS = 180;
   const MAX_EXTRACTED_CHARS = 500000;
 
@@ -147,6 +147,7 @@
     return {
       textLength,
       linkTextLength,
+      linkCount: element.querySelectorAll("a[href]").length,
       semanticBonus: semanticBonus(semanticElement || element),
       paragraphCount: element.querySelectorAll("p").length,
       headingCount: element.querySelectorAll("h1,h2,h3,h4,h5,h6").length,
@@ -340,6 +341,15 @@
       const alt = String(node.getAttribute("alt") || "").trim();
       return alt ? ` [图片：${alt}] ` : "";
     }
+    if (tag === "A") {
+      context.linkCount += 1;
+      const label = String(node.textContent || "").replace(/\s+/g, " ").trim() ||
+        String(node.querySelector("img[alt]") && node.querySelector("img[alt]").getAttribute("alt") || "").trim();
+      const destination = normalizeLinkDestination(node);
+      if (!label || !destination) return serializeChildren(node, context);
+      context.preservedLinkCount += 1;
+      return `[${escapeMarkdownLinkLabel(label)}](<${destination}>)`;
+    }
     if (tag === "SPAN" && node.classList && node.classList.contains("lang") && node.parentElement && node.parentElement.querySelector("pre")) {
       return "";
     }
@@ -353,6 +363,27 @@
     return Array.from(element.childNodes || []).map(function (child) {
       return serializeNode(child, context);
     }).join("");
+  }
+
+  function normalizeLinkDestination(anchor) {
+    const rawHref = String(anchor.getAttribute("href") || "").trim();
+    if (!rawHref) return "";
+    try {
+      const resolved = new URL(rawHref, anchor.ownerDocument && anchor.ownerDocument.baseURI || undefined);
+      if (resolved.protocol !== "http:" && resolved.protocol !== "https:" && resolved.protocol !== "mailto:") {
+        return "";
+      }
+      return resolved.href.replace(/</g, "%3C").replace(/>/g, "%3E");
+    } catch (_error) {
+      return "";
+    }
+  }
+
+  function escapeMarkdownLinkLabel(value) {
+    return String(value || "")
+      .replace(/\\/g, "\\\\")
+      .replace(/\[/g, "\\[")
+      .replace(/\]/g, "\\]");
   }
 
   function buildQualityWarnings(details) {
@@ -382,7 +413,8 @@
       };
     }
     const cleaned = selected.cleaned;
-    let text = normalizeStructuredText(serializeChildren(cleaned.clone, {}));
+    const serializationContext = { linkCount: 0, preservedLinkCount: 0 };
+    let text = normalizeStructuredText(serializeChildren(cleaned.clone, serializationContext));
     let truncated = false;
     if (text.length > MAX_EXTRACTED_CHARS) {
       text = text.slice(0, MAX_EXTRACTED_CHARS).trimEnd();
@@ -412,6 +444,8 @@
         list_item_count: selected.metrics.listItemCount || 0,
         code_block_count: selected.metrics.codeBlockCount || 0,
         table_count: selected.metrics.tableCount || 0,
+        link_count: serializationContext.linkCount,
+        preserved_link_count: serializationContext.preservedLinkCount,
         link_density: Number(linkDensity(selected.metrics).toFixed(3)),
         fallback: selected.fallback,
         truncated,
@@ -425,9 +459,11 @@
     MAX_EXTRACTED_CHARS,
     extract,
     buildQualityWarnings,
+    escapeMarkdownLinkLabel,
     isElementHidden,
     isNoiseName,
     normalizeStructuredText,
+    normalizeLinkDestination,
     scoreCandidateMetrics,
   };
 });

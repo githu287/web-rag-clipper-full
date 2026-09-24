@@ -109,4 +109,8 @@ test("质量诊断可同时报告降级、短内容和截断", function () {
   );
 });
 
+test("Markdown 链接文字会转义方括号和反斜杠", function () {
+  assert.equal(extractor.escapeMarkdownLinkLabel("Vue [SFC] \\ guide"), "Vue \\[SFC\\] \\\\ guide");
+});
+
 console.log("extractor tests passed");
