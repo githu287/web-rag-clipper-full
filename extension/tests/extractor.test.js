@@ -78,4 +78,35 @@ test("限制超长网页正文的最大字符数", function () {
   assert.equal(extractor.MAX_EXTRACTED_CHARS, 500000);
 });
 
+test("识别内联隐藏状态和无障碍隐藏状态", function () {
+  const inlineHidden = {
+    nodeType: 1,
+    hidden: false,
+    style: { display: "none", visibility: "" },
+    hasAttribute: function () { return false; },
+    getAttribute: function () { return null; },
+  };
+  const ariaHidden = {
+    nodeType: 1,
+    hidden: false,
+    style: {},
+    hasAttribute: function () { return false; },
+    getAttribute: function (name) { return name === "aria-hidden" ? "true" : null; },
+  };
+  assert.equal(extractor.isElementHidden(inlineHidden), true);
+  assert.equal(extractor.isElementHidden(ariaHidden), true);
+});
+
+test("质量诊断可同时报告降级、短内容和截断", function () {
+  assert.deepEqual(
+    extractor.buildQualityWarnings({
+      fallback: true,
+      extractedCharCount: 100,
+      headingCount: 0,
+      truncated: true,
+    }),
+    ["fallback_root", "short_content", "truncated"],
+  );
+});
+
 console.log("extractor tests passed");

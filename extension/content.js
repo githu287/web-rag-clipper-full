@@ -15,7 +15,7 @@
 (() => {
   "use strict";
 
-  const CONTENT_SCRIPT_VERSION = "0.6.3";
+  const CONTENT_SCRIPT_VERSION = "0.7.1";
   window.__WEB_RAG_CLIPPER_INJECTED__ = CONTENT_SCRIPT_VERSION;
 
   function extractPage() {
@@ -31,11 +31,20 @@
         strategy: "body.innerText",
         candidate_count: 0,
         source_char_count: text.length,
+        cleaned_source_char_count: text.length,
         extracted_char_count: text.length,
         removed_node_count: 0,
+        hidden_removed_node_count: 0,
+        noise_removed_node_count: 0,
+        heading_count: 0,
+        paragraph_count: 0,
+        list_item_count: 0,
+        code_block_count: 0,
+        table_count: 0,
         link_density: 0,
         fallback: true,
         truncated: false,
+        quality_warnings: ["fallback_root"],
       },
     };
   }
@@ -57,14 +66,22 @@
       return;
     }
     if (message.type === "WEB_CLIP_EXTRACT_V3") {
-      const result = extractPage();
-      sendResponse({
-        ok: true,
-        url: document.URL,
-        title: document.title || "",
-        raw_text: result.text,
-        diagnostics: result.diagnostics,
-      });
+      try {
+        const result = extractPage();
+        sendResponse({
+          ok: true,
+          url: document.URL,
+          title: document.title || "",
+          raw_text: result.text,
+          diagnostics: result.diagnostics,
+        });
+      } catch (error) {
+        console.error("Web RAG Clipper extraction failed", error);
+        sendResponse({
+          ok: false,
+          error: error && error.message ? String(error.message) : "未知提取错误",
+        });
+      }
     }
   };
   window.__WEB_RAG_CLIPPER_MESSAGE_LISTENER__ = handleMessage;

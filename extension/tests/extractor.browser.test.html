@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>Extractor browser regression tests</title>
+  <style>
+    .inactive-panel { display: none; }
+  </style>
+</head>
+<body>
+  <script src="../extractor.js"></script>
+  <script>
+    "use strict";
+
+    const failures = [];
+    function assert(condition, message) {
+      if (!condition) failures.push(message);
+    }
+    function fill(text, count) {
+      return Array(count).fill(text).join(" ");
+    }
+
+    document.body.innerHTML = `
+      <main class="vp-doc">
+        <h1>Vue 单文件组件</h1>
+        <div class="inactive-panel">
+          <h2>选项式 API（未激活）</h2>
+          <p>${fill("这段内容属于 CSS 隐藏的未激活标签页，不应进入剪藏结果。", 12)}</p>
+        </div>
+        <article>
+          <h2>组合式 API</h2>
+          <p>${fill("可见正文介绍模板、逻辑与样式如何封装在同一个 Vue 文件中。", 12)}</p>
+        </article>
+      </main>`;
+    const hiddenResult = webRagPageExtractor.extract(document);
+    assert(hiddenResult.text.includes("组合式 API"), "应保留当前可见的标签页内容");
+    assert(!hiddenResult.text.includes("选项式 API（未激活）"), "不应提取 CSS 隐藏的标签页内容");
+    assert(hiddenResult.diagnostics.hidden_removed_node_count >= 1, "应记录被移除的隐藏节点");
+
+    document.body.innerHTML = `
+      <div class="page-shell">
+        <h1>完整文章标题</h1>
+        <p>这是位于正文候选节点外部、但属于文章的摘要说明文字。</p>
+        <div class="article-body">
+          <h2>正文第一节</h2>
+          <p>${fill("正文段落用于验证候选父容器扩展能够补回标题和摘要。", 15)}</p>
+        </div>
+      </div>`;
+    const expandedResult = webRagPageExtractor.extract(document);
+    assert(expandedResult.text.includes("完整文章标题"), "父容器扩展应补回文章标题");
+    assert(expandedResult.text.includes("摘要说明文字"), "父容器扩展应补回文章摘要");
+    assert(expandedResult.diagnostics.expanded_from === "div.article-body", "诊断应记录扩展前的正文节点");
+
+    document.body.innerHTML = `
+      <article>
+        <h1>带附注的文章</h1>
+        <p>${fill("文章正文包含足够的信息用于选择语义化 article 节点。", 14)}</p>
+        <aside><p>作者附注：这里是正文相关的补充说明。</p></aside>
+        <footer class="references"><p>参考资料：规范章节 A 与规范章节 B。</p></footer>
+        <aside class="related-posts">无关推荐：另一篇文章</aside>
+      </article>`;
+    const semanticResult = webRagPageExtractor.extract(document);
+    assert(semanticResult.text.includes("作者附注"), "应保留文章内部的有效附注");
+    assert(semanticResult.text.includes("参考资料"), "应保留文章内部的参考资料");
+    assert(!semanticResult.text.includes("无关推荐"), "应移除明确标记的相关推荐");
+
+    document.body.innerHTML = `<pre id="test-result">${failures.length === 0
+      ? "EXTRACTOR_BROWSER_TESTS_PASSED"
+      : "EXTRACTOR_BROWSER_TESTS_FAILED\n" + failures.join("\n")}</pre>`;
+  </script>
+</body>
+</html>

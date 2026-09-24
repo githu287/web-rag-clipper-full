@@ -95,7 +95,8 @@ async function extractCurrentPage() {
     response = await chrome.tabs.sendMessage(tab.id, { type: "WEB_CLIP_EXTRACT_V3" });
   }
   if (!response || response.ok !== true || typeof response.raw_text !== "string") {
-    throw new Error("页面内容提取失败，请刷新页面后重试");
+    const detail = response && response.error ? "：" + response.error : "";
+    throw new Error("页面内容提取失败" + detail);
   }
   currentPage = {
     url: response.url || tab.url || "",

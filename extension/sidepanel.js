@@ -1223,20 +1223,34 @@ function renderExtractionDiagnostics(trimmedLength) {
   }
   const sourceCount = Math.max(0, Number(diagnostics.source_char_count) || 0);
   const removedCount = Math.max(0, Number(diagnostics.removed_node_count) || 0);
+  const hiddenCount = Math.max(0, Number(diagnostics.hidden_removed_node_count) || 0);
   const strategy = diagnostics.strategy || "未知区域";
-  const warnings = [];
+  const warningLabels = {
+    fallback_root: "使用整页降级提取，请重点检查正文",
+    short_content: "提取内容较短",
+    missing_headings: "长正文未识别到标题结构",
+    truncated: "超长内容已截断",
+  };
+  const warnings = Array.isArray(diagnostics.quality_warnings)
+    ? diagnostics.quality_warnings.map(function (item) { return warningLabels[item] || item; })
+    : [];
   if (diagnostics.fallback) warnings.push("使用整页降级提取，请重点检查正文");
   if (trimmedLength < 200) warnings.push("提取内容较短");
   if (diagnostics.truncated) warnings.push("超长内容已截断");
+  const uniqueWarnings = Array.from(new Set(warnings));
   const parts = [
     (diagnostics.fallback ? "降级区域：" : "正文区域：") + strategy,
     "原始 " + sourceCount.toLocaleString("zh-CN") + " 字 → 提取 " + trimmedLength.toLocaleString("zh-CN") + " 字",
-    "清理 " + removedCount.toLocaleString("zh-CN") + " 个噪声节点",
+    "清理 " + removedCount.toLocaleString("zh-CN") + " 个节点（隐藏 " + hiddenCount.toLocaleString("zh-CN") + "）",
+    "结构：" + (Number(diagnostics.heading_count) || 0) + " 标题 / " +
+      (Number(diagnostics.paragraph_count) || 0) + " 段落 / " +
+      (Number(diagnostics.code_block_count) || 0) + " 代码块",
   ];
-  if (warnings.length > 0) parts.push("⚠ " + warnings.join("；"));
+  if (diagnostics.expanded_from) parts.push("已从 " + diagnostics.expanded_from + " 扩展正文范围");
+  if (uniqueWarnings.length > 0) parts.push("⚠ " + uniqueWarnings.join("；"));
   els.clipPreviewDiagnostics.textContent = parts.join(" · ");
   els.clipPreviewDiagnostics.hidden = false;
-  els.clipPreviewDiagnostics.dataset.warning = warnings.length > 0 ? "true" : "false";
+  els.clipPreviewDiagnostics.dataset.warning = uniqueWarnings.length > 0 ? "true" : "false";
 }
 
 // ================================================================ 聊天渲染
@@ -1753,7 +1767,8 @@ async function extractCurrentPage() {
     response = await sendMessageWithTimeout(tab.id, { type: "WEB_CLIP_EXTRACT_V3" }, 10000);
   }
   if (!response || response.ok !== true || typeof response.raw_text !== "string") {
-    throw new Error("页面内容提取失败，请刷新页面后重试");
+    const detail = response && response.error ? "：" + response.error : "";
+    throw new Error("页面内容提取失败" + detail);
   }
   // 正文长度校验：避免剪藏空白页面（如纯图片站、未渲染的 SPA）
   const trimmed = response.raw_text.trim();
