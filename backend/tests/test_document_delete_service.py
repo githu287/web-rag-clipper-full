@@ -106,6 +106,16 @@ class DocumentDeleteServiceTest(unittest.TestCase):
         # FileStorage：以实际物理路径删除
         self.file_storage.delete.assert_called_once_with("/data/upload.pdf")
 
+    def test_delete_skips_empty_milvus_delete(self) -> None:
+        """空 chunk 列表不应发起无效的 Milvus delete 请求。"""
+        self.document_repo.get_document.return_value = self.fake_document
+        self.milvus_repo.query_page_chunks.return_value = []
+
+        self.run_async(self.service.delete_document(7, plugin_id=_PLUGIN_ID))
+
+        self.milvus_repo.query_page_chunks.assert_called_once_with(7)
+        self.milvus_repo.delete_chunks.assert_not_called()
+
     # ------------------------------------------------------ B. webpage 不删文件
     def test_delete_webpage_skips_file_storage(self) -> None:
         """B：webpage 来源（file_path 为空）不调用 FileStorage.delete。"""

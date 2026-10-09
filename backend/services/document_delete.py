@@ -161,7 +161,8 @@ class DocumentDeleteService:
                 document_id,
                 len(chunk_ids),
             )
-            self._milvus_repo.delete_chunks(chunk_ids)
+            if chunk_ids:
+                self._milvus_repo.delete_chunks(chunk_ids)
         except Exception:
             # 尝试恢复原状态（仅 MySQL 状态，不代表 Milvus 物理数据已回滚）
             self._restore_status(document_id, original_status)
