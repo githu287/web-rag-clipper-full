@@ -13,6 +13,18 @@ function newId() {
 }
 
 const sessionStore = (() => {
+  function noop() {}
+
+  // 同键「读-改-写」串行化：并发异步调用在 await 处交错时会丢失写入，
+  // 用每键一条 promise 链把临界区排成队列（锁仅覆盖本 JS 上下文）
+  const storageLocks = {};
+  function withStorageLock(key, task) {
+    const prev = storageLocks[key] || Promise.resolve();
+    const run = prev.then(task, task);
+    storageLocks[key] = run.then(noop, noop);
+    return run;
+  }
+
   // ------------------------------------------------------------ tabBindings
   async function getTabBindingsMap() {
     const stored = await chrome.storage.local.get(STORAGE_KEYS.TAB_BINDINGS);
@@ -26,28 +38,44 @@ const sessionStore = (() => {
     return map[String(tabId)] || null;
   }
   async function setTabBinding(tabId, binding) {
-    const map = await getTabBindingsMap();
-    map[String(tabId)] = Object.assign({}, binding, { updatedAt: Date.now() });
-    await setTabBindingsMap(map);
-    return true;
+    return withStorageLock(STORAGE_KEYS.TAB_BINDINGS, async function () {
+      const map = await getTabBindingsMap();
+      map[String(tabId)] = Object.assign({}, binding, { updatedAt: Date.now() });
+      await setTabBindingsMap(map);
+      return true;
+    });
+  }
+  async function updateTabBinding(tabId, updater) {
+    return withStorageLock(STORAGE_KEYS.TAB_BINDINGS, async function () {
+      const map = await getTabBindingsMap();
+      const key = String(tabId);
+      if (!map[key]) return null;
+      map[key] = updater(map[key]);
+      await setTabBindingsMap(map);
+      return map[key];
+    });
   }
   async function removeTabBinding(tabId) {
-    const map = await getTabBindingsMap();
-    if (map[String(tabId)]) {
-      delete map[String(tabId)];
-      await setTabBindingsMap(map);
-    }
+    return withStorageLock(STORAGE_KEYS.TAB_BINDINGS, async function () {
+      const map = await getTabBindingsMap();
+      if (map[String(tabId)]) {
+        delete map[String(tabId)];
+        await setTabBindingsMap(map);
+      }
+    });
   }
   async function clearTabBindingsByPlugin(pluginId) {
-    const map = await getTabBindingsMap();
-    let changed = false;
-    for (const key of Object.keys(map)) {
-      if (map[key] && map[key].pluginId === pluginId) {
-        delete map[key];
-        changed = true;
+    return withStorageLock(STORAGE_KEYS.TAB_BINDINGS, async function () {
+      const map = await getTabBindingsMap();
+      let changed = false;
+      for (const key of Object.keys(map)) {
+        if (map[key] && map[key].pluginId === pluginId) {
+          delete map[key];
+          changed = true;
+        }
       }
-    }
-    if (changed) await setTabBindingsMap(map);
+      if (changed) await setTabBindingsMap(map);
+    });
   }
 
   // ------------------------------------------------------------ sessions
@@ -84,15 +112,17 @@ const sessionStore = (() => {
     }
     try {
       await chrome.storage.local.set({ [SESSION_PREFIX + session.sessionId]: session });
-      const index = await getSessionIndex();
-      index[session.sessionId] = {
-        pluginId: session.pluginId,
-        title: session.title,
-        createdAt: session.createdAt,
-        updatedAt: session.updatedAt,
-        messageCount: (session.messages || []).length,
-      };
-      await setSessionIndex(index);
+      await withStorageLock(STORAGE_KEYS.SESSIONS, async function () {
+        const index = await getSessionIndex();
+        index[session.sessionId] = {
+          pluginId: session.pluginId,
+          title: session.title,
+          createdAt: session.createdAt,
+          updatedAt: session.updatedAt,
+          messageCount: (session.messages || []).length,
+        };
+        await setSessionIndex(index);
+      });
       return true;
     } catch (_err) {
       // 写失败不崩溃（仅记录）；调用方负责继续当前会话
@@ -102,11 +132,13 @@ const sessionStore = (() => {
   async function deleteSession(sessionId) {
     if (!sessionId) return;
     await chrome.storage.local.remove(SESSION_PREFIX + sessionId);
-    const index = await getSessionIndex();
-    if (index[sessionId]) {
-      delete index[sessionId];
-      await setSessionIndex(index);
-    }
+    await withStorageLock(STORAGE_KEYS.SESSIONS, async function () {
+      const index = await getSessionIndex();
+      if (index[sessionId]) {
+        delete index[sessionId];
+        await setSessionIndex(index);
+      }
+    });
   }
   async function getSessionsByPlugin(pluginId) {
     const index = await getSessionIndex();
@@ -151,15 +183,19 @@ const sessionStore = (() => {
   }
   async function setCurrentSessionId(pluginId, sessionId) {
     if (!pluginId) return;
-    const map = await getCurrentSessionMap();
-    map[pluginId] = sessionId;
-    await chrome.storage.local.set({ [STORAGE_KEYS.CURRENT_SESSION]: map });
+    await withStorageLock(STORAGE_KEYS.CURRENT_SESSION, async function () {
+      const map = await getCurrentSessionMap();
+      map[pluginId] = sessionId;
+      await chrome.storage.local.set({ [STORAGE_KEYS.CURRENT_SESSION]: map });
+    });
   }
   async function clearCurrentSessionId(pluginId) {
     if (!pluginId) return;
-    const map = await getCurrentSessionMap();
-    delete map[pluginId];
-    await chrome.storage.local.set({ [STORAGE_KEYS.CURRENT_SESSION]: map });
+    await withStorageLock(STORAGE_KEYS.CURRENT_SESSION, async function () {
+      const map = await getCurrentSessionMap();
+      delete map[pluginId];
+      await chrome.storage.local.set({ [STORAGE_KEYS.CURRENT_SESSION]: map });
+    });
   }
 
   // ------------------------------------------------------------ upload jobs
@@ -187,33 +223,38 @@ const sessionStore = (() => {
   }
   async function setUploadJob(pluginId, job) {
     if (!pluginId || !job || job.documentId == null) return;
-    const stored = await chrome.storage.local.get(STORAGE_KEYS.UPLOAD_JOBS);
-    const map = stored[STORAGE_KEYS.UPLOAD_JOBS] || {};
-    const records = normalizeUploadJobRecords(map[pluginId]);
-    records[String(job.documentId)] = Object.assign({}, job, { updatedAt: Date.now() });
-    map[pluginId] = records;
-    await chrome.storage.local.set({ [STORAGE_KEYS.UPLOAD_JOBS]: map });
+    await withStorageLock(STORAGE_KEYS.UPLOAD_JOBS, async function () {
+      const stored = await chrome.storage.local.get(STORAGE_KEYS.UPLOAD_JOBS);
+      const map = stored[STORAGE_KEYS.UPLOAD_JOBS] || {};
+      const records = normalizeUploadJobRecords(map[pluginId]);
+      records[String(job.documentId)] = Object.assign({}, job, { updatedAt: Date.now() });
+      map[pluginId] = records;
+      await chrome.storage.local.set({ [STORAGE_KEYS.UPLOAD_JOBS]: map });
+    });
   }
   async function clearUploadJob(pluginId, documentId) {
     if (!pluginId) return;
-    const stored = await chrome.storage.local.get(STORAGE_KEYS.UPLOAD_JOBS);
-    const map = stored[STORAGE_KEYS.UPLOAD_JOBS] || {};
-    if (!map[pluginId]) return;
-    if (documentId == null) {
-      delete map[pluginId];
-    } else {
-      const records = normalizeUploadJobRecords(map[pluginId]);
-      delete records[String(documentId)];
-      if (Object.keys(records).length > 0) map[pluginId] = records;
-      else delete map[pluginId];
-    }
-    await chrome.storage.local.set({ [STORAGE_KEYS.UPLOAD_JOBS]: map });
+    await withStorageLock(STORAGE_KEYS.UPLOAD_JOBS, async function () {
+      const stored = await chrome.storage.local.get(STORAGE_KEYS.UPLOAD_JOBS);
+      const map = stored[STORAGE_KEYS.UPLOAD_JOBS] || {};
+      if (!map[pluginId]) return;
+      if (documentId == null) {
+        delete map[pluginId];
+      } else {
+        const records = normalizeUploadJobRecords(map[pluginId]);
+        delete records[String(documentId)];
+        if (Object.keys(records).length > 0) map[pluginId] = records;
+        else delete map[pluginId];
+      }
+      await chrome.storage.local.set({ [STORAGE_KEYS.UPLOAD_JOBS]: map });
+    });
   }
 
   return {
     newId,
     getTabBinding,
     setTabBinding,
+    updateTabBinding,
     removeTabBinding,
     clearTabBindingsByPlugin,
     getSession,

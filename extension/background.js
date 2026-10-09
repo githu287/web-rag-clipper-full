@@ -29,42 +29,27 @@ function isSameNormalizedUrl(left, right) {
 
 async function handleUrlChanged(tabId, url, title) {
   if (!isHttpUrl(url)) return;
-  const stored = await chrome.storage.local.get(STORAGE_KEYS.TAB_BINDINGS);
-  const bindings = stored[STORAGE_KEYS.TAB_BINDINGS] || {};
-  const key = String(tabId);
-  const binding = bindings[key];
-  if (!binding) return;
-  if (isSameNormalizedUrl(binding.pageUrl, url) && !binding.stale) {
-    // 只有 fragment / 跟踪参数变化时保留 Document 绑定，但更新展示 URL。
-    bindings[key] = Object.assign({}, binding, {
+  const updated = await sessionStore.updateTabBinding(tabId, function (binding) {
+    if (isSameNormalizedUrl(binding.pageUrl, url) && !binding.stale) {
+      // 只有 fragment / 跟踪参数变化时保留 Document 绑定，但更新展示 URL。
+      return Object.assign({}, binding, {
+        pageUrl: url,
+        pageTitle: typeof title === "string" && title ? title : binding.pageTitle,
+        updatedAt: Date.now(),
+      });
+    }
+    return Object.assign({}, binding, {
+      documentId: null,
+      ingestJobId: null,
+      ingestJobPageUrl: null,
       pageUrl: url,
       pageTitle: typeof title === "string" && title ? title : binding.pageTitle,
+      stale: true,
       updatedAt: Date.now(),
     });
-    try {
-      await chrome.storage.local.set({ [STORAGE_KEYS.TAB_BINDINGS]: bindings });
-    } catch (_err) {}
-    broadcast({
-      type: "WEB_RAG_TAB_URL_CHANGED",
-      tabId: tabId,
-      url: url,
-      title: bindings[key].pageTitle || "",
-    });
-    return;
-  }
-  bindings[key] = Object.assign({}, binding, {
-    documentId: null,
-    ingestJobId: null,
-    ingestJobPageUrl: null,
-    pageUrl: url,
-    pageTitle: typeof title === "string" && title ? title : binding.pageTitle,
-    stale: true,
-    updatedAt: Date.now(),
   });
-  try {
-    await chrome.storage.local.set({ [STORAGE_KEYS.TAB_BINDINGS]: bindings });
-  } catch (_err) {}
-  broadcast({ type: "WEB_RAG_TAB_URL_CHANGED", tabId: tabId, url: url, title: bindings[key].pageTitle || "" });
+  if (!updated) return;
+  broadcast({ type: "WEB_RAG_TAB_URL_CHANGED", tabId: tabId, url: url, title: updated.pageTitle || "" });
 }
 
 chrome.tabs.onActivated.addListener((activeInfo) => {
@@ -80,9 +65,9 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
 });
 
 chrome.tabs.onRemoved.addListener((tabId) => {
-  try {
-    sessionStore.removeTabBinding(tabId);
-  } catch (_err) {}
+  sessionStore.removeTabBinding(tabId).catch((err) => {
+    console.error("[background] removeTabBinding 失败:", err);
+  });
   broadcast({ type: "WEB_RAG_TAB_REMOVED", tabId: tabId });
 });
 
