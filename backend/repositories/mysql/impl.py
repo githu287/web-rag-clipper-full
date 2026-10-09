@@ -197,6 +197,7 @@ class DocumentRepositoryImpl(DocumentRepository):
     def update_webpage_metadata(
         self,
         document_id: int,
+        plugin_id: str,
         *,
         title: str | None,
         url: str,
@@ -205,7 +206,7 @@ class DocumentRepositoryImpl(DocumentRepository):
         try:
             with self._session_factory() as session:
                 document = session.get(Document, document_id)
-                if document is None:
+                if document is None or document.plugin_id != plugin_id:
                     raise DocumentNotFoundError(
                         f"document not found: id={document_id}"
                     )

@@ -139,6 +139,7 @@ class DocumentRepository(Protocol):
     def update_webpage_metadata(
         self,
         document_id: int,
+        plugin_id: str,
         *,
         title: str | None,
         url: str,

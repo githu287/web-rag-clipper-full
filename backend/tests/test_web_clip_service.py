@@ -179,7 +179,7 @@ class WebClipServiceTest(unittest.TestCase):
 
         self.document_repo.create_document.assert_not_called()
         self.document_repo.update_webpage_metadata.assert_called_once_with(
-            42, title="新标题", url="https://example.com/same"
+            42, "plugin-a", title="新标题", url="https://example.com/same"
         )
         self.ingest_service.ingest_document.assert_awaited_once_with(
             42, ["chunk-1", "chunk-2"], plugin_id="plugin-a", api_key="sk-test"
@@ -249,6 +249,7 @@ class WebClipServiceTest(unittest.TestCase):
         self.document_repo.create_document.assert_not_called()
         self.document_repo.update_webpage_metadata.assert_called_once_with(
             51,
+            "plugin-a",
             title=None,
             url="https://example.com/article?id=7",
         )
@@ -288,6 +289,7 @@ class WebClipServiceTest(unittest.TestCase):
         )
         self.document_repo.update_webpage_metadata.assert_called_once_with(
             61,
+            "plugin-a",
             title=None,
             url="https://example.com/article?id=7",
         )
@@ -379,7 +381,7 @@ class WebClipServiceTest(unittest.TestCase):
 
         self.document_repo.create_document.assert_not_called()
         self.document_repo.update_webpage_metadata.assert_called_once_with(
-            9, title="新标题", url="https://example.com/retry"
+            9, "plugin-a", title="新标题", url="https://example.com/retry"
         )
         self.ingest_service.ingest_document.assert_awaited_once_with(
             9, ["chunk-1", "chunk-2"], plugin_id="plugin-a", api_key=None
@@ -433,7 +435,7 @@ class WebClipServiceTest(unittest.TestCase):
             )
         )
         self.document_repo.update_webpage_metadata.assert_called_once_with(
-            42, title="A2", url="https://example.com/old"
+            42, "plugin-a", title="A2", url="https://example.com/old"
         )
 
         # 2) 新 URL → 不命中旧文档 → 创建全新文档 55

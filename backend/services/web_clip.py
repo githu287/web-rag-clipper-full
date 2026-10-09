@@ -160,6 +160,7 @@ class WebClipService:
                 )
             document = self._document_repository.update_webpage_metadata(
                 document.id,
+                plugin_id,
                 title=title,
                 url=normalized_url,
             )

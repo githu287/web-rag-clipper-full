@@ -789,13 +789,26 @@ class DocumentRepositoryImplTest(unittest.TestCase):
     def test_update_webpage_metadata_keeps_identity(self) -> None:
         document = self._create_webpage_doc(PLUGIN_A, "old", "https://old")
         updated = self.repo.update_webpage_metadata(
-            document.id, title="new", url="https://new"
+            document.id, PLUGIN_A, title="new", url="https://new"
         )
 
         self.assertEqual(updated.id, document.id)
         self.assertEqual(updated.plugin_id, PLUGIN_A)
         self.assertEqual(updated.title, "new")
         self.assertEqual(updated.url, "https://new")
+
+    def test_update_webpage_metadata_rejects_other_plugin(self) -> None:
+        """update_webpage_metadata：不能更新其它 Plugin 的文档。"""
+        document = self._create_webpage_doc(PLUGIN_A, "old", "https://old")
+
+        with self.assertRaises(DocumentNotFoundError):
+            self.repo.update_webpage_metadata(
+                document.id, PLUGIN_B, title="new", url="https://new"
+            )
+
+        unchanged = self.repo.get_document(document.id, PLUGIN_A)
+        self.assertEqual(unchanged.title, "old")
+        self.assertEqual(unchanged.url, "https://old")
 
 
 if __name__ == "__main__":
