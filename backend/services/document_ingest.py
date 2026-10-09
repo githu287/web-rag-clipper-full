@@ -154,6 +154,8 @@ class DocumentIngestService:
             raise DocumentOperationError(
                 f"document is being deleted, ingest rejected: id={document_id}"
             )
+        if not chunks:
+            raise ValueError("chunks must not be empty")
 
         # ---------------------------------------------------------- Step 2: 置 PROCESSING
         # 进入 PROCESSING 时清空旧 error_message（retry 生命周期修复）；不修改 chunk_count

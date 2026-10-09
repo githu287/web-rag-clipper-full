@@ -383,6 +383,17 @@ class DocumentIngestServiceTest(unittest.TestCase):
         # 不落 SUCCESS / FAILED
         self.document_repo.update_ingest_result.assert_not_called()
         self.document_repo.update_failure.assert_not_called()
+    
+    def test_ingest_rejects_empty_chunks(self) -> None:
+        """Test that ingest_document raises ValueError when chunks are empty."""
+        async def scenario() -> None:
+            with self.assertRaises(ValueError) as cm:
+                await self.service.ingest_document(1, [], plugin_id="plugin-a")
+            self.assertEqual(str(cm.exception), "chunks must not be empty")
+
+        self.run_async(scenario())
+        self.document_repo.update_status.assert_not_called()
+        self.ingest_service.ingest_page.assert_not_called()
 
     # -------------------------------------------------------- H. Protocol 注入
     def test_protocol_injection(self) -> None:
