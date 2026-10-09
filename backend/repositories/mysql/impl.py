@@ -517,6 +517,12 @@ class DocumentRepositoryImpl(DocumentRepository):
         禁止：SELECT 全部后 Python 过滤 / Python 分页。
         无结果返回 []。
         """
+        if page < 1:
+            raise DocumentOperationError("page must be greater than or equal to 1")
+        if page_size < 1:
+            raise DocumentOperationError(
+                "page_size must be greater than or equal to 1"
+            )
         try:
             with self._session_factory() as session:
                 conditions = self._document_list_conditions(

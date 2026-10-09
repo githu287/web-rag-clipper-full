@@ -722,6 +722,13 @@ class DocumentRepositoryImplTest(unittest.TestCase):
         page3 = self.repo.list_documents(PLUGIN_A, page=3, page_size=2)
         self.assertEqual([d.id for d in page3], [created[0].id])
 
+    def test_list_documents_rejects_invalid_pagination(self) -> None:
+        """list_documents：非法分页参数在执行 SQL 前被拒绝。"""
+        with self.assertRaisesRegex(DocumentOperationError, "page must"):
+            self.repo.list_documents(PLUGIN_A, page=0)
+        with self.assertRaisesRegex(DocumentOperationError, "page_size must"):
+            self.repo.list_documents(PLUGIN_A, page_size=0)
+
     def test_list_documents_pagination_does_not_break_plugin_isolation(self) -> None:
         """list_documents：分页 + plugin_id 过滤组合下仍只返回 A。"""
         for i in range(3):
