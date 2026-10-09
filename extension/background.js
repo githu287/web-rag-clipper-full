@@ -73,7 +73,9 @@ chrome.tabs.onActivated.addListener((activeInfo) => {
 
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   if (changeInfo.url && typeof changeInfo.url === "string") {
-    handleUrlChanged(tabId, changeInfo.url, tab && tab.title);
+    handleUrlChanged(tabId, changeInfo.url, tab && tab.title).catch((err) => {
+      console.error("[background] onUpdated handleUrlChanged 失败:", err);
+    });
   }
 });
 
@@ -89,5 +91,7 @@ chrome.runtime.onMessage.addListener((message, sender, _sendResponse) => {
   if (!message || message.type !== "WEB_RAG_URL_CHANGED") return;
   const tab = sender && sender.tab;
   if (!tab || tab.id == null) return;
-  handleUrlChanged(tab.id, message.url || tab.url || "", message.title || tab.title || "");
+  handleUrlChanged(tab.id, message.url || tab.url || "", message.title || tab.title || "").catch((err) => {
+    console.error("[background] URL_CHANGED handleUrlChanged 失败:", err);
+  });
 });

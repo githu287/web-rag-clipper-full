@@ -2352,26 +2352,37 @@ function bindEvents() {
 }
 
 // ================================================================ background 广播
+// 广播触发的异步任务统一经此包装：storage / 网络失败时记录日志，避免 unhandled rejection
+function fireAndForget(task, label) {
+  task.catch(function (err) {
+    console.error("[sidepanel] " + label + " 失败:", err);
+  });
+}
+
 function bindRuntimeMessages() {
   chrome.runtime.onMessage.addListener(function (message, _sender, _sendResponse) {
     if (!message || typeof message.type !== "string") return;
     if (message.type === "WEB_RAG_TAB_ACTIVATED") {
       if (message.tabId !== currentTabId) {
-        loadTabContext(message.tabId);
+        fireAndForget(loadTabContext(message.tabId), "TAB_ACTIVATED 加载上下文");
       }
     } else if (message.type === "WEB_RAG_TAB_URL_CHANGED") {
       if (message.tabId === currentTabId) {
-        refreshContextFromStorage();
+        fireAndForget(refreshContextFromStorage(), "TAB_URL_CHANGED 刷新上下文");
       }
     } else if (message.type === "WEB_RAG_TAB_REMOVED") {
       if (message.tabId === currentTabId) {
-        getCurrentTab().then(function (tab) {
-          if (tab && tab.id != null) loadTabContext(tab.id);
-        });
+        fireAndForget(
+          getCurrentTab().then(function (tab) {
+            if (tab && tab.id != null) return loadTabContext(tab.id);
+            return null;
+          }),
+          "TAB_REMOVED 恢复当前 Tab"
+        );
       }
     } else if (message.type === "WEB_RAG_CLIP_COMPLETED") {
       if (message.tabId === currentTabId) {
-        refreshContextFromStorage();
+        fireAndForget(refreshContextFromStorage(), "CLIP_COMPLETED 刷新上下文");
       }
     }
   });
