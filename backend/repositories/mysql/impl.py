@@ -205,8 +205,17 @@ class DocumentRepositoryImpl(DocumentRepository):
         """原子更新网页来源元数据。"""
         try:
             with self._session_factory() as session:
-                document = session.get(Document, document_id)
-                if document is None or document.plugin_id != plugin_id:
+                document = (
+                    session.execute(
+                        select(Document).where(
+                            Document.id == document_id,
+                            Document.plugin_id == plugin_id,
+                        )
+                    )
+                    .scalars()
+                    .first()
+                )
+                if document is None:
                     raise DocumentNotFoundError(
                         f"document not found: id={document_id}"
                     )
