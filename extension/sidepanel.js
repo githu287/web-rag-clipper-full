@@ -118,6 +118,8 @@ let clipDraft = null;
 let clipDraftTabId = null;
 let activeClipJob = null;
 let clipJobPollToken = 0;
+// 世代令牌：快速切 Tab 时多个 loadTabContext 并发执行，过期实例在写共享状态前必须中止
+let contextLoadToken = 0;
 let currentView = "chat";
 let registerBusy = false;
 let apiKeyBusy = false;
@@ -933,6 +935,7 @@ async function restoreOrCreateBinding(tab, pluginId, tabId) {
 
 // Tab 切换时调用：只更新网页上下文，不切换 Session
 async function loadTabContext(tabId) {
+  const myToken = ++contextLoadToken;
   const plugin = webRagApiClient.getPlugin();
   if (!plugin.pluginId) {
     renderWelcomeView();
@@ -946,22 +949,28 @@ async function loadTabContext(tabId) {
   }
   currentTabId = tabId;
   let b = await sessionStore.getTabBinding(tabId);
+  if (myToken !== contextLoadToken) return;
   if (!b || b.pluginId !== plugin.pluginId) {
     const tab = await chrome.tabs.get(tabId).catch(() => null);
+    if (myToken !== contextLoadToken) return;
     b = await restoreOrCreateBinding(tab, plugin.pluginId, tabId);
+    if (myToken !== contextLoadToken) return;
   } else {
     // Binding 已存在，但仍需重新检测当前 URL 是否已剪藏
     // （用户可能在其他 Tab 剪藏了该 URL，或文档被删除）
     if (b.pageUrl && !b.stale && !b.ingestJobId) {
       const doc = await detectClippedDocument(plugin.pluginId, b.pageUrl);
+      if (myToken !== contextLoadToken) return;
       b.documentId = doc ? Number(doc.id) : null;
       await sessionStore.setTabBinding(tabId, b);
+      if (myToken !== contextLoadToken) return;
     }
   }
   binding = b;
 
   // 确保有全局 Session（不根据 Tab 切换 Session）
   const s = await ensureGlobalSession(plugin.pluginId);
+  if (myToken !== contextLoadToken) return;
   session = s;
 
   // 更新剪藏视图和发送状态
@@ -979,9 +988,12 @@ async function loadTabContext(tabId) {
 // URL 变化或剪藏完成后刷新上下文
 async function refreshContextFromStorage() {
   if (currentTabId == null) return;
+  // 只捕获不递增：刷新不应取消进行中的 loadTabContext（它负责建 binding / Session）
+  const myToken = contextLoadToken;
   const plugin = webRagApiClient.getPlugin();
   if (!plugin.pluginId) return;
   const b = await sessionStore.getTabBinding(currentTabId);
+  if (myToken !== contextLoadToken) return;
   if (!b) {
     clipJobPollToken += 1;
     activeClipJob = null;
