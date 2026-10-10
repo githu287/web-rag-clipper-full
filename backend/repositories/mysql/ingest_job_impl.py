@@ -177,6 +177,35 @@ class IngestJobRepositoryImpl(IngestJobRepository):
     def requeue(self, job_id: str, plugin_id: str) -> IngestJob:
         try:
             with self._session_factory() as session:
+                result = session.execute(
+                    update(IngestJob)
+                    .where(
+                        IngestJob.id == job_id,
+                        IngestJob.plugin_id == plugin_id,
+                        IngestJob.status == IngestJobStatus.FAILED,
+                    )
+                    .values(
+                        status=IngestJobStatus.QUEUED,
+                        stage="QUEUED",
+                        progress=0,
+                        error_message=None,
+                        document_id=None,
+                        started_at=None,
+                        finished_at=None,
+                        updated_at=func.now(),
+                    )
+                )
+                if result.rowcount != 1:
+                    job = session.scalar(
+                        select(IngestJob).where(
+                            IngestJob.id == job_id,
+                            IngestJob.plugin_id == plugin_id,
+                        )
+                    )
+                    if job is None:
+                        raise IngestJobNotFoundError("ingest job not found")
+                    raise IngestJobConflictError("only FAILED jobs can be retried")
+                session.commit()
                 job = session.scalar(
                     select(IngestJob).where(
                         IngestJob.id == job_id,
@@ -185,17 +214,7 @@ class IngestJobRepositoryImpl(IngestJobRepository):
                 )
                 if job is None:
                     raise IngestJobNotFoundError("ingest job not found")
-                if job.status != IngestJobStatus.FAILED:
-                    raise IngestJobConflictError("only FAILED jobs can be retried")
-                job.status = IngestJobStatus.QUEUED
-                job.stage = "QUEUED"
-                job.progress = 0
-                job.error_message = None
-                job.document_id = None
-                job.started_at = None
-                job.finished_at = None
-                session.commit()
-                session.refresh(job)
+                session.expunge(job)
                 return job
         except (IngestJobNotFoundError, IngestJobConflictError):
             raise
