@@ -156,18 +156,34 @@ class IngestJobRepositoryImpl(IngestJobRepository):
     ) -> IngestJob:
         try:
             with self._session_factory() as session:
+                values: dict[str, object] = {
+                    "status": status,
+                    "stage": stage,
+                    "progress": progress,
+                    "error_message": error_message,
+                    "finished_at": func.now(),
+                    "updated_at": func.now(),
+                }
+                if document_id is not None:
+                    values["document_id"] = document_id
+                result = session.execute(
+                    update(IngestJob)
+                    .where(
+                        IngestJob.id == job_id,
+                        IngestJob.status == IngestJobStatus.RUNNING,
+                    )
+                    .values(**values)
+                )
+                if result.rowcount != 1:
+                    job = session.get(IngestJob, job_id)
+                    if job is None:
+                        raise IngestJobNotFoundError("ingest job not found")
+                    raise IngestJobConflictError("only RUNNING jobs can finish")
+                session.commit()
                 job = session.get(IngestJob, job_id)
                 if job is None:
                     raise IngestJobNotFoundError("ingest job not found")
-                job.status = status
-                job.stage = stage
-                job.progress = progress
-                if document_id is not None:
-                    job.document_id = document_id
-                job.error_message = error_message
-                job.finished_at = func.now()
-                session.commit()
-                session.refresh(job)
+                session.expunge(job)
                 return job
         except IngestJobNotFoundError:
             raise

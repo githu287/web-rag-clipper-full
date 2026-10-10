@@ -72,6 +72,15 @@ class IngestJobRepositoryTest(unittest.TestCase):
         with self.assertRaises(IngestJobNotFoundError):
             self.repo.get_job(job.id, "plugin-b")
 
+    def test_terminal_update_requires_running_job(self) -> None:
+        job = self.repo.create_job("plugin-a", IngestJobType.WEB_CLIP)
+
+        with self.assertRaises(IngestJobConflictError):
+            self.repo.mark_succeeded(job.id, 123)
+
+        queued = self.repo.get_job(job.id, "plugin-a")
+        self.assertEqual(queued.status, IngestJobStatus.QUEUED)
+
     def test_file_upload_job_keeps_document_reference(self) -> None:
         from backend.models.document import Document
 
