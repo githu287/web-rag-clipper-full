@@ -104,6 +104,25 @@ class EmbeddingClientTest(unittest.TestCase):
             dimensions=_EMBED_DIM,
         )
 
+    def test_e_duplicate_indexes_rejected(self) -> None:
+        self.fake_openai.embeddings.create.return_value = _FakeEmbeddingResponse(
+            [
+                _FakeEmbeddingData(0, _dim_vector(0.1)),
+                _FakeEmbeddingData(0, _dim_vector(0.2)),
+            ]
+        )
+
+        with self.assertRaises(EmbeddingResponseError):
+            self.client.embed(["a", "b"])
+
+    def test_e_out_of_range_index_rejected(self) -> None:
+        self.fake_openai.embeddings.create.return_value = _FakeEmbeddingResponse(
+            [_FakeEmbeddingData(2, _dim_vector(0.1))]
+        )
+
+        with self.assertRaises(EmbeddingResponseError):
+            self.client.embed(["a"])
+
     # ---------------------------------------------------------------- B. 空字符串输入
     def test_b_empty_string_rejected(self) -> None:
         # 注：客户端校验约束为「类型 str 且 len>=1」，纯空格串（len>=1）不在此拦截，

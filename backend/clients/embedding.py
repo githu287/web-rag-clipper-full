@@ -253,6 +253,11 @@ class EmbeddingClient:
             raise EmbeddingResponseError(
                 f"Embedding API 返回 data[].index 字段缺失或类型异常：{exc}"
             ) from exc
+        indexes = [item.index for item in sorted_items]
+        if indexes != list(range(len(batch))):
+            raise EmbeddingResponseError(
+                "Embedding API 杩斿洖 data[].index 鏃犳硶涓庤緭鍏ョ储寮曚竴涓€瀵瑰簲"
+            )
 
         vectors: list[list[float]] = []
         for item in sorted_items:
