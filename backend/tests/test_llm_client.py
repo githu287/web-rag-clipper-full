@@ -293,6 +293,12 @@ class BailianLLMClientUserKeyTest(unittest.TestCase):
         self.assertEqual(self.mock_openai_cls.call_count, 1)
         self.assertEqual(len(self.client._clients), 1)  # noqa: SLF001
 
+    def test_client_cache_is_bounded(self) -> None:
+        for index in range(33):
+            self.client.generate("s", "u", api_key=f"sk-user-{index}")
+
+        self.assertEqual(len(self.client._clients), 32)  # noqa: SLF001
+
     def test_workspace_config_uses_llm_endpoint(self) -> None:
         credentials = WorkspaceModelCredentials(
             build_endpoint(

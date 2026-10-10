@@ -29,6 +29,7 @@ from ..core.security import sha256_hex
 from ..models.model_provider import ModelEndpointCredential, WorkspaceModelCredentials
 
 logger: logging.Logger = logging.getLogger(__name__)
+_MAX_CLIENT_CACHE_SIZE = 32
 
 
 # --------------------------------------------------------------------------- 异常定义
@@ -229,6 +230,9 @@ class BailianLLMClient:
         )
         client = OpenAI(api_key=effective_key, base_url=base_url)
         self._clients[client_key] = client
+        if len(self._clients) > _MAX_CLIENT_CACHE_SIZE:
+            oldest_key = next(iter(self._clients))
+            del self._clients[oldest_key]
         return client
 
     def _resolve_endpoint(

@@ -37,6 +37,7 @@ logger: logging.Logger = logging.getLogger(__name__)
 
 # Embedding 输入文本非空校验用的最小长度（避免空字符串触发百炼 400）
 _TEXT_MIN_LENGTH: Final[int] = 1
+_MAX_CLIENT_CACHE_SIZE: Final[int] = 32
 
 
 # --------------------------------------------------------------------------- 异常定义
@@ -179,6 +180,9 @@ class EmbeddingClient:
         )
         client = OpenAI(api_key=effective_key, base_url=base_url)
         self._clients[client_key] = client
+        if len(self._clients) > _MAX_CLIENT_CACHE_SIZE:
+            oldest_key = next(iter(self._clients))
+            del self._clients[oldest_key]
         return client
 
     def _resolve_endpoint(
