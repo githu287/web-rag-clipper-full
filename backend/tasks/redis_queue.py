@@ -13,6 +13,14 @@ from ..core.exceptions import IngestJobOperationError
 class RedisIngestQueue:
     """Small Redis-backed queue; payloads never contain API keys or secrets."""
 
+    _REQUEUE_IF_PAYLOAD_EXISTS = """
+    if redis.call('EXISTS', KEYS[1]) == 0 then
+        return 0
+    end
+    redis.call('LPUSH', KEYS[2], ARGV[1])
+    return 1
+    """
+
     def __init__(self, settings: Settings) -> None:
         self._queue_name = settings.ingest_queue_name
         self._processing_name = f"{settings.ingest_queue_name}:processing"
@@ -44,9 +52,15 @@ class RedisIngestQueue:
 
     def enqueue_existing(self, job_id: str) -> None:
         try:
-            if not self._client.exists(self._payload_key(job_id)):
+            requeued = self._client.eval(
+                self._REQUEUE_IF_PAYLOAD_EXISTS,
+                2,
+                self._payload_key(job_id),
+                self._queue_name,
+                job_id,
+            )
+            if requeued == 0:
                 raise IngestJobOperationError("ingest job payload has expired")
-            self._client.lpush(self._queue_name, job_id)
         except IngestJobOperationError:
             raise
         except RedisError as exc:

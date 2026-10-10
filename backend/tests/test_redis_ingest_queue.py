@@ -4,6 +4,7 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 from backend.core.config import Settings
+from backend.core.exceptions import IngestJobOperationError
 from backend.tasks.redis_queue import RedisIngestQueue
 
 
@@ -42,6 +43,25 @@ class RedisIngestQueueTest(unittest.TestCase):
         self.client.lrem.assert_called_once_with(
             "test:ingest:processing", 1, "job-1"
         )
+
+    def test_enqueue_existing_requeues_atomically_when_payload_exists(self) -> None:
+        self.client.eval.return_value = 1
+
+        self.queue.enqueue_existing("job-1")
+
+        self.client.eval.assert_called_once()
+        self.client.exists.assert_not_called()
+        self.client.lpush.assert_not_called()
+
+    def test_enqueue_existing_rejects_expired_payload(self) -> None:
+        self.client.eval.return_value = 0
+
+        with self.assertRaisesRegex(
+            IngestJobOperationError, "payload has expired"
+        ):
+            self.queue.enqueue_existing("job-1")
+
+        self.client.eval.assert_called_once()
 
     def test_recover_moves_all_processing_jobs_back(self) -> None:
         self.client.rpoplpush.side_effect = ["job-1", "job-2", None]
