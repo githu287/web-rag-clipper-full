@@ -177,6 +177,10 @@ class BailianLLMClient:
 
         if content is None:
             raise LLMClientEmptyResponseError("LLM API 返回 content 为 None")
+        if not isinstance(content, str):
+            raise LLMClientResponseError(
+                f"LLM API content type invalid: {type(content).__name__}"
+            )
         answer = content.strip()
         if not answer:
             raise LLMClientEmptyResponseError("LLM API 返回 content 为空字符串")

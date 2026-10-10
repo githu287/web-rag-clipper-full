@@ -125,6 +125,15 @@ class BailianLLMClientTest(unittest.TestCase):
         with self.assertRaises(LLMClientEmptyResponseError):
             client.generate("s", "u", api_key="test-user-key")
 
+    def test_generate_non_string_content_raises_response_error(self) -> None:
+        self.mock_client.chat.completions.create.return_value = (
+            _make_client_response(["not", "text"])
+        )
+        client = self._make_client()
+
+        with self.assertRaises(LLMClientResponseError):
+            client.generate("s", "u", api_key="test-user-key")
+
     # ----------------------------------------------------- 5. API error
     def test_generate_api_error_wrapped_as_request_error(self) -> None:
         """5：底层 API 异常 → LLMClientRequestError，且保留异常链 __cause__。"""
