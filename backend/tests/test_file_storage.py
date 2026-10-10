@@ -187,6 +187,21 @@ class LocalFileStorageTest(unittest.TestCase):
         with self.assertRaises(DocumentStoragePathTraversalError):
             self.storage.resolve(outside)
 
+    def test_resolve_rejects_symlink_outside_upload_dir(self) -> None:
+        target_dir = tempfile.mkdtemp(dir=self._tmp.name)
+        target = os.path.join(target_dir, "outside.txt")
+        with open(target, "wb") as fh:
+            fh.write(b"outside")
+        os.makedirs(self.upload_dir, exist_ok=True)
+        link = os.path.join(self.upload_dir, "linked.txt")
+        try:
+            os.symlink(target, link)
+        except (OSError, NotImplementedError):
+            self.skipTest("symbolic links are unavailable")
+
+        with self.assertRaises(DocumentStoragePathTraversalError):
+            self.storage.resolve("linked.txt")
+
     def test_resolve_rejects_separator_traversal(self) -> None:
         """resolve 拒绝含 `/` 或 `\\` 的越界路径。"""
         for bad in ("../evil.txt", "..\\evil.txt", "sub/../../evil.txt"):

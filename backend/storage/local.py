@@ -165,8 +165,8 @@ class LocalFileStorage:
         if not relative_path:
             raise DocumentStoragePathTraversalError("文件路径不能为空")
 
-        base_dir = os.path.abspath(self._upload_dir)
-        candidate = os.path.abspath(os.path.join(base_dir, relative_path))
+        base_dir = os.path.realpath(self._upload_dir)
+        candidate = os.path.realpath(os.path.join(base_dir, relative_path))
         try:
             common = os.path.commonpath([base_dir, candidate])
         except ValueError:  # 不同盘符（Windows）等无法比较场景
