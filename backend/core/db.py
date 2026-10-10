@@ -77,6 +77,7 @@ def get_engine() -> Engine:
     return create_engine(
         build_mysql_url(get_settings()),
         pool_pre_ping=True,
+        pool_recycle=1800,
         pool_size=5,
         echo=False,
     )
