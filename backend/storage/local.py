@@ -76,10 +76,16 @@ class LocalFileStorage:
         extension = os.path.splitext(safe_name)[1].lower()
         storage_key = f"{uuid.uuid4().hex}{extension}"
         dest_path = self._resolve(storage_key)
+        temp_path = self._resolve(f".{storage_key}.tmp")
         try:
-            with open(dest_path, "wb") as fh:
+            with open(temp_path, "wb") as fh:
                 fh.write(data)
+            os.replace(temp_path, dest_path)
         except OSError as exc:
+            try:
+                os.remove(temp_path)
+            except FileNotFoundError:
+                pass
             raise DocumentStorageError(
                 f"保存文件失败: {safe_name}"
             ) from exc

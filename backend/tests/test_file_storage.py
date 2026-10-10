@@ -17,6 +17,7 @@ from __future__ import annotations
 import os
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from backend.core.exceptions import (
     DocumentStorageError,
@@ -79,6 +80,13 @@ class LocalFileStorageTest(unittest.TestCase):
 
         self.assertTrue(os.path.isdir(self.upload_dir))
         self.assertTrue(os.path.isfile(os.path.join(self.upload_dir, rel_path)))
+
+    def test_save_cleans_temp_file_when_replace_fails(self) -> None:
+        with patch("backend.storage.local.os.replace", side_effect=OSError("disk full")):
+            with self.assertRaises(DocumentStorageError):
+                self.storage.save("broken.txt", b"data")
+
+        self.assertEqual(os.listdir(self.upload_dir), [])
 
     # ------------------------------------------------------ 路径穿越拦截
     def test_save_rejects_parent_traversal(self) -> None:
