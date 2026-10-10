@@ -6,6 +6,7 @@
 "use strict";
 
 const API_BASE_URL = WEB_RAG_CLIPPER_CONFIG.API_BASE_URL;
+const API_REQUEST_TIMEOUT_MS = 30000;
 // STORAGE_KEYS 已在 config.js 全局声明，禁止重复声明（避免页面解析失败）。
 
 class ApiRequestError extends Error {
@@ -119,10 +120,22 @@ const webRagApiClient = (() => {
       headers["X-Plugin-Secret"] = pluginSecret;
     }
     let response;
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), API_REQUEST_TIMEOUT_MS);
     try {
-      response = await fetch(API_BASE_URL + path, { method: method, headers: headers, body: body });
-    } catch (_err) {
+      response = await fetch(API_BASE_URL + path, {
+        method: method,
+        headers: headers,
+        body: body,
+        signal: controller.signal,
+      });
+    } catch (err) {
+      if (err && err.name === "AbortError") {
+        throw new ApiRequestError(0, "TIMEOUT", "请求超时，请稍后重试");
+      }
       throw new ApiRequestError(0, "NETWORK", "网络连接失败，请重试");
+    } finally {
+      clearTimeout(timeoutId);
     }
     if (response.status === 204) {
       return { response: response, data: null };
