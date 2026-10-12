@@ -94,7 +94,7 @@ class DocumentIngestRequest(BaseModel):
     POST /documents/{document_id}/ingest 请求体。
 
     字段：
-        chunks : 已切分的 chunk 文本列表（必须非空；向量由服务内部计算，不在此传入）。
+        chunks : 已切分的 chunk 文本列表（1~1000 项；向量由服务内部计算，不在此传入）。
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -102,7 +102,8 @@ class DocumentIngestRequest(BaseModel):
     chunks: list[str] = Field(
         ...,
         min_length=1,
-        description="已切分的 chunk 文本列表（必须非空）",
+        max_length=1000,
+        description="已切分的 chunk 文本列表（1~1000 项）",
     )
 
 

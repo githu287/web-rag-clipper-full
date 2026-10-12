@@ -265,6 +265,15 @@ class DocumentApiTest(unittest.TestCase):
         # 校验失败不触发 service 调用
         self.fake_ingest_service.ingest_document.assert_not_called()
 
+    def test_ingest_too_many_chunks_rejected(self) -> None:
+        response = self.client.post(
+            "/documents/1/ingest",
+            json={"chunks": ["x"] * 1001},
+        )
+
+        self.assertEqual(response.status_code, 422)
+        self.fake_ingest_service.ingest_document.assert_not_called()
+
     def test_create_document_missing_field_rejected(self) -> None:
         """非法创建请求（缺 filename）：Pydantic 校验 → 422。"""
         response = self.client.post(
