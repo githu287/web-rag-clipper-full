@@ -159,6 +159,8 @@ class RagAnswerService:
         # -------------------------------------------------------- Step 1: 参数防御
         if not isinstance(query, str) or not query.strip():
             raise ValueError("RagAnswerService.ask: query 必须为非空字符串")
+        if not isinstance(top_k, int) or isinstance(top_k, bool) or top_k < 1:
+            raise ValueError("RagAnswerService.ask: top_k must be greater than 0")
 
         # -------------------------------------------------------- Step 2: document_id 校验
         # Phase 3.5 Step 2-E：get_document(document_id, plugin_id) 完成 ownership

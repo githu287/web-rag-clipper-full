@@ -336,6 +336,12 @@ class RagAnswerServiceTest(unittest.TestCase):
         self.rag_service.search.assert_not_awaited()
         self.llm_client.generate.assert_not_called()
 
+    def test_ask_invalid_top_k_raises_before_retrieval(self) -> None:
+        """测试无效的 top_k 参数会引发 ValueError。"""
+        with self.assertRaisesRegex(ValueError, "top_k"):
+            self.ask("问题", top_k=0, plugin_id="plugin-a")
+        self.rag_service.search.assert_not_called()
+
     # ----------------------------------------------------- Phase 3.5 Step 2-E：Workspace 隔离链路
     def test_ask_passes_plugin_id_and_api_key(self) -> None:
         """11：plugin_id / api_key 正确透传给 rag_service.search（隔离检索前提）。"""
