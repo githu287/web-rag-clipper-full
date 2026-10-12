@@ -60,6 +60,10 @@ class WebClipRequestValidationTest(unittest.TestCase):
         with self.assertRaises(ValidationError):
             WebClipRequest(url=_VALID_URL, raw_text="")
 
+    def test_d_raw_text_too_long_rejected(self) -> None:
+        with self.assertRaises(ValidationError):
+            WebClipRequest(url=_VALID_URL, raw_text="x" * 500_001)
+
     # ---------------------------------------------- E. title 超长（max_length=512）
     def test_e_title_too_long_rejected(self) -> None:
         """E：title 长度 >512 → ValidationError。"""

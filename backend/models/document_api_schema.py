@@ -173,7 +173,7 @@ class WebClipRequest(BaseModel):
     字段：
         url     : 网页来源 URL（非空，<=2048 字符）。
         title   : 网页标题（可选，<=512 字符；None 时写入 NULL）。
-        raw_text: 网页正文纯文本（非空）。
+        raw_text: 网页正文纯文本（非空，<=500000 字符）。
 
     不允许客户端传入 source_type —— 后端固定为 "webpage"（extra="forbid" 拒绝
     未声明字段，防止契约漂移）。
@@ -195,7 +195,8 @@ class WebClipRequest(BaseModel):
     raw_text: str = Field(
         ...,
         min_length=1,
-        description="网页正文纯文本（非空）",
+        max_length=500_000,
+        description="网页正文纯文本（非空，<=500000 字符）",
     )
 
     @field_validator("url")
