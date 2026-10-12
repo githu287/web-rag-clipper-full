@@ -259,7 +259,7 @@ MySQL 是文档状态和归属的权威来源；Milvus 只保存向量检索所�
   --ignore=backend/tests/test_user_service.py
 ```
 
-当前活动测试集结果为：`563 passed, 37 subtests passed`。
+当前活动测试集结果为：`568 passed, 1 skipped, 37 subtests passed`（另有 2 个依赖弃用警告）。
 
 扩展侧的纯 JavaScript 回归测试无需启动后端：
 
