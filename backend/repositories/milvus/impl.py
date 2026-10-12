@@ -264,6 +264,10 @@ class PyMilvusRepositoryImpl(MilvusRepository):
             f" limit={limit}, ef={ef})"
         )
         # Phase 2.3 校验要求：vector 维度必须等于 settings.bailian_embedding_dimension
+        if limit < 1:
+            raise ValueError("limit must be greater than or equal to 1")
+        if ef < 1:
+            raise ValueError("ef must be greater than or equal to 1")
         if len(vector) != self._embedding_dimension:
             raise MilvusSchemaMismatchError(
                 f"{msg_prefix}：vector 维度 {len(vector)} 与配置"
