@@ -253,10 +253,7 @@ MySQL 是文档状态和归属的权威来源；Milvus 只保存向量检索所�
 当前已接入的主测试集：
 
 ```powershell
-.venv\Scripts\python.exe -m pytest -q `
-  --ignore=backend/tests/test_auth_api.py `
-  --ignore=backend/tests/test_user_repository.py `
-  --ignore=backend/tests/test_user_service.py
+.venv\Scripts\python.exe -m pytest -q
 ```
 
 当前活动测试集结果为：`573 passed, 1 skipped, 37 subtests passed`（另有 2 个依赖弃用警告）。
@@ -268,8 +265,6 @@ node extension/tests/extractor.test.js
 node extension/tests/url-utils.test.js
 node extension/tests/session-store.test.js
 ```
-
-仓库工作区中另有尚未接入主应用的旧 User/Bearer 迁移草稿（`auth.py`、`users.py`、`user_*` 及对应三个测试文件）。直接运行不带 ignore 的全量 `pytest` 会在这三个测试模块的收集阶段失败；当前产品身份模型以 Plugin Workspace 为准。
 
 ## Retrieval 评测
 
