@@ -246,7 +246,7 @@ MySQL 是文档状态和归属的权威来源；Milvus 只保存向量检索所�
 | `INGEST_PAYLOAD_TTL_SECONDS` | `604800` | Redis 任务 payload 保留时间 |
 | `INGEST_MAX_RETRIES` | `3` | 失败任务最大尝试次数 |
 
-`.env.example` 中还有 API、Redis、重试和 CORS 等预留字段；当前 Settings 或业务代码并未消费其中全部字段。后端目前也未注册 CORS 中间件。
+`.env.example` 与 `Settings` 字段一一对应；`CORS_ORIGINS` 为唯一预留项，后端目前尚未注册 CORS 中间件消费它。
 
 ## 测试
 

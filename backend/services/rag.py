@@ -157,8 +157,7 @@ class RagService:
 
         Args:
             query: 用户查询文本（非空字符串）。
-            limit: 最终返回结果数上限；默认 5（硬编码；.env 的 RAG_TOP_K 为未来预留配置，
-                   当前不读取），范围 [1, 20]。
+            limit: 最终返回结果数上限；默认 5（硬编码），范围 [1, 20]。
             document_id: 可选；指定后仅返回该 Document（page_id）的检索结果
                 （当前网页模式，需归属当前插件工作空间）；None = 全部知识库模式。
             plugin_id: 当前插件工作空间 ID（Phase 3.5 Step 2-E；workspace 隔离；
