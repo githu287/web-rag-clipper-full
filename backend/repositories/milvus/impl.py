@@ -12,9 +12,10 @@ PyMilvusRepositoryImpl：MilvusRepository Protocol 的 pymilvus 2.4.15 实现（
 1) 连接参数/集合名 **单一配置源** 全部来自 Settings（milvus_host / milvus_port / milvus_collection /
    bailian_embedding_dimension），无任何 `MilvusClient(uri="localhost:19530")` 或
    `collection_name="page_chunks"` 硬编码；
-2) **真实 MilvusClient 连接延迟到每个方法内部建立**（不在 __init__ 打开连接），避免启动期硬依赖；
-   每个方法内部显式构造 MilvusClient 并用 try/finally close() 保证资源释放
-   （pymilvus 2.4.15 MilvusClient 未实现 __enter__/__exit__，不支持 with）；
+2) **MilvusClient 惰性创建并全进程复用**（不在 __init__ 打开连接），避免启动期硬依赖；
+   4 个方法通过 _client_lock 串行访问（pymilvus 2.4.15 未承诺同实例并发调用线程安全；
+   Impl 在 DI 层为 lru_cache 单例，故客户端全进程唯一，消除每请求新建 gRPC 连接的开销）；
+   连接类错误时丢弃客户端，下次调用惰性重连；
 3) DTO 构造已在 Service 层完成，本 impl 只在 Milvus 写入前做「契约一致防御」，任何 Milvus 错误不吞，
    统一包装为 MilvusRepositoryError 族并保留异常链 __cause__。
 
@@ -28,6 +29,7 @@ PyMilvusRepositoryImpl：MilvusRepository Protocol 的 pymilvus 2.4.15 实现（
 from __future__ import annotations
 
 import logging
+import threading
 from collections.abc import Iterable
 from typing import Final
 
@@ -119,15 +121,30 @@ class PyMilvusRepositoryImpl(MilvusRepository):
         self._uri: str = f"http://{settings.milvus_host}:{settings.milvus_port}"
         self._collection_name: str = settings.milvus_collection
         self._embedding_dimension: int = settings.bailian_embedding_dimension
+        self._client: MilvusClient | None = None
+        self._client_lock = threading.RLock()
 
-    # ------------------------------------------------------------------ 连接工厂
-    def _make_client(self) -> MilvusClient:
+    # ------------------------------------------------------------------ 连接管理
+    def _get_client(self) -> MilvusClient:
         """
-        新建 MilvusClient 实例（经验库 153832：延迟到每个方法内部使用）。
-        调用方必须保证用完后关闭：使用 `client = self._make_client()` + `try/finally: client.close()`
-        （pymilvus 2.4.15 MilvusClient 未实现 __enter__/__exit__，不支持 with）。
+        返回复用的 MilvusClient（调用方必须持有 _client_lock）。
+        首次调用惰性创建；之后复用同一 gRPC 连接，避免每请求握手开销。
         """
-        return MilvusClient(uri=self._uri)
+        if self._client is None:
+            self._client = MilvusClient(uri=self._uri)
+        return self._client
+
+    def _drop_client_locked(self) -> None:
+        """
+        丢弃当前客户端（调用方必须持有 _client_lock），下次 _get_client 惰性重连。
+        仅在连接类错误后调用：Milvus 重启 / 网络中断后旧 channel 不可复用。
+        """
+        client, self._client = self._client, None
+        if client is not None:
+            try:
+                client.close()
+            except Exception as close_exc:  # noqa: BLE001 — 尽力释放旧连接，不影响主异常
+                logger.warning("关闭旧 MilvusClient 失败（忽略）：%s", close_exc)
 
     # ================================================================ 4 个方法
     # ---------------------------------------------------------------- query
@@ -144,18 +161,18 @@ class PyMilvusRepositoryImpl(MilvusRepository):
             f" page_id={page_id})"
         )
         expr = f"page_id == {int(page_id)}"
-        try:
-            client = self._make_client()
+        with self._client_lock:
             try:
-                rows: list[dict] = client.query(
+                rows: list[dict] = self._get_client().query(
                     collection_name=self._collection_name,
                     filter=expr,
                     output_fields=["id"],
                 )
-            finally:
-                client.close()
-        except Exception as exc:  # noqa: BLE001 — 统一包装 + 保留 __cause__
-            raise _wrap_milvus_error(msg_prefix, exc) from exc
+            except Exception as exc:  # noqa: BLE001 — 统一包装 + 保留 __cause__
+                wrapped = _wrap_milvus_error(msg_prefix, exc)
+                if isinstance(wrapped, MilvusConnectionError):
+                    self._drop_client_locked()
+                raise wrapped from exc
 
         # 防御：Milvus 返回结构可能缺 id；但我们显式 output_fields=["id"]，缺字段视为操作错误。
         ids: list[str] = []
@@ -193,14 +210,16 @@ class PyMilvusRepositoryImpl(MilvusRepository):
                 f"{msg_prefix}：ChunkVector 序列化/字段校验失败：{exc}"
             ) from exc
 
-        try:
-            client = self._make_client()
+        with self._client_lock:
             try:
-                client.upsert(collection_name=self._collection_name, data=data)
-            finally:
-                client.close()
-        except Exception as exc:  # noqa: BLE001
-            raise _wrap_milvus_error(msg_prefix, exc) from exc
+                self._get_client().upsert(
+                    collection_name=self._collection_name, data=data
+                )
+            except Exception as exc:  # noqa: BLE001
+                wrapped = _wrap_milvus_error(msg_prefix, exc)
+                if isinstance(wrapped, MilvusConnectionError):
+                    self._drop_client_locked()
+                raise wrapped from exc
 
     # ---------------------------------------------------------------- delete
     def delete_chunks(self, ids: list[str], /) -> None:
@@ -223,14 +242,16 @@ class PyMilvusRepositoryImpl(MilvusRepository):
         # 经验库 Phase 2.8 Step 3.1：MilvusClient.delete(ids=...) 接受 PK 值列表（list/str/int），
         # filter=... 才接受过滤表达式；二者互斥。故直接传 PK 列表，不构造 `id in [...]` 表达式
         # （原 ids=expr 会把表达式字符串当作单个 PK，导致 `id in ['id in [...]']` 畸形表达式 → code=1100）。
-        try:
-            client = self._make_client()
+        with self._client_lock:
             try:
-                client.delete(collection_name=self._collection_name, ids=ids)
-            finally:
-                client.close()
-        except Exception as exc:  # noqa: BLE001
-            raise _wrap_milvus_error(msg_prefix, exc) from exc
+                self._get_client().delete(
+                    collection_name=self._collection_name, ids=ids
+                )
+            except Exception as exc:  # noqa: BLE001
+                wrapped = _wrap_milvus_error(msg_prefix, exc)
+                if isinstance(wrapped, MilvusConnectionError):
+                    self._drop_client_locked()
+                raise wrapped from exc
 
     # ---------------------------------------------------------------- search
     def search(
@@ -275,10 +296,9 @@ class PyMilvusRepositoryImpl(MilvusRepository):
                 "（此为不可重试契约错误；如需改维度请重建 Collection 并重 ingesting）。"
             )
 
-        try:
-            client = self._make_client()
+        with self._client_lock:
             try:
-                results: list[dict] = client.search(
+                results: list[dict] = self._get_client().search(
                     collection_name=self._collection_name,
                     data=[list(vector)],  # MilvusClient.search 要求 data 为「向量列表的列表」
                     limit=limit,
@@ -292,10 +312,11 @@ class PyMilvusRepositoryImpl(MilvusRepository):
                     # （query_page_chunks 同款用法），expr 会与内部 search_requests_with_expr 冲突。
                     filter=expr,
                 )
-            finally:
-                client.close()
-        except Exception as exc:  # noqa: BLE001
-            raise _wrap_milvus_error(msg_prefix, exc) from exc
+            except Exception as exc:  # noqa: BLE001
+                wrapped = _wrap_milvus_error(msg_prefix, exc)
+                if isinstance(wrapped, MilvusConnectionError):
+                    self._drop_client_locked()
+                raise wrapped from exc
 
         # pymilvus 2.4 MilvusClient.search 返回结构：外层为 N 个 query vectors 结果列表；
         # 我们 data=[vector]，所以取 results[0] 作为当前向量的命中列表。

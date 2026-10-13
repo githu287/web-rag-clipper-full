@@ -122,7 +122,8 @@ def get_milvus_repository() -> MilvusRepository:
     2) **lru_cache 单例**：进程内只构造一次 Impl 实例，避免每次 Depends 都重建对象
        （Impl 内部本就延迟建 MilvusClient，单例化不会带来连接泄漏）。
     3) **不在 import 时连接 Milvus**：Impl.__init__ 仅读取 Settings 字段，不打开连接；
-       真实 MilvusClient 由 Impl 方法内部 `with self._make_client() as client:` 按需建立。
+       真实 MilvusClient 由 Impl 方法内部惰性创建并复用（_client_lock 串行访问，
+       连接类错误后丢弃重连），单例 Impl 即单例客户端，消除每请求 gRPC 握手开销。
 
     Returns:
         MilvusRepository: Protocol 类型实例（实际为 PyMilvusRepositoryImpl，但 Service 不感知具体类型）。
