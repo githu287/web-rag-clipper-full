@@ -82,6 +82,13 @@ class RedisIngestQueue:
         except RedisError as exc:
             raise IngestJobOperationError("acknowledge ingest job failed") from exc
 
+    def list_processing(self) -> list[str]:
+        """Peek unacknowledged job ids without moving anything."""
+        try:
+            return list(self._client.lrange(self._processing_name, 0, -1))
+        except RedisError as exc:
+            raise IngestJobOperationError("list ingest processing jobs failed") from exc
+
     def recover_processing(self) -> list[str]:
         """Move unacknowledged jobs back to the pending queue (single worker mode)."""
         recovered: list[str] = []

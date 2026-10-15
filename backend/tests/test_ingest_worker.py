@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 from unittest.mock import AsyncMock, Mock
 
+from backend.core.exceptions import IngestJobOperationError
 from backend.models.ingest_job import IngestJobStatus, IngestJobType
 from backend.models.plugin import PluginStatus
 from backend.repositories.mysql.ingest_job_protocol import IngestJobRepository
@@ -142,9 +143,22 @@ class IngestWorkerTest(unittest.TestCase):
         self.queue.get_payload.assert_not_called()
 
     def test_recovery_resets_processing_jobs(self) -> None:
-        self.queue.recover_processing.return_value = ["job-1", "job-2"]
+        self.queue.list_processing.return_value = ["job-1", "job-2"]
         self.assertEqual(self.worker.recover_interrupted(), 2)
         self.assertEqual(self.repository.recover_interrupted.call_count, 2)
+        self.queue.recover_processing.assert_called_once_with()
+
+    def test_recovery_keeps_processing_until_database_resets_finish(self) -> None:
+        """回归：数据库复位半途失败时不得搬运队列，否则任务会被 claim 跳过并静默丢弃。"""
+        self.queue.list_processing.return_value = ["job-1", "job-2"]
+        self.repository.recover_interrupted.side_effect = IngestJobOperationError(
+            "requeue ingest job failed"
+        )
+
+        with self.assertRaises(IngestJobOperationError):
+            self.worker.recover_interrupted()
+
+        self.queue.recover_processing.assert_not_called()
 
     def test_recovery_gives_up_when_retry_limit_reached(self) -> None:
         job = Mock(
@@ -155,7 +169,7 @@ class IngestWorkerTest(unittest.TestCase):
             job_type=IngestJobType.FILE_UPLOAD,
             document_id=73,
         )
-        self.queue.recover_processing.return_value = ["job-9"]
+        self.queue.list_processing.return_value = ["job-9"]
         self.queue.get_payload.return_value = {
             "job_type": IngestJobType.FILE_UPLOAD,
             "plugin_id": "plugin-a",
@@ -182,7 +196,7 @@ class IngestWorkerTest(unittest.TestCase):
             job_type=IngestJobType.WEB_CLIP,
             document_id=None,
         )
-        self.queue.recover_processing.return_value = ["job-9"]
+        self.queue.list_processing.return_value = ["job-9"]
         self.queue.get_payload.return_value = {
             "job_type": IngestJobType.WEB_CLIP,
             "plugin_id": "plugin-a",
@@ -195,10 +209,11 @@ class IngestWorkerTest(unittest.TestCase):
         self.repository.recover_interrupted.assert_called_once_with("job-9")
         self.repository.mark_failed.assert_not_called()
         self.document_upload_service.fail_prepared_upload.assert_not_called()
+        self.queue.recover_processing.assert_called_once_with()
 
     def test_recovery_without_payload_falls_back_to_plain_recover(self) -> None:
         """payload 过期时无法判定归属与次数，维持原有的直接恢复。"""
-        self.queue.recover_processing.return_value = ["job-9"]
+        self.queue.list_processing.return_value = ["job-9"]
         self.queue.get_payload.return_value = None
         self.repository.recover_interrupted.return_value = True
 

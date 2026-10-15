@@ -133,13 +133,17 @@ class IngestWorker:
             logger.exception("failed to acknowledge ingest job: job_id=%s", job_id)
 
     def recover_interrupted(self) -> int:
-        job_ids = self._queue.recover_processing()
+        """复位 MySQL 后才搬运队列，避免半途失败导致任务被静默丢弃。"""
+        job_ids = self._queue.list_processing()
         recovered = 0
         for job_id in job_ids:
             if self._exhausted_retries(job_id):
                 continue
             if self._repository.recover_interrupted(job_id):
                 recovered += 1
+        # 上面的库侧写入全部就位才搬运；若中途抛 IngestJobOperationError，
+        # processing 保持原样，下一轮恢复会重新处理同一批 job。
+        self._queue.recover_processing()
         return recovered
 
     def _exhausted_retries(self, job_id: str) -> bool:

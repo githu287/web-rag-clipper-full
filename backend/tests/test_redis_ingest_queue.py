@@ -3,6 +3,8 @@ from __future__ import annotations
 import unittest
 from unittest.mock import MagicMock, patch
 
+from redis.exceptions import RedisError
+
 from backend.core.config import Settings
 from backend.core.exceptions import IngestJobOperationError
 from backend.tasks.redis_queue import RedisIngestQueue
@@ -62,6 +64,22 @@ class RedisIngestQueueTest(unittest.TestCase):
             self.queue.enqueue_existing("job-1")
 
         self.client.eval.assert_called_once()
+
+    def test_list_processing_peeks_without_moving(self) -> None:
+        self.client.lrange.return_value = ["job-2", "job-1"]
+
+        self.assertEqual(self.queue.list_processing(), ["job-2", "job-1"])
+
+        self.client.lrange.assert_called_once_with("test:ingest:processing", 0, -1)
+        self.client.rpoplpush.assert_not_called()
+
+    def test_list_processing_wraps_redis_failure(self) -> None:
+        self.client.lrange.side_effect = RedisError("connection reset")
+
+        with self.assertRaisesRegex(
+            IngestJobOperationError, "list ingest processing jobs failed"
+        ):
+            self.queue.list_processing()
 
     def test_recover_moves_all_processing_jobs_back(self) -> None:
         self.client.rpoplpush.side_effect = ["job-1", "job-2", None]
