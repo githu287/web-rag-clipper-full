@@ -112,16 +112,28 @@ class IngestWorker:
             self._acknowledge(job_id)
         except Exception as exc:  # worker boundary: persist failure and continue
             logger.exception("ingest job failed: job_id=%s", job_id)
-            if (
-                job.job_type == IngestJobType.FILE_UPLOAD
-                and job.document_id is not None
-            ):
-                self._document_upload_service.fail_prepared_upload(
+            if self._record_failure(job, exc):
+                self._acknowledge(job_id)
+        return True
+
+    def _record_failure(self, job, exc: Exception) -> bool:
+        """写失败终态；写不进时返回 False，让 processing 保留给恢复流程重跑。"""
+        if job.job_type == IngestJobType.FILE_UPLOAD and job.document_id is not None:
+            try:
+                self._document_upload_service.fail_prepared_upload(job.document_id, exc)
+            except Exception:
+                logger.exception(
+                    "failed to mark document upload failed: job_id=%s document_id=%s",
+                    job.id,
                     job.document_id,
-                    exc,
                 )
-            self._repository.mark_failed(job_id, str(exc))
-            self._acknowledge(job_id)
+        try:
+            self._repository.mark_failed(job.id, str(exc))
+        except Exception:
+            # 终态写入冲突（如已被并发恢复改写）不能拖垮 Worker，也不能 ack，
+            # 否则任务停在 RUNNING 且队列里再也不会出现。
+            logger.exception("failed to record ingest job failure: job_id=%s", job.id)
+            return False
         return True
 
     def _acknowledge(self, job_id: str) -> None:
@@ -170,12 +182,7 @@ class IngestWorker:
             job_id,
             job.attempt_count,
         )
-        if job.job_type == IngestJobType.FILE_UPLOAD and job.document_id is not None:
-            self._document_upload_service.fail_prepared_upload(
-                job.document_id,
-                RuntimeError(give_up),
-            )
-        self._repository.mark_failed(job_id, give_up)
+        self._record_failure(job, RuntimeError(give_up))
         return True
 
 
@@ -191,17 +198,17 @@ def main() -> None:
         while True:
             try:
                 worker.run_once(timeout_seconds=5)
-            except IngestJobOperationError:
-                # Redis / MySQL 短暂不可用时保持 Worker 存活，避免需要
-                # 人工重启才能继续消费。队列的 processing 记录仍会由
-                # recover_interrupted() 恢复，不必等待进程重启。
-                logger.exception("ingest worker dependency unavailable; retrying")
+            except Exception:
+                # 无论是 Redis / MySQL 短暂不可用，还是单个任务引发的意外异常，
+                # 都只退避重试：进程退出会丢掉所有在途任务，而队列的 processing
+                # 记录仍由 recover_interrupted() 恢复，不必重启。
+                logger.exception("ingest worker hit an error; retrying")
                 time.sleep(2)
                 try:
                     recovered = worker.recover_interrupted()
                     if recovered:
                         logger.warning("recovered %s interrupted ingest jobs", recovered)
-                except IngestJobOperationError:
+                except Exception:
                     logger.exception("ingest recovery unavailable; will retry")
     except KeyboardInterrupt:
         logger.info("ingest worker stopped")
