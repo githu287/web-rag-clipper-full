@@ -116,8 +116,8 @@ def create_app() -> FastAPI:
         1) 创建 FastAPI 实例（绑定 lifespan）；
         2) 注册全局异常处理器（MilvusRepositoryError / EmbeddingClientError → HTTPException；
            Plugin 异常 handler 与 Security 异常 handler）；
-        3) include_router 注册 ingest + rag + documents + clips + plugins
-           （Phase 3.5 Step 2-D Plugin Workspace 身份体系）路由器。
+        3) include_router 注册 ingest / rag / documents / clips / jobs / plugins
+           路由器（各前缀与职责见 api/routers/__init__.py）。
 
     严格不执行：
         - 不在 import 阶段创建 FastAPI 实例（由调用方 / uvicorn 显式调用 create_app()）；
