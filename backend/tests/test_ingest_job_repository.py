@@ -103,3 +103,32 @@ class IngestJobRepositoryTest(unittest.TestCase):
 
         self.assertEqual(job.job_type, IngestJobType.FILE_UPLOAD)
         self.assertEqual(job.document_id, document_id)
+
+    def test_file_upload_requeue_keeps_document_reference(self) -> None:
+        """回归：requeue 曾清空 document_id，导致文件上传任务重试必然失败。"""
+        from backend.models.document import Document
+
+        with self.engine.begin() as connection:
+            result = connection.execute(
+                Document.__table__.insert().values(
+                    plugin_id="plugin-a",
+                    filename="note.md",
+                    file_path="stored-note.md",
+                    source_type="upload",
+                )
+            )
+            document_id = result.inserted_primary_key[0]
+
+        job = self.repo.create_job(
+            "plugin-a",
+            IngestJobType.FILE_UPLOAD,
+            document_id=document_id,
+        )
+        self.repo.claim_job(job.id)
+        failed = self.repo.mark_failed(job.id, "milvus unavailable")
+        self.assertEqual(failed.document_id, document_id)
+
+        queued = self.repo.requeue(job.id, "plugin-a")
+        self.assertEqual(queued.status, IngestJobStatus.QUEUED)
+        self.assertEqual(queued.document_id, document_id)
+        self.assertIsNone(queued.error_message)

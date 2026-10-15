@@ -205,7 +205,6 @@ class IngestJobRepositoryImpl(IngestJobRepository):
                         stage="QUEUED",
                         progress=0,
                         error_message=None,
-                        document_id=None,
                         started_at=None,
                         finished_at=None,
                         updated_at=func.now(),
