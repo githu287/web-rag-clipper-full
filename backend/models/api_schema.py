@@ -18,8 +18,9 @@ API Schema 定义（Phase 2.7 Step 2；Phase 2.13 Step 2 增 RAG Document Metada
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Final
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .milvus_dto import ChunkSearchResult
 
@@ -28,6 +29,16 @@ from .milvus_dto import ChunkSearchResult
 # Ingest 接口 Schema
 # ---------------------------------------------------------------------------
 
+# Milvus page_chunks.chunk_text 为 VARCHAR(4096)，长度按 UTF-8 字节计；
+# 单条超限会让整批 upsert 失败，而此时 embedding 调用费已经花掉，
+# 因此必须在请求边界先拒绝（与 repositories/milvus/initializer.py 的列定义一致）。
+_CHUNK_TEXT_MAX_BYTES: Final[int] = 4096
+
+# 与 DocumentIngestRequest 同一条 ingest 链路，共用同一批量上限；
+# EmbeddingClient 按 embedding_batch_size（≤10）串行分批，条数直接决定
+# async 端点内同步阻塞的时长与调用费。
+_MAX_CHUNKS_PER_REQUEST: Final[int] = 1000
+
 
 class IngestRequest(BaseModel):
     """
@@ -35,7 +46,7 @@ class IngestRequest(BaseModel):
 
     字段：
         page_id : 页面 ID（必须 > 0；对应 Document.id，当前 document.id = Milvus.page_id 1:1）。
-        chunks  : 已切分的 chunk 文本列表（必须非空；每条非空字符串）。
+        chunks  : 已切分的 chunk 文本列表（1~1000 项；每条非空且不超过 4096 UTF-8 字节）。
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -48,8 +59,21 @@ class IngestRequest(BaseModel):
     chunks: list[str] = Field(
         ...,
         min_length=1,
-        description="已切分的 chunk 文本列表（必须非空）",
+        max_length=_MAX_CHUNKS_PER_REQUEST,
+        description="已切分的 chunk 文本列表（1~1000 项；单条不超过 4096 UTF-8 字节）",
     )
+
+    @field_validator("chunks")
+    @classmethod
+    def _validate_chunk_text_size(cls, chunks: list[str]) -> list[str]:
+        for index, chunk_text in enumerate(chunks):
+            text_size = len(chunk_text.encode("utf-8"))
+            if text_size > _CHUNK_TEXT_MAX_BYTES:
+                raise ValueError(
+                    f"chunks[{index}] 长度 {text_size} 字节超过上限 "
+                    f"{_CHUNK_TEXT_MAX_BYTES}（Milvus chunk_text VARCHAR(4096)）"
+                )
+        return chunks
 
 
 class IngestResponse(BaseModel):

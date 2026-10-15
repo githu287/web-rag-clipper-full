@@ -69,7 +69,8 @@ async def ingest_page(
         相同 page_id + 相同 chunks 多次调用 → 结果一致（upsert 按 PK 覆盖 + delete 差集）。
 
     Args:
-        request: IngestRequest（page_id > 0；chunks 非空）。
+        request: IngestRequest（page_id > 0；chunks 1~1000 项，单条不超过
+            4096 UTF-8 字节；超限由 Pydantic 校验直接返回 422，不进入 Service）。
         current_plugin: 当前插件工作空间（Depends(get_current_plugin) 解析）。
         service: 通过 DI 注入的 IngestService 实例。
         plugin_service: 通过 DI 注入的 PluginService 实例（用于解密插件工作空间 API Key）。

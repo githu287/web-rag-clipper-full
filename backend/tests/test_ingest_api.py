@@ -237,6 +237,33 @@ class IngestApiTest(unittest.TestCase):
         self.assertEqual(response.status_code, 503)
         self.fake_ingest_service.ingest_page.assert_awaited_once()
 
+    # ============================ L. chunks 批量与单条长度上界（防超大请求阻塞与烧费）
+    def test_ingest_chunks_over_batch_limit_rejected(self) -> None:
+        """L：chunks 1001 项 → 422（与 DocumentIngestRequest 同为 1000 上限），不触发 service。"""
+        response = self._post({"page_id": 1, "chunks": ["x"] * 1001})
+
+        self.assertEqual(response.status_code, 422)
+        self.fake_ingest_service.ingest_page.assert_not_called()
+
+    def test_ingest_chunks_at_batch_limit_accepted(self) -> None:
+        """L：恰好 1000 项仍在边界内 → 200。"""
+        response = self._post({"page_id": 1, "chunks": ["x"] * 1000})
+
+        self.assertEqual(response.status_code, 200)
+
+    def test_ingest_chunk_over_byte_limit_rejected(self) -> None:
+        """L：单条 4098 UTF-8 字节（Milvus chunk_text VARCHAR(4096)）→ 422，不触发 service。"""
+        response = self._post({"page_id": 1, "chunks": ["x" * 4096, "汉" * 1366]})
+
+        self.assertEqual(response.status_code, 422)
+        self.fake_ingest_service.ingest_page.assert_not_called()
+
+    def test_ingest_chunk_at_byte_limit_accepted(self) -> None:
+        """L：单条恰好 4095 UTF-8 字节（多字节字符按字节计）→ 200。"""
+        response = self._post({"page_id": 1, "chunks": ["汉" * 1365]})
+
+        self.assertEqual(response.status_code, 200)
+
     # ================================================================
     # Phase 3.5 Step 2-E：认证 + 插件工作空间 API Key
     # ================================================================

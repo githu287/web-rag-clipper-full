@@ -256,7 +256,7 @@ MySQL 是文档状态和归属的权威来源；Milvus 只保存向量检索所�
 .venv\Scripts\python.exe -m pytest -q
 ```
 
-当前活动测试集结果为：`584 passed, 1 skipped, 37 subtests passed`（另有 2 个依赖弃用警告）。
+当前活动测试集结果为：`588 passed, 1 skipped, 37 subtests passed`（另有 2 个依赖弃用警告）。
 
 扩展侧的纯 JavaScript 回归测试无需启动后端：
 
