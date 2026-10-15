@@ -25,6 +25,8 @@ let currentTabId = null;
 let currentPage = null;
 let clipBusy = false;
 const JOB_POLL_INTERVAL_MS = 1500;
+const JOB_POLL_MAX_WAIT_MS = 120000;
+const JOB_POLL_ERROR_LIMIT = 3;
 
 // ================================================================ 工具
 async function getCurrentTab() {
@@ -126,8 +128,8 @@ async function clipCurrentPage() {
       raw_text: page.raw_text,
     });
     if (job && job.id) {
-      await savePendingJobBinding(plugin.pluginId, page, job.id);
-      await monitorJobInPopup(job.id, page);
+      const clipTabId = await savePendingJobBinding(plugin.pluginId, page, job.id);
+      await monitorJobInPopup(job.id, page, clipTabId);
     } else {
       setStatus("剪藏失败", "err", "后端未返回 job id");
     }
@@ -141,7 +143,7 @@ async function clipCurrentPage() {
 
 async function savePendingJobBinding(pluginId, page, jobId) {
   const tab = await getCurrentTab();
-  if (!tab || tab.id == null) return;
+  if (!tab || tab.id == null) return null;
   currentTabId = tab.id;
   const existing = await sessionStore.getTabBinding(tab.id);
   const next = existing && existing.pluginId === pluginId ? existing : {
@@ -156,6 +158,7 @@ async function savePendingJobBinding(pluginId, page, jobId) {
   next.stale = false;
   next.updatedAt = Date.now();
   await sessionStore.setTabBinding(tab.id, next);
+  return tab.id;
 }
 
 function waitMilliseconds(milliseconds) {
@@ -164,46 +167,27 @@ function waitMilliseconds(milliseconds) {
   });
 }
 
-async function monitorJobInPopup(jobId, page) {
-  while (true) {
-    const job = await webRagApiClient.jobs.get(jobId);
+async function monitorJobInPopup(jobId, page, tabId) {
+  const deadline = Date.now() + JOB_POLL_MAX_WAIT_MS;
+  let consecutiveErrors = 0;
+  while (Date.now() < deadline) {
+    let job;
+    try {
+      job = await webRagApiClient.jobs.get(jobId);
+      consecutiveErrors = 0;
+    } catch (err) {
+      // 内容已被后端接受，单次状态查询失败不等于剪藏失败
+      consecutiveErrors += 1;
+      if (consecutiveErrors >= JOB_POLL_ERROR_LIMIT) throw err;
+      setStatus("状态查询失败，正在重试…", null, errorText(err));
+      await waitMilliseconds(JOB_POLL_INTERVAL_MS);
+      continue;
+    }
     if (job.status === "FAILED") {
       throw new Error(job.error_message || "入库失败");
     }
     if (job.status === "SUCCEEDED") {
-      const document = await webRagApiClient.documents.get(job.document_id);
-      const binding = await sessionStore.getTabBinding(currentTabId);
-      if (binding && binding.ingestJobId === jobId) {
-        let pageStillMatches = !binding.stale;
-        try {
-          pageStillMatches = pageStillMatches && (
-            webRagUrlUtils.normalizeWebUrl(binding.pageUrl) ===
-            webRagUrlUtils.normalizeWebUrl(binding.ingestJobPageUrl)
-          );
-        } catch (_err) {
-          pageStillMatches = false;
-        }
-        binding.ingestJobId = null;
-        binding.ingestJobPageUrl = null;
-        if (pageStillMatches) {
-          binding.documentId = Number(job.document_id);
-          binding.documentUrl = document.url || webRagUrlUtils.normalizeWebUrl(page.url);
-          binding.stale = false;
-        }
-        await sessionStore.setTabBinding(currentTabId, binding);
-      }
-      try {
-        chrome.runtime.sendMessage({
-          type: "WEB_RAG_CLIP_COMPLETED",
-          tabId: currentTabId,
-          documentId: Number(job.document_id),
-        });
-      } catch (_err) {}
-      setStatus(
-        "✓ 剪藏成功（Document #" + job.document_id + "）",
-        "ok",
-        "请在 Side Panel 中提问。"
-      );
+      await finishClipInPopup(jobId, job, page, tabId);
       return;
     }
     setStatus(
@@ -213,6 +197,57 @@ async function monitorJobInPopup(jobId, page) {
     );
     await waitMilliseconds(JOB_POLL_INTERVAL_MS);
   }
+  // 超时不是失败：保留 pending 绑定，Side Panel 打开后会继续跟踪同一个 job
+  setStatus("后台仍在入库", null, "可在 Side Panel 知识库中查看进度。");
+}
+
+async function finishClipInPopup(jobId, job, page, tabId) {
+  let docDetail = null;
+  try {
+    docDetail = await webRagApiClient.documents.get(job.document_id);
+  } catch (_err) {
+    // 文档详情拉取失败不影响入库结果，URL 回退到剪藏时的页面地址
+  }
+  if (tabId != null) {
+    try {
+      await sessionStore.updateTabBinding(tabId, function (binding) {
+        if (binding.ingestJobId !== jobId) return binding;
+        let pageStillMatches = !binding.stale;
+        try {
+          pageStillMatches = pageStillMatches && (
+            webRagUrlUtils.normalizeWebUrl(binding.pageUrl) ===
+            webRagUrlUtils.normalizeWebUrl(binding.ingestJobPageUrl)
+          );
+        } catch (_err) {
+          pageStillMatches = false;
+        }
+        const next = Object.assign({}, binding);
+        next.ingestJobId = null;
+        next.ingestJobPageUrl = null;
+        if (pageStillMatches) {
+          next.documentId = Number(job.document_id);
+          next.documentUrl =
+            (docDetail && docDetail.url) || webRagUrlUtils.normalizeWebUrl(page.url);
+          next.stale = false;
+        }
+        return next;
+      });
+    } catch (_err) {
+      // 绑定写入失败不改变入库结果
+    }
+    try {
+      chrome.runtime.sendMessage({
+        type: "WEB_RAG_CLIP_COMPLETED",
+        tabId: tabId,
+        documentId: Number(job.document_id),
+      });
+    } catch (_err) {}
+  }
+  setStatus(
+    "✓ 剪藏成功（Document #" + job.document_id + "）",
+    "ok",
+    "请在 Side Panel 中提问。"
+  );
 }
 
 // ================================================================ 视图
