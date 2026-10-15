@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 from unittest.mock import AsyncMock, Mock
 
-from backend.models.ingest_job import IngestJobType
+from backend.models.ingest_job import IngestJobStatus, IngestJobType
 from backend.models.plugin import PluginStatus
 from backend.repositories.mysql.ingest_job_protocol import IngestJobRepository
 from backend.repositories.mysql.plugin_protocol import PluginRepository
@@ -31,6 +31,7 @@ class IngestWorkerTest(unittest.TestCase):
             plugin_service=self.plugin_service,
             web_clip_service=self.web_clip_service,
             document_upload_service=self.document_upload_service,
+            max_retries=3,
         )
 
     def test_successful_job_reaches_terminal_state_and_acknowledges(self) -> None:
@@ -144,3 +145,64 @@ class IngestWorkerTest(unittest.TestCase):
         self.queue.recover_processing.return_value = ["job-1", "job-2"]
         self.assertEqual(self.worker.recover_interrupted(), 2)
         self.assertEqual(self.repository.recover_interrupted.call_count, 2)
+
+    def test_recovery_gives_up_when_retry_limit_reached(self) -> None:
+        job = Mock(
+            id="job-9",
+            plugin_id="plugin-a",
+            status=IngestJobStatus.RUNNING,
+            attempt_count=3,
+            job_type=IngestJobType.FILE_UPLOAD,
+            document_id=73,
+        )
+        self.queue.recover_processing.return_value = ["job-9"]
+        self.queue.get_payload.return_value = {
+            "job_type": IngestJobType.FILE_UPLOAD,
+            "plugin_id": "plugin-a",
+            "document_id": 73,
+        }
+        self.repository.get_job.return_value = job
+
+        self.assertEqual(self.worker.recover_interrupted(), 0)
+
+        self.repository.recover_interrupted.assert_not_called()
+        self.repository.mark_failed.assert_called_once_with(
+            "job-9", "worker interrupted; retry limit reached"
+        )
+        document_id, cause = self.document_upload_service.fail_prepared_upload.call_args[0]
+        self.assertEqual(document_id, 73)
+        self.assertIsInstance(cause, RuntimeError)
+
+    def test_recovery_requeues_job_below_retry_limit(self) -> None:
+        job = Mock(
+            id="job-9",
+            plugin_id="plugin-a",
+            status=IngestJobStatus.RUNNING,
+            attempt_count=1,
+            job_type=IngestJobType.WEB_CLIP,
+            document_id=None,
+        )
+        self.queue.recover_processing.return_value = ["job-9"]
+        self.queue.get_payload.return_value = {
+            "job_type": IngestJobType.WEB_CLIP,
+            "plugin_id": "plugin-a",
+        }
+        self.repository.get_job.return_value = job
+        self.repository.recover_interrupted.return_value = True
+
+        self.assertEqual(self.worker.recover_interrupted(), 1)
+
+        self.repository.recover_interrupted.assert_called_once_with("job-9")
+        self.repository.mark_failed.assert_not_called()
+        self.document_upload_service.fail_prepared_upload.assert_not_called()
+
+    def test_recovery_without_payload_falls_back_to_plain_recover(self) -> None:
+        """payload 过期时无法判定归属与次数，维持原有的直接恢复。"""
+        self.queue.recover_processing.return_value = ["job-9"]
+        self.queue.get_payload.return_value = None
+        self.repository.recover_interrupted.return_value = True
+
+        self.assertEqual(self.worker.recover_interrupted(), 1)
+
+        self.repository.get_job.assert_not_called()
+        self.repository.mark_failed.assert_not_called()

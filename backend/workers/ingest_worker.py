@@ -11,11 +11,12 @@ from ..core.di import (
     get_plugin_repository,
     get_plugin_service,
     get_redis_ingest_queue,
+    get_settings,
     get_web_clip_service,
 )
-from ..core.exceptions import IngestJobOperationError
+from ..core.exceptions import IngestJobNotFoundError, IngestJobOperationError
 from ..models.document_api_schema import WebClipRequest
-from ..models.ingest_job import IngestJobType
+from ..models.ingest_job import IngestJobStatus, IngestJobType
 from ..models.plugin import PluginStatus
 from ..repositories.mysql.ingest_job_protocol import IngestJobRepository
 from ..repositories.mysql.plugin_protocol import PluginRepository
@@ -37,6 +38,7 @@ class IngestWorker:
         plugin_service: PluginService | None = None,
         web_clip_service: WebClipService | None = None,
         document_upload_service: DocumentUploadService | None = None,
+        max_retries: int | None = None,
     ) -> None:
         self._repository = repository or get_ingest_job_repository()
         self._queue = queue or get_redis_ingest_queue()
@@ -45,6 +47,9 @@ class IngestWorker:
         self._web_clip_service = web_clip_service or get_web_clip_service()
         self._document_upload_service = (
             document_upload_service or get_document_upload_service()
+        )
+        self._max_retries = (
+            max_retries if max_retries is not None else get_settings().ingest_max_retries
         )
 
     def run_once(self, timeout_seconds: int = 5) -> bool:
@@ -129,9 +134,45 @@ class IngestWorker:
 
     def recover_interrupted(self) -> int:
         job_ids = self._queue.recover_processing()
+        recovered = 0
         for job_id in job_ids:
-            self._repository.recover_interrupted(job_id)
-        return len(job_ids)
+            if self._exhausted_retries(job_id):
+                continue
+            if self._repository.recover_interrupted(job_id):
+                recovered += 1
+        return recovered
+
+    def _exhausted_retries(self, job_id: str) -> bool:
+        """崩溃恢复不经过 retry_job，这里补上同一个重试上限，避免毒任务无限重入队列。"""
+        try:
+            payload = self._queue.get_payload(job_id)
+        except IngestJobOperationError:
+            return False
+        if not isinstance(payload, dict):
+            # payload 已过期或不可读时无法判定归属，维持原有的直接恢复
+            return False
+        plugin_id = payload.get("plugin_id")
+        if not isinstance(plugin_id, str):
+            return False
+        try:
+            job = self._repository.get_job(job_id, plugin_id)
+        except (IngestJobNotFoundError, IngestJobOperationError):
+            return False
+        if job.status != IngestJobStatus.RUNNING or job.attempt_count < self._max_retries:
+            return False
+        give_up = "worker interrupted; retry limit reached"
+        logger.error(
+            "ingest job exceeded retry limit during recovery: job_id=%s attempts=%s",
+            job_id,
+            job.attempt_count,
+        )
+        if job.job_type == IngestJobType.FILE_UPLOAD and job.document_id is not None:
+            self._document_upload_service.fail_prepared_upload(
+                job.document_id,
+                RuntimeError(give_up),
+            )
+        self._repository.mark_failed(job_id, give_up)
+        return True
 
 
 def main() -> None:
