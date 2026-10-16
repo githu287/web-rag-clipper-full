@@ -292,7 +292,20 @@ class EmbeddingClientUserKeyTest(unittest.TestCase):
         self.mock_openai_cls.assert_called_once_with(
             api_key="sk-user-a",
             base_url="https://example.com/v1",
+            timeout=30,
         )
+
+    def test_client_timeout_comes_from_settings(self) -> None:
+        """超时必须是 Settings 单源，而不是客户端里的硬编码值。"""
+        client = EmbeddingClient(
+            _make_settings(
+                bailian_api_key="server-key",
+                bailian_embedding_timeout_seconds=7,
+            )
+        )
+        client._get_client("sk-user-a")  # noqa: SLF001
+        _, kwargs = self.mock_openai_cls.call_args
+        self.assertEqual(kwargs["timeout"], 7)
 
     def test_missing_api_key_raises_config_error(self) -> None:
         """F6-B：api_key=None → EmbeddingConfigError，且不构造 OpenAI。"""

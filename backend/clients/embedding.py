@@ -173,12 +173,17 @@ class EmbeddingClient:
             )
 
         logger.info(
-            "初始化 Embedding OpenAI 兼容客户端：provider=%s, base_url=%s, model=%s",
+            "初始化 Embedding OpenAI 兼容客户端：provider=%s, base_url=%s, model=%s, timeout=%ss",
             endpoint.provider,
             base_url,
             model,
+            self._settings.bailian_embedding_timeout_seconds,
         )
-        client = OpenAI(api_key=effective_key, base_url=base_url)
+        client = OpenAI(
+            api_key=effective_key,
+            base_url=base_url,
+            timeout=self._settings.bailian_embedding_timeout_seconds,
+        )
         self._clients[client_key] = client
         if len(self._clients) > _MAX_CLIENT_CACHE_SIZE:
             oldest_key = next(iter(self._clients))

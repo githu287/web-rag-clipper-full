@@ -33,6 +33,11 @@ _DEFAULT_BAILIAN_EMBEDDING_MODEL: Final[str] = "text-embedding-v3"
 # 百炼 LLM 模型默认值（Phase 3.3 Step 3 新增；与 .env.example L37 BAILIAN_LLM_MODEL=qwen-plus 对齐）
 _DEFAULT_BAILIAN_LLM_MODEL: Final[str] = "qwen-plus"
 
+# 百炼单次请求超时（秒；与 .env.example 的 BAILIAN_*_TIMEOUT_SECONDS 对齐）。
+# openai SDK 不传 timeout 时用 600 秒默认值，一次卡住的上游调用会长时间占住请求线程。
+_DEFAULT_BAILIAN_EMBEDDING_TIMEOUT_SECONDS: Final[int] = 30
+_DEFAULT_BAILIAN_LLM_TIMEOUT_SECONDS: Final[int] = 60
+
 # 百炼 text-embedding-v3 单次请求最大行数硬限制为 10（.env.example L42 注释明确）
 _DEFAULT_EMBEDDING_BATCH_SIZE: Final[int] = 10
 _EMBEDDING_BATCH_SIZE_MAX: Final[int] = 10
@@ -105,6 +110,16 @@ class Settings(BaseSettings):
         default=_DEFAULT_BAILIAN_LLM_MODEL,
         min_length=1,
         description="百炼 LLM 模型名（Chat Completion）；默认 qwen-plus",
+    )
+    bailian_embedding_timeout_seconds: int = Field(
+        default=_DEFAULT_BAILIAN_EMBEDDING_TIMEOUT_SECONDS,
+        ge=1,
+        description="百炼 Embedding 单次请求超时（秒）；替代 openai SDK 的 600 秒默认值",
+    )
+    bailian_llm_timeout_seconds: int = Field(
+        default=_DEFAULT_BAILIAN_LLM_TIMEOUT_SECONDS,
+        ge=1,
+        description="百炼 LLM Chat Completion 单次请求超时（秒）；替代 openai SDK 的 600 秒默认值",
     )
 
     # ---- 认证体系（Phase 3.4 Step D 新增）----

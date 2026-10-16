@@ -271,6 +271,14 @@ class BailianLLMClientUserKeyTest(unittest.TestCase):
         _, kwargs = self.mock_openai_cls.call_args
         self.assertEqual(kwargs["api_key"], "sk-user-a")
         self.assertNotEqual(kwargs["api_key"], "server-key")
+        self.assertEqual(kwargs["timeout"], 60)
+
+    def test_client_timeout_comes_from_settings(self) -> None:
+        """超时必须是 Settings 单源，而不是客户端里的硬编码值。"""
+        client = BailianLLMClient(_make_settings(bailian_llm_timeout_seconds=9))
+        client.generate("s", "u", api_key="sk-user-a")
+        _, kwargs = self.mock_openai_cls.call_args
+        self.assertEqual(kwargs["timeout"], 9)
 
     def test_missing_api_key_raises_config_error(self) -> None:
         """F6-B：api_key 缺失 → LLMClientConfigError，不构造 OpenAI。"""
