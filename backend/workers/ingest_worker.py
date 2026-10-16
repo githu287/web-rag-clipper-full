@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import signal
+import threading
 import time
 
 from ..core.di import (
@@ -186,7 +188,21 @@ class IngestWorker:
         return True
 
 
-def main() -> None:
+def _install_sigterm_handler(stop: threading.Event) -> None:
+    """SIGTERM 只置位停止标志，不在任务中途终止进程。
+
+    正在入库的任务被杀掉会让文档停在「处理中」，只能等下次启动的
+    recover_interrupted() 兜底；置位后主循环会在当前任务收尾时退出。
+    """
+
+    def handle(signum, _frame) -> None:
+        logger.info("ingest worker received signal %s; finishing current job", signum)
+        stop.set()
+
+    signal.signal(signal.SIGTERM, handle)
+
+
+def main(stop: threading.Event) -> None:
     logging.basicConfig(level=logging.INFO)
     get_milvus_initializer().initialize()
     worker = IngestWorker()
@@ -195,7 +211,7 @@ def main() -> None:
         logger.warning("recovered %s interrupted ingest jobs", recovered)
     logger.info("ingest worker started")
     try:
-        while True:
+        while not stop.is_set():
             try:
                 worker.run_once(timeout_seconds=5)
             except Exception:
@@ -211,8 +227,11 @@ def main() -> None:
                 except Exception:
                     logger.exception("ingest recovery unavailable; will retry")
     except KeyboardInterrupt:
-        logger.info("ingest worker stopped")
+        pass
+    logger.info("ingest worker stopped")
 
 
 if __name__ == "__main__":
-    main()
+    stop_event = threading.Event()
+    _install_sigterm_handler(stop_event)
+    main(stop_event)

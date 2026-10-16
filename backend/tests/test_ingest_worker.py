@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import signal
+import threading
 import unittest
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -307,7 +309,46 @@ class IngestWorkerTest(unittest.TestCase):
             patch("backend.workers.ingest_worker.IngestWorker", return_value=worker),
             patch("backend.workers.ingest_worker.time.sleep") as sleep,
         ):
-            ingest_worker.main()
+            ingest_worker.main(threading.Event())
 
         self.assertEqual(worker.run_once.call_count, 2)
         sleep.assert_called_once_with(2)
+
+    def test_shutdown_flag_takes_effect_only_at_job_boundary(self) -> None:
+        """任务执行期间收到停止信号：当前任务仍要跑完，之后不得再 dequeue。"""
+        stop = threading.Event()
+        observed_timeouts: list[int] = []
+
+        def run_once(timeout_seconds: int) -> bool:
+            observed_timeouts.append(timeout_seconds)
+            if len(observed_timeouts) > 3:
+                # 主循环按设计吞掉 Exception，守卫必须是 BaseException 才逃得出去，
+                # 否则「忽略停止标志」的回归会变成测试挂起而不是失败。
+                raise KeyboardInterrupt("worker loop ignored the stop flag")
+            if len(observed_timeouts) == 2:
+                stop.set()
+            return True
+
+        worker = Mock(spec=IngestWorker)
+        worker.recover_interrupted.return_value = 0
+        worker.run_once.side_effect = run_once
+        with (
+            patch("backend.workers.ingest_worker.get_milvus_initializer"),
+            patch("backend.workers.ingest_worker.IngestWorker", return_value=worker),
+        ):
+            ingest_worker.main(stop)
+
+        # 置位发生在第 2 次调用内部：那次调用必须正常返回，循环随后才退出。
+        self.assertEqual(observed_timeouts, [5, 5])
+
+    def test_sigterm_handler_sets_stop_flag_instead_of_killing(self) -> None:
+        """SIGTERM 只置位标志；真实信号投递只能在部署机上验证。"""
+        stop = threading.Event()
+        with patch("backend.workers.ingest_worker.signal.signal") as register:
+            ingest_worker._install_sigterm_handler(stop)
+
+        self.assertEqual(register.call_args[0][0], signal.SIGTERM)
+        handler = register.call_args[0][1]
+        self.assertFalse(stop.is_set())
+        handler(signal.SIGTERM, None)
+        self.assertTrue(stop.is_set())

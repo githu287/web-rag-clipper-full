@@ -145,6 +145,8 @@ python -m backend.workers.ingest_worker
 
 Worker 会初始化 Milvus，恢复上次意外中断且未确认的任务，然后阻塞等待 Redis 队列。当前按单 Worker 模式设计。
 
+停机方式有区别：`SIGTERM`（`systemctl stop`、`docker stop`、`kill <pid>`）会等当前任务收尾后再退出，正在入库的文档不会被拦腰截断；Ctrl+C（`SIGINT`）仍是立即中断。任何一种方式留下的未确认任务，都由下次启动时的恢复流程重新入队。
+
 ### 7. 初始化 Workspace
 
 在 Swagger UI 中按顺序调用：

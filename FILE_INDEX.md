@@ -114,7 +114,7 @@
 | `backend/storage/protocol.py` | File Storage Protocol |
 | `backend/storage/local.py` | 本地保存/删除与路径穿越防护 |
 | `backend/tasks/redis_queue.py` | Redis 待处理/processing 队列、payload TTL 与 ack/recovery |
-| `backend/workers/ingest_worker.py` | 异步网页与文件入库 Worker CLI |
+| `backend/workers/ingest_worker.py` | 异步网页与文件入库 Worker CLI（SIGTERM 在任务边界优雅退出） |
 | `backend/requirements.txt` | 后端依赖和 Milvus Client 版本约束 |
 
 ### 后端测试
@@ -151,7 +151,7 @@
 | `backend/tests/test_ingest_job_service.py` | 入队失败补偿、payload 安全与重试上限 |
 | `backend/tests/test_ingest_job_api.py` | 异步提交、进度查询、重试和错误映射 |
 | `backend/tests/test_redis_ingest_queue.py` | Redis 原子入队、processing ack 与恢复 |
-| `backend/tests/test_ingest_worker.py` | Worker 成功、失败、重复投递与中断恢复 |
+| `backend/tests/test_ingest_worker.py` | Worker 成功、失败、重复投递、中断恢复与优雅停机 |
 | `backend/tests/test_evaluation_baseline.py` | 指标、数据对齐和隔离泄漏计算 |
 | `backend/tests/test_auth_api.py` | 未接入 User/Bearer 草稿测试；当前收集失败 |
 | `backend/tests/test_user_repository.py` | 未接入 User Repository 草稿测试；当前收集失败 |
