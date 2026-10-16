@@ -1010,11 +1010,8 @@ async function switchMode(mode) {
   }
   binding.mode = mode;
   await sessionStore.setTabBinding(currentTabId, binding);
-  if (currentView !== "chat") switchView("chat");
-  updateScopeSelector();
-  renderChat();
-  updateNav();
-  updateSendState();
+  // 统一由 switchView 渲染聊天，避免「switchView 内部 + 外部」两次全量重建。
+  switchView("chat");
 }
 
 function renderClipView() {

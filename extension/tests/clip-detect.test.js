@@ -11,6 +11,10 @@ const vm = require("node:vm");
 
 const extensionDir = path.resolve(__dirname, "..");
 
+// 在宿主 realm 加载真实的规范化实现（url-utils.js 写入 globalThis.webRagUrlUtils）。
+require("../url-utils.js");
+const webRagUrlUtils = globalThis.webRagUrlUtils;
+
 const MATCHING_ITEMS = [
   { id: "11", url: "https://example.com/a", status: "SUCCESS", created_at: "2026-10-01T00:00:00" },
   { id: "12", url: "https://example.com/a", status: "SUCCESS", created_at: "2026-10-05T00:00:00" },
@@ -39,11 +43,12 @@ function loadClipDetect(initialItems) {
   const context = vm.createContext({
     console,
     webRagApiClient,
-    // 真实规范化规则参与测试，避免锚点/跟踪参数场景失真。
-    webRagUrlUtils: undefined,
+    // 真实规范化规则在宿主 realm 运行（url-utils.js 会写入 globalThis.webRagUrlUtils），
+    // 沙箱只调用它并拿到规范化后的字符串，避免依赖 vm 里是否存在 URL 等宿主全局。
+    webRagUrlUtils,
+    // Date 只被 clip-detect 用于 Date.now()，用可控假时钟驱动 TTL 过期。
     Date: { now: function () { return state.time; } },
   });
-  vm.runInContext(fs.readFileSync(path.join(extensionDir, "url-utils.js"), "utf8"), context);
   vm.runInContext(
     fs.readFileSync(path.join(extensionDir, "clip-detect.js"), "utf8") +
       "\nglobalThis.__detect = webRagClipDetect;",

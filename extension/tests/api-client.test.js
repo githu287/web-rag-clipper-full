@@ -121,8 +121,8 @@ async function expectApiError(promise, status, code, messagePattern) {
   // ---------------------------------------------------------------- FormData 通道
   {
     const { api, calls } = respondingWith(makeResponse(200, { id: 9 }));
-    const result = await uploadVia(api);
-    assert.deepEqual(result.data, { id: 9 });
+    const data = await uploadVia(api);
+    assert.deepEqual(data, { id: 9 });
     assert.equal(calls[0].url, "http://localhost:18000/documents/upload");
     assert.equal(calls[0].init.method, "POST");
     const body = calls[0].init.body;
