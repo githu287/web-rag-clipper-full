@@ -264,6 +264,7 @@ MySQL 是文档状态和归属的权威来源；Milvus 只保存向量检索所�
 node extension/tests/extractor.test.js
 node extension/tests/url-utils.test.js
 node extension/tests/session-store.test.js
+node extension/tests/api-client.test.js
 ```
 
 ## Retrieval 评测

@@ -102,6 +102,95 @@ const webRagApiClient = (() => {
     unauthenticatedHandler = typeof handler === "function" ? handler : null;
   }
 
+  // 双凭证：X-Plugin-ID + X-Plugin-Secret（唯一认证来源）。
+  function applyAuth(headers) {
+    if (!pluginId || !pluginSecret) {
+      throw new ApiRequestError(401, "UNAUTHENTICATED", "插件凭证缺失，请重新创建插件");
+    }
+    headers["X-Plugin-ID"] = pluginId;
+    headers["X-Plugin-Secret"] = pluginSecret;
+    return headers;
+  }
+
+  // 401：凭证失效 → 清除本地插件身份，回到 Welcome。
+  async function invalidatePlugin() {
+    const currentPluginId = pluginId;
+    await clearPlugin();
+    if (unauthenticatedHandler) {
+      await unauthenticatedHandler({ pluginId: currentPluginId });
+    }
+    throw new ApiRequestError(401, "UNAUTHENTICATED", "插件凭证已失效，请重新创建插件");
+  }
+
+  // 上传通道专有的状态码；其余错误分类与 JSON 通道完全共用 classifyResponse。
+  const UPLOAD_STATUS_ERRORS = {
+    413: { code: "FILE_TOO_LARGE", message: "文件过大，超出限制" },
+    415: { code: "UNSUPPORTED_FILE_TYPE", message: "不支持的文件类型" },
+  };
+
+  // 响应 → 数据 / ApiRequestError 的唯一分类入口。
+  // auth=false 时 401 不清理本地身份（注册等匿名端点）；
+  // failureLabel 只影响「无 detail 可读」时的兜底文案。
+  async function classifyResponse(response, options) {
+    const opts = options || {};
+    if (response.status === 204) {
+      return { response: response, data: null };
+    }
+    let data = null;
+    try {
+      data = await response.json();
+    } catch (_err) {
+      data = null;
+    }
+    if (opts.auth !== false && response.status === 401) {
+      await invalidatePlugin();
+    }
+    if (response.status === 403) {
+      if (data && data.type === "PluginDisabledError") {
+        throw new ApiRequestError(403, "PLUGIN_DISABLED", "插件已被禁用，请联系管理员");
+      }
+      throw new ApiRequestError(403, "DISABLED", "插件已被禁用，请联系管理员");
+    }
+    // 409 + API Key 文案 → API Key 未配置
+    if (response.status === 409 && isApiKeyNotConfiguredError(data)) {
+      throw new ApiRequestError(409, "API_KEY_NOT_CONFIGURED", "请前往设置配置模型服务");
+    }
+    const mapped = opts.statusErrors ? opts.statusErrors[response.status] : null;
+    if (mapped && !response.ok) {
+      throw new ApiRequestError(
+        response.status,
+        mapped.code,
+        parseErrorMessage(data, mapped.message)
+      );
+    }
+    if (!response.ok) {
+      if (response.status === 401) {
+        throw new ApiRequestError(401, "UNAUTHENTICATED", "插件凭证已失效，请重新创建插件");
+      }
+      if (response.status === 409) {
+        if (data && data.type === "PluginNameTakenError") {
+          throw new ApiRequestError(409, "PLUGIN_NAME_TAKEN", "这个插件名称已经被使用，请换一个名称");
+        }
+        throw new ApiRequestError(
+          response.status,
+          "HTTP",
+          parseErrorMessage(data, "请求冲突（HTTP 409）")
+        );
+      }
+      if (response.status === 422) {
+        throw new ApiRequestError(422, "VALIDATION", parseErrorMessage(data, "输入不合法，请检查后重试"));
+      }
+      throw new ApiRequestError(
+        response.status,
+        "HTTP",
+        data
+          ? parseErrorMessage(data, (opts.failureLabel || "请求") + "失败（HTTP " + response.status + "）")
+          : "服务器返回了无法解析的响应（HTTP " + response.status + "）"
+      );
+    }
+    return { response: response, data: data };
+  }
+
   async function request(path, options) {
     const opts = options || {};
     const method = opts.method || "GET";
@@ -112,12 +201,7 @@ const webRagApiClient = (() => {
       if (typeof body !== "string") body = JSON.stringify(body);
     }
     if (opts.auth !== false) {
-      if (!pluginId || !pluginSecret) {
-        throw new ApiRequestError(401, "UNAUTHENTICATED", "插件凭证缺失，请重新创建插件");
-      }
-      // 双凭证：X-Plugin-ID + X-Plugin-Secret（唯一认证来源）
-      headers["X-Plugin-ID"] = pluginId;
-      headers["X-Plugin-Secret"] = pluginSecret;
+      applyAuth(headers);
     }
     let response;
     const controller = new AbortController();
@@ -137,124 +221,21 @@ const webRagApiClient = (() => {
     } finally {
       clearTimeout(timeoutId);
     }
-    if (response.status === 204) {
-      return { response: response, data: null };
-    }
-    let data = null;
-    try {
-      data = await response.json();
-    } catch (_err) {
-      data = null;
-    }
-    // 401：凭证失效 → 清除本地插件身份，回到 Welcome
-    if (opts.auth !== false && response.status === 401) {
-      const currentPluginId = pluginId;
-      await clearPlugin();
-      if (unauthenticatedHandler) {
-        await unauthenticatedHandler({ pluginId: currentPluginId });
-      }
-      throw new ApiRequestError(401, "UNAUTHENTICATED", "插件凭证已失效，请重新创建插件");
-    }
-    // 403：插件被禁用 → 不清理 secret、不创建新 workspace
-    if (response.status === 403) {
-      if (data && data.type === "PluginDisabledError") {
-        throw new ApiRequestError(403, "PLUGIN_DISABLED", "插件已被禁用，请联系管理员");
-      }
-      throw new ApiRequestError(403, "DISABLED", "插件已被禁用，请联系管理员");
-    }
-    // 409 + API Key 文案 → API Key 未配置
-    if (response.status === 409 && isApiKeyNotConfiguredError(data)) {
-      throw new ApiRequestError(409, "API_KEY_NOT_CONFIGURED", "请前往设置配置模型服务");
-    }
-    if (!response.ok) {
-      if (response.status === 401) {
-        throw new ApiRequestError(401, "UNAUTHENTICATED", "插件凭证已失效，请重新创建插件");
-      }
-      if (response.status === 409) {
-        if (data && data.type === "PluginNameTakenError") {
-          throw new ApiRequestError(409, "PLUGIN_NAME_TAKEN", "这个插件名称已经被使用，请换一个名称");
-        }
-        throw new ApiRequestError(
-          response.status,
-          "HTTP",
-          data ? parseErrorMessage(data, "请求冲突（HTTP 409）") : "请求冲突（HTTP 409）"
-        );
-      }
-      if (response.status === 422) {
-        throw new ApiRequestError(422, "VALIDATION", parseErrorMessage(data, "输入不合法，请检查后重试"));
-      }
-      throw new ApiRequestError(
-        response.status,
-        "HTTP",
-        data
-          ? parseErrorMessage(data, "请求失败（HTTP " + response.status + "）")
-          : "服务器返回了无法解析的响应（HTTP " + response.status + "）"
-      );
-    }
-    return { response: response, data: data };
+    return classifyResponse(response, { auth: opts.auth });
   }
 
   // multipart/form-data 上传（POST /documents/upload）。
   // 与 request() 分离：FormData 需要浏览器自动生成 boundary，禁止手动设置 Content-Type。
-  // 认证 / 错误分类 / 401→clearPlugin 等逻辑与 request() 保持一致。
+  // 认证与错误分类复用 applyAuth / classifyResponse，仅额外声明 413 / 415。
   async function uploadRequest(path, formData) {
-    if (!pluginId || !pluginSecret) {
-      throw new ApiRequestError(401, "UNAUTHENTICATED", "插件凭证缺失，请重新创建插件");
-    }
-    const headers = {};
-    headers["X-Plugin-ID"] = pluginId;
-    headers["X-Plugin-Secret"] = pluginSecret;
+    const headers = applyAuth({});
     let response;
     try {
       response = await fetch(API_BASE_URL + path, { method: "POST", headers: headers, body: formData });
     } catch (_err) {
       throw new ApiRequestError(0, "NETWORK", "网络连接失败，请重试");
     }
-    if (response.status === 204) {
-      return { response: response, data: null };
-    }
-    let data = null;
-    try {
-      data = await response.json();
-    } catch (_err) {
-      data = null;
-    }
-    if (response.status === 401) {
-      const currentPluginId = pluginId;
-      await clearPlugin();
-      if (unauthenticatedHandler) {
-        await unauthenticatedHandler({ pluginId: currentPluginId });
-      }
-      throw new ApiRequestError(401, "UNAUTHENTICATED", "插件凭证已失效，请重新创建插件");
-    }
-    if (response.status === 403) {
-      if (data && data.type === "PluginDisabledError") {
-        throw new ApiRequestError(403, "PLUGIN_DISABLED", "插件已被禁用，请联系管理员");
-      }
-      throw new ApiRequestError(403, "DISABLED", "插件已被禁用，请联系管理员");
-    }
-    if (response.status === 409 && isApiKeyNotConfiguredError(data)) {
-      throw new ApiRequestError(409, "API_KEY_NOT_CONFIGURED", "请前往设置配置模型服务");
-    }
-    if (response.status === 413) {
-      throw new ApiRequestError(413, "FILE_TOO_LARGE", parseErrorMessage(data, "文件过大，超出限制"));
-    }
-    if (response.status === 415) {
-      throw new ApiRequestError(415, "UNSUPPORTED_FILE_TYPE", parseErrorMessage(data, "不支持的文件类型"));
-    }
-    if (!response.ok) {
-      if (response.status === 422) {
-        throw new ApiRequestError(422, "VALIDATION", parseErrorMessage(data, "输入不合法，请检查后重试"));
-      }
-      throw new ApiRequestError(
-        response.status,
-        "HTTP",
-        data
-          ? parseErrorMessage(data, "上传失败（HTTP " + response.status + "）")
-          : "服务器返回了无法解析的响应（HTTP " + response.status + "）"
-      );
-    }
-    return { response: response, data: data };
+    return classifyResponse(response, { failureLabel: "上传", statusErrors: UPLOAD_STATUS_ERRORS });
   }
 
   return {
