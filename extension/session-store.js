@@ -104,24 +104,55 @@ const sessionStore = (() => {
     await saveSession(session);
     return session;
   }
+  // 会话详情是整份覆盖写，而消息只有「追加」这一种变更方式，
+  // 因此写之前先读回最新副本按 id 合并，避免并发保存把对方刚追加的消息覆盖掉。
+  // 排序按 createdAt（稳定排序，等值时保持「已存副本 → 本次副本」的追加顺序）。
+  function mergeSessionMessages(storedMessages, incomingMessages) {
+    const seen = new Set();
+    const merged = [];
+    const sources = [storedMessages, incomingMessages];
+    for (const list of sources) {
+      if (!Array.isArray(list)) continue;
+      for (const message of list) {
+        if (!message || typeof message !== "object") continue;
+        const id = typeof message.id === "string" ? message.id : null;
+        if (id !== null) {
+          if (seen.has(id)) continue;
+          seen.add(id);
+        }
+        merged.push(message);
+      }
+    }
+    merged.sort(function (a, b) {
+      return (a.createdAt || 0) - (b.createdAt || 0);
+    });
+    return merged;
+  }
+
   async function saveSession(session) {
     if (!session || !session.sessionId) return false;
     session.updatedAt = Date.now();
-    if (Array.isArray(session.messages) && session.messages.length > MAX_MESSAGES_PER_SESSION) {
-      session.messages = session.messages.slice(-MAX_MESSAGES_PER_SESSION);
-    }
+    const detailKey = SESSION_PREFIX + session.sessionId;
     try {
-      await chrome.storage.local.set({ [SESSION_PREFIX + session.sessionId]: session });
-      await withStorageLock(STORAGE_KEYS.SESSIONS, async function () {
-        const index = await getSessionIndex();
-        index[session.sessionId] = {
-          pluginId: session.pluginId,
-          title: session.title,
-          createdAt: session.createdAt,
-          updatedAt: session.updatedAt,
-          messageCount: (session.messages || []).length,
-        };
-        await setSessionIndex(index);
+      // 锁顺序固定为「详情 → SESSIONS 索引」，deleteSession 等路径不得反向取锁。
+      await withStorageLock(detailKey, async function () {
+        const stored = await getSession(session.sessionId);
+        session.messages = mergeSessionMessages(
+          stored && stored.messages,
+          session.messages
+        ).slice(-MAX_MESSAGES_PER_SESSION);
+        await chrome.storage.local.set({ [detailKey]: session });
+        await withStorageLock(STORAGE_KEYS.SESSIONS, async function () {
+          const index = await getSessionIndex();
+          index[session.sessionId] = {
+            pluginId: session.pluginId,
+            title: session.title,
+            createdAt: session.createdAt,
+            updatedAt: session.updatedAt,
+            messageCount: (session.messages || []).length,
+          };
+          await setSessionIndex(index);
+        });
       });
       return true;
     } catch (_err) {
@@ -131,13 +162,17 @@ const sessionStore = (() => {
   }
   async function deleteSession(sessionId) {
     if (!sessionId) return;
-    await chrome.storage.local.remove(SESSION_PREFIX + sessionId);
-    await withStorageLock(STORAGE_KEYS.SESSIONS, async function () {
-      const index = await getSessionIndex();
-      if (index[sessionId]) {
-        delete index[sessionId];
-        await setSessionIndex(index);
-      }
+    // 与 saveSession 保持同一锁序（详情 → SESSIONS 索引），
+    // 避免删除与「读-合并-写」交错后把已删会话又写回存储。
+    await withStorageLock(SESSION_PREFIX + sessionId, async function () {
+      await chrome.storage.local.remove(SESSION_PREFIX + sessionId);
+      await withStorageLock(STORAGE_KEYS.SESSIONS, async function () {
+        const index = await getSessionIndex();
+        if (index[sessionId]) {
+          delete index[sessionId];
+          await setSessionIndex(index);
+        }
+      });
     });
   }
   async function getSessionsByPlugin(pluginId) {
