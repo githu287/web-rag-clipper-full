@@ -158,7 +158,9 @@ async function expectApiError(promise, status, code, messagePattern) {
       notified = payload;
     });
     await expectApiError(api.request("/plugins/me"), 401, "UNAUTHENTICATED", /已失效/);
-    assert.deepEqual(notified, { pluginId: "plugin-a" });
+    // payload 由沙箱内构造，逐属性断言避免跨 realm 的原型比较。
+    assert.equal(notified.pluginId, "plugin-a");
+    assert.equal(Object.keys(notified).join(","), "pluginId");
     assert.equal(api.getPlugin().pluginId, null);
   }
   {

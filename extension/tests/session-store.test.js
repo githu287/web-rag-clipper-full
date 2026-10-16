@@ -83,9 +83,10 @@ vm.runInContext(
     await Promise.all([store.saveSession(panelOne), store.saveSession(panelTwo)]);
 
     const saved = await store.getSession("s-concurrent");
-    assert.deepEqual(
-      saved.messages.map(function (m) { return m.id; }),
-      ["m-0", "m-1", "m-2"],
+    // 沙箱内构造的数组与宿主数组原型不同，断言用 join 比较值而不是 deepEqual。
+    assert.equal(
+      saved.messages.map(function (m) { return m.id; }).join(","),
+      "m-0,m-1,m-2",
       "并发保存必须保留双方各自追加的消息"
     );
     assert.equal(

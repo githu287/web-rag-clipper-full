@@ -873,33 +873,8 @@ async function ensureGlobalSession(pluginId) {
   return created;
 }
 
-// 根据当前网页 URL 自动检测是否已剪藏。查询前使用与后端对齐的
-// 规范化规则，避免锚点或 utm_* 等跟踪参数导致重复文档。
-async function detectClippedDocument(pluginId, pageUrl) {
-  if (!pluginId || !pageUrl) return null;
-  try {
-    const normalizedUrl = webRagUrlUtils.normalizeWebUrl(pageUrl);
-    const data = await webRagApiClient.documents.list({
-      keyword: normalizedUrl,
-      status: "SUCCESS",
-      page: 1,
-      page_size: 100,
-    });
-    const items = data.items || [];
-    // keyword 是 LIKE 查询，必须精确匹配 url
-    const matches = items.filter(function (item) {
-      return item.url === normalizedUrl && item.status === "SUCCESS";
-    });
-    if (matches.length === 0) return null;
-    // 多个匹配时取 created_at 最新的
-    matches.sort(function (a, b) {
-      return (b.created_at || "").localeCompare(a.created_at || "");
-    });
-    return matches[0];
-  } catch (_err) {
-    return null;
-  }
-}
+// 根据当前网页 URL 自动检测是否已剪藏：实现见 clip-detect.js
+// （webRagClipDetect.detectDocumentId 带短 TTL 缓存，并保证不会清空已知结果）。
 
 function isSameNormalizedWebUrl(left, right) {
   try {
@@ -924,10 +899,7 @@ async function restoreOrCreateBinding(tab, pluginId, tabId) {
   };
   // 自动检测当前 URL 是否已剪藏
   if (url) {
-    const doc = await detectClippedDocument(pluginId, url);
-    if (doc) {
-      b.documentId = Number(doc.id);
-    }
+    b.documentId = await webRagClipDetect.detectDocumentId(pluginId, url, null);
   }
   await sessionStore.setTabBinding(tabId, b);
   return b;
@@ -956,12 +928,17 @@ async function loadTabContext(tabId) {
     b = await restoreOrCreateBinding(tab, plugin.pluginId, tabId);
     if (myToken !== contextLoadToken) return;
   } else {
-    // Binding 已存在，但仍需重新检测当前 URL 是否已剪藏
-    // （用户可能在其他 Tab 剪藏了该 URL，或文档被删除）
+    // Binding 已存在，但仍要确认当前 URL 的剪藏结果
+    // （用户可能在其他 Tab 剪藏了该 URL，或文档被删除）；
+    // 结果由 clip-detect 缓存 30 秒，跨 Tab 的变化最多延迟一个 TTL 才反映到绑定上。
     if (b.pageUrl && !b.stale && !b.ingestJobId) {
-      const doc = await detectClippedDocument(plugin.pluginId, b.pageUrl);
+      const detectedDocumentId = await webRagClipDetect.detectDocumentId(
+        plugin.pluginId,
+        b.pageUrl,
+        b.documentId
+      );
       if (myToken !== contextLoadToken) return;
-      b.documentId = doc ? Number(doc.id) : null;
+      b.documentId = detectedDocumentId;
       await sessionStore.setTabBinding(tabId, b);
       if (myToken !== contextLoadToken) return;
     }

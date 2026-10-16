@@ -168,6 +168,7 @@
 | `extension/extractor.js` | 可测试的正文候选评分、DOM 清噪与结构化文本序列化引擎 |
 | `extension/content.js` | 提取消息入口、降级处理和 SPA URL 监听 |
 | `extension/api-client.js` | Plugin Header、JSON/multipart 请求与错误分类 |
+| `extension/clip-detect.js` | 按 URL 探测是否已剪藏，带短 TTL 缓存 |
 | `extension/session-store.js` | Session、当前 Session 和 Tab Binding 存储层 |
 | `extension/sidepanel.html` | 注册、剪藏、聊天、知识库和设置视图 |
 | `extension/sidepanel.css` | Side Panel 样式 |
@@ -177,7 +178,9 @@
 | `extension/popup.js` | 页面预览、快捷剪藏和打开 Side Panel |
 | `extension/tests/extractor.test.js` | 正文候选评分、噪声识别和文本规范化回归测试 |
 | `extension/tests/url-utils.test.js` | 扩展 URL 规范化的 Node.js 回归测试 |
-| `extension/tests/session-store.test.js` | 文件上传任务持久化回归测试 |
+| `extension/tests/session-store.test.js` | 上传任务持久化与 Session 并发保存合并回归测试 |
+| `extension/tests/api-client.test.js` | JSON 与上传两条通道共用错误分类的回归测试 |
+| `extension/tests/clip-detect.test.js` | 剪藏探测缓存 TTL、跨上下文保底与失败不缓存的回归测试 |
 
 ## `alembic/` — 数据库迁移
 

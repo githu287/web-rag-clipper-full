@@ -265,6 +265,7 @@ node extension/tests/extractor.test.js
 node extension/tests/url-utils.test.js
 node extension/tests/session-store.test.js
 node extension/tests/api-client.test.js
+node extension/tests/clip-detect.test.js
 ```
 
 ## Retrieval 评测
