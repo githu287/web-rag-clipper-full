@@ -3,7 +3,7 @@ from __future__ import annotations
 import signal
 import threading
 import unittest
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import ANY, AsyncMock, Mock, patch
 
 from backend.core.exceptions import IngestJobConflictError, IngestJobOperationError
 from backend.models.ingest_job import IngestJobStatus, IngestJobType
@@ -93,6 +93,7 @@ class IngestWorkerTest(unittest.TestCase):
             document_id=73,
             plugin_id="plugin-a",
             api_key="sk-test",
+            claim_document=ANY,
         )
         self.repository.mark_succeeded.assert_called_once_with("job-2", 73)
         self.queue.delete_payload.assert_called_once_with("job-2")
@@ -123,7 +124,7 @@ class IngestWorkerTest(unittest.TestCase):
 
         self.assertTrue(self.worker.run_once(timeout_seconds=0))
 
-        self.document_upload_service.fail_prepared_upload.assert_called_once()
+        self.document_upload_service.fail_prepared_upload.assert_not_called()
         self.repository.mark_failed.assert_called_once_with("job-2", "parse failed")
         self.queue.acknowledge.assert_called_once_with("job-2")
 
@@ -186,9 +187,7 @@ class IngestWorkerTest(unittest.TestCase):
         self.repository.mark_failed.assert_called_once_with(
             "job-9", "worker interrupted; retry limit reached"
         )
-        document_id, cause = self.document_upload_service.fail_prepared_upload.call_args[0]
-        self.assertEqual(document_id, 73)
-        self.assertIsInstance(cause, RuntimeError)
+        self.document_upload_service.fail_prepared_upload.assert_not_called()
 
     def test_recovery_requeues_job_below_retry_limit(self) -> None:
         job = Mock(

@@ -1,56 +1,11 @@
-"""
-RagService：RAG 检索编排（Phase 2.6 Step 2；Phase 2.12 Step 2 接入 Document status post-filter；
-Phase 2.13 Step 2 为结果附带 Document metadata）。
-
-职责：
-    用户 query → embedding → Milvus ANN 检索 → 应用层 status post-filter → 返回 top-K 结果
-
-Phase 2.12 Step 2（Document 生命周期集成）：
-    RAG 检索链路由「query → Embedding → Milvus → top-K」升级为：
-    query → Embedding → Milvus candidate retrieval → 批量查询 Document →
-    SUCCESS-only filter → orphan filter（MySQL 不存在）→ 截取 limit。
-    document.id = Milvus page_id（1:1），检索结果中的 page_id 即 document_id。
-
-Phase 2.13 Step 2（RAG Document Metadata Response）：
-    过滤逻辑与 Milvus/MySQL 查询次数完全不变（仍只调用一次 get_documents_by_ids），
-    仅将反查得到的 Document 元数据（document_id / filename / status / created_at）
-    组装进 API 边界 DTO RagSearchResult。关联使用 document_map[id]（ID 映射），
-    禁止依赖 get_documents_by_ids 的返回顺序（SQL IN 查询不保证顺序）。
-
-Phase 3.1 Step 3（WebClip metadata）：
-    RagSearchResult 新增 title / url / source_type（共 12 字段），数据直接来自
-    RagService 已持有的 document_map[page_id] Document 对象，不新增 SQL / N+1；
-    RAG filtering / candidate_limit / orphan filter 均未改动。
-
-Phase 3.5 Step 2-E（workspace-aware 身份传递）：
-    search() 参数 user_id 已迁移为 plugin_id（与 DocumentRepository
-    plugin_id 化一致）：
-      - plugin_id：ownership 约束 —— get_documents_by_ids(page_ids, plugin_id)
-        在 SQL 层完成 Workspace 归属过滤，跨 Workspace 候选不会进入
-        SUCCESS 集合；Router 层必传 current_plugin.plugin_id。
-      - api_key：query embedding 使用当前插件工作空间自己的百炼 API Key
-        （PluginService.decrypt_api_key 解密后传入；Phase 3.4 Step F6：
-        必填，严禁回退 settings.bailian_api_key）。
-
-依赖注入：
-    - EmbeddingClient：query 文本 → embedding 向量
-    - MilvusRepository（Protocol）：Milvus 向量检索
-    - DocumentRepository（Protocol）：MySQL documents 批量反查（status post-filter）
-
-严格不依赖：
-    - pymilvus / MilvusClient（由 Repository Impl 内部隔离）
-    - openai / OpenAI（由 EmbeddingClient 内部隔离）
-    - FastAPI / Request（API 层职责）
-
-异步说明：
-    本 Service 使用 async def（为未来异步 Repository/EmbeddingClient 预留接口契约），
-    但当前 Repository 与 EmbeddingClient 均为同步实现，方法内部直接同步调用（不使用
-    asyncio.to_thread()，不引入异步 SDK，不重构 Repository）。
+"""Workspace-scoped retrieval. Blocking model and repository calls run in worker threads.
+Results are filtered again by authoritative document ownership and SUCCESS state.
 """
 
 from __future__ import annotations
 
 import logging
+import asyncio
 
 from ..clients.embedding import EmbeddingClient
 from ..core.exceptions import DocumentNotFoundError, DocumentNotSuccessError
@@ -180,7 +135,7 @@ class RagService:
         """
         # ---------------------------------------------------------- Step 1: query → embedding
         # Phase 3.4 Step D：query 向量使用用户自己的 API Key（None 回退测试 Key）
-        vectors: list[list[float]] = self._embedding.embed([query], api_key=api_key)
+        vectors: list[list[float]] = await asyncio.to_thread(self._embedding.embed, [query], api_key=api_key)
         query_vector: list[float] = vectors[0]
 
         # ---------------------------------------------------------- Step 2: Milvus candidate retrieval
@@ -188,7 +143,7 @@ class RagService:
         if document_id is not None:
             # 当前网页模式：document_id + plugin_id 一起进入 ownership check（Step C 已
             # 实现 get_document(document_id, plugin_id) SQL 层归属过滤）。
-            document = self._documents.get_document(document_id, plugin_id)
+            document = await asyncio.to_thread(self._documents.get_document, document_id, plugin_id)
             if document is None:
                 raise DocumentNotFoundError(
                     f"Document {document_id} 不存在或不属于当前插件工作空间"
@@ -211,7 +166,7 @@ class RagService:
                 return []
             # success_ids 必须来自 Repository 的 get_success_document_ids（SQL 层
             # plugin_id + SUCCESS 双条件过滤，严禁先查全部文档再 Python 过滤）。
-            success_ids: list[int] = self._documents.get_success_document_ids(plugin_id)
+            success_ids: list[int] = await asyncio.to_thread(self._documents.get_success_document_ids, plugin_id)
             if not success_ids:
                 logger.info(
                     "RagService.search: 插件工作空间 %s 无 SUCCESS document，"
@@ -222,8 +177,8 @@ class RagService:
             candidate_limit = max(limit, _MILVUS_SEARCH_CANDIDATE_LIMIT)
             expr = f"page_id in [{','.join(map(str, success_ids))}]"
 
-        candidates: list[ChunkSearchResult] = self._repo.search(
-            query_vector,
+        candidates: list[ChunkSearchResult] = await asyncio.to_thread(
+            self._repo.search, query_vector,
             limit=candidate_limit,
             expr=expr,
         )
@@ -247,7 +202,7 @@ class RagService:
 
         # 3.2 一次批量反查 Document（空 page_ids 已被上方 candidates 空判断短路）。
         # Phase 3.5 Step 2-E：SQL 层 plugin_id 归属过滤（契约已 plugin_id 化）。
-        documents = self._documents.get_documents_by_ids(page_ids, plugin_id)
+        documents = await asyncio.to_thread(self._documents.get_documents_by_ids, page_ids, plugin_id)
 
         # 3.3 只保留 SUCCESS；FAILED / DELETING / PENDING / PROCESSING 全部过滤；
         #     不存在的 Document（孤儿 chunk）因不在 success 集合中也被过滤。

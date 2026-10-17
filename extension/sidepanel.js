@@ -349,6 +349,10 @@ function buildDocCard(doc) {
     actions.appendChild(makeCardButton("删除", true, function () {
       openLibraryDeleteModal(doc);
     }));
+  } else if (doc.status === "DELETING") {
+    actions.appendChild(makeCardButton("继续删除", true, function () {
+      openLibraryDeleteModal(doc);
+    }));
   } else {
     const pending = document.createElement("span");
     pending.className = "doc-meta";

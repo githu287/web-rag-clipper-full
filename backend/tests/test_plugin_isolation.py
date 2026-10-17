@@ -317,7 +317,11 @@ class PluginIsolationServiceTest(unittest.TestCase):
         _, kwargs = self.document_repo.create_document.call_args
         self.assertEqual(kwargs["plugin_id"], PLUGIN_B)
         document_ingest.ingest_document.assert_awaited_once_with(
-            1, ["chunk-1"], plugin_id=PLUGIN_B, api_key=None
+            1,
+            ['chunk-1'],
+            plugin_id=PLUGIN_B,
+            api_key=None,
+            preclaimed=True,
         )
 
     # ------------------------------------------- 9. DocumentUploadService
@@ -359,7 +363,11 @@ class PluginIsolationServiceTest(unittest.TestCase):
         _, kwargs = self.document_repo.create_document.call_args
         self.assertEqual(kwargs["plugin_id"], PLUGIN_A)
         document_ingest.ingest_document.assert_awaited_once_with(
-            1, ["hello world"], plugin_id=PLUGIN_A, api_key=None
+            1,
+            ['hello world'],
+            plugin_id=PLUGIN_A,
+            api_key=None,
+            preclaimed=True,
         )
 
     # ------------------------------------------- 10. DocumentIngestService

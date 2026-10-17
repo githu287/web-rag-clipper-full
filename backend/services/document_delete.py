@@ -1,52 +1,8 @@
-"""
-DocumentDeleteService：Document 删除编排层（Phase 2.11 Step 2；Phase 3.5 Step 2-E
-增加 plugin_id 参数，实现 workspace-aware 删除）。
+"""Delete Milvus chunks, local files, then the owned MySQL document.
 
-职责：
-    将「Milvus chunks 删除 → FileStorage 物理文件删除 → MySQL document 行删除」
-    串联为一条最终一致的删除链路，MySQL document 行删除为最终提交点。
-
-流程（严格顺序）：
-      Step 1: get_document(document_id, plugin_id)
-              （Phase 3.5 Step 2-E：workspace-aware —— 插件 A 删除插件 B 的文档按
-               「不存在」处理，不泄露归属）
-              不存在（DocumentNotFoundError）→ 幂等成功，直接返回
-              （目标态「文档不存在」已达成，Router 返回 204）。
-      Step 2: status == PROCESSING → 拒绝删除，抛 DocumentOperationError
-              （ingest 进行中，禁止并发删除）。
-              status == DELETING → 允许继续删除（重复 DELETE / 上次中断续删）。
-              PENDING / SUCCESS / FAILED → 进入删除。
-      Step 3: 记录 original_status；update_status(document_id, DELETING)
-              （DELETING 为 Delete ↔ Ingest/Retry 并发互斥标记）。
-      Step 4: Milvus：query_page_chunks(page_id=document_id) 获取当前实际存在的
-              chunk IDs → delete_chunks(ids)。
-              必须「每次删除都重新 query」，不得假设上一次删除完全没有生效
-              （Milvus delete 可能部分成功后失败）。
-              失败 → 尝试恢复 original_status → 原异常继续传播（HTTP 503）。
-      Step 5: FileStorage：file_storage.delete(document.file_path)（幂等，
-              文件已不存在视为成功）。
-              失败 → 尝试恢复 original_status → 原异常继续传播（HTTP 5xx）；
-              MySQL document 行必须保留。
-      Step 6: MySQL：delete_document(document_id, plugin_id)（最终提交点，
-              Phase 3.5 Step 2-E 同样 workspace-aware：跨 Workspace 按「不存在」处理）。
-              DocumentNotFoundError → 并发请求已删除，幂等成功，返回。
-              其他异常 → 保持 DELETING（不回滚），原异常继续传播（HTTP 503）；
-              下一次 DELETE 走 Step 4 重新 query → 收敛。
-
-失败状态规则（与状态机一致）：
-    - Milvus / FileStorage 删除失败：DELETING → 原状态（仅 MySQL 状态恢复，
-      不代表 Milvus 物理数据已回滚）。
-    - MySQL 删除失败：保持 DELETING（禁止恢复为 SUCCESS / FAILED / PENDING）。
-    - 恢复状态失败仅记录日志，绝不覆盖原始删除异常。
-
-并发与幂等：
-    - DELETE 幂等：重复调用 / 并发调用均可收敛到「文档不存在」终态。
-    - 不引入版本号 / CAS / MQ / Outbox / Saga。
-
-映射关系（方案 A，已确认）：
-    document.id == Milvus page_id（1:1）。不修改 Milvus Schema、
-    不新增 document_id 字段，通过 page_id=document_id 复用现有
-    query_page_chunks / delete_chunks。
+An atomic state transition excludes concurrent ingestion. Partial failures keep
+DELETING so retrieval cannot advertise partially removed data as successful.
+Repeated deletion resumes cleanup; missing documents are idempotent success.
 """
 
 from __future__ import annotations
@@ -142,8 +98,9 @@ class DocumentDeleteService:
         )
 
         # ---------------------------------------------------------- Step 3: 置 DELETING
-        self._document_repo.update_status(
-            document_id,
+        self._document_repo.transition_status(
+            document_id, plugin_id,
+            {DocumentStatus.PENDING, DocumentStatus.SUCCESS, DocumentStatus.FAILED, DocumentStatus.DELETING},
             DocumentStatus.DELETING,
         )
         logger.info(
@@ -164,8 +121,7 @@ class DocumentDeleteService:
             if chunk_ids:
                 self._milvus_repo.delete_chunks(chunk_ids)
         except Exception:
-            # 尝试恢复原状态（仅 MySQL 状态，不代表 Milvus 物理数据已回滚）
-            self._restore_status(document_id, original_status)
+            # Keep DELETING until a retry finishes resource cleanup.
             raise
 
         # ---------------------------------------------------------- Step 5: FileStorage 删除
@@ -177,7 +133,7 @@ class DocumentDeleteService:
                 self._file_storage.delete(document.file_path)
         except Exception:
             # MySQL document 行必须保留，不允许直接删除 MySQL document
-            self._restore_status(document_id, original_status)
+            # Keep DELETING until a retry finishes resource cleanup.
             raise
 
         # ------------------------------------------------------ Step 6: MySQL 删除（提交点）
@@ -205,21 +161,3 @@ class DocumentDeleteService:
             "DocumentDeleteService.delete_document: document_id=%s 删除完成",
             document_id,
         )
-
-    # ------------------------------------------------------------ 内部辅助
-    def _restore_status(self, document_id: int, status: str) -> None:
-        """
-        删除失败时尝试恢复 Document 状态（仅 MySQL 状态）。
-
-        注意：状态恢复不代表 Milvus 物理数据已回滚；恢复失败仅记录日志，
-        绝不覆盖原始删除异常。
-        """
-        try:
-            self._document_repo.update_status(document_id, status)
-        except Exception:  # noqa: BLE001
-            logger.exception(
-                "DocumentDeleteService._restore_status: document_id=%s "
-                "恢复 status=%s 失败（原始删除异常继续传播）",
-                document_id,
-                status,
-            )

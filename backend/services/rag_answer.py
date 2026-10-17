@@ -48,6 +48,7 @@ Phase 3.5 Step 2-E（workspace-aware 身份传递）：
 from __future__ import annotations
 
 import logging
+import asyncio
 from typing import Final
 
 from ..clients.llm import LLMClient
@@ -166,7 +167,7 @@ class RagAnswerService:
         # Phase 3.5 Step 2-E：get_document(document_id, plugin_id) 完成 ownership
         # 校验（跨 Workspace → DocumentNotFoundError → 404）
         if document_id is not None:
-            document = self._documents.get_document(document_id, plugin_id)
+            document = await asyncio.to_thread(self._documents.get_document, document_id, plugin_id)
             if document.status != DocumentStatus.SUCCESS:
                 raise DocumentNotSuccessError(
                     f"Document {document_id} 状态为 {document.status}，"
@@ -207,7 +208,7 @@ class RagAnswerService:
 
         # -------------------------------------------------------- Step 7: LLM
         # Phase 3.4 Step D：LLM 生成使用插件工作空间自己的 API Key（None 回退测试 Key）
-        answer = self._llm.generate(system_prompt, user_prompt, api_key=api_key)
+        answer = await asyncio.to_thread(self._llm.generate, system_prompt, user_prompt, api_key=api_key)
 
         # -------------------------------------------------------- Step 8: 组装 Sources
         sources = [self._to_source(result) for result in top_results]

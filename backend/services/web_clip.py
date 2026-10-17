@@ -42,6 +42,7 @@ FileStorage / MilvusRepository / Milvus Schema / ChunkVector / EmbeddingClient�
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 
 from ..chunkers import Chunker
 from ..core.exceptions import DocumentOperationError
@@ -93,6 +94,8 @@ class WebClipService:
         plugin_id: str,
         title: str | None = None,
         api_key: str | None = None,
+        *,
+        claim_document: Callable[[int], None] | None = None,
     ) -> Document:
         """
         执行完整网页剪藏链路，返回最终 Document（成功为 SUCCESS，失败抛原异常）。
@@ -141,6 +144,7 @@ class WebClipService:
                 original_url=url.strip(),
                 normalized_url=normalized_url,
             )
+        existing_document = document is not None
         if document is None:
             document = self._document_repository.create_document(
                 filename=_WEB_CLIP_FILENAME,
@@ -158,22 +162,21 @@ class WebClipService:
                 raise DocumentOperationError(
                     f"document is being ingested, re-clip rejected: id={document.id}"
                 )
-            document = self._document_repository.update_webpage_metadata(
-                document.id,
-                plugin_id,
-                title=title,
-                url=normalized_url,
-            )
+
 
         # ------------------------------------------------------------------
         # 2) 立即置 PROCESSING（状态机红线：必须发生在 Chunker 之前）
         # 保证 Chunker 失败时迁移为 PROCESSING → FAILED，杜绝 PENDING → FAILED
         # 非法迁移。置位失败直接向上传播，Document 保持 PENDING 不误标 FAILED。
         # ------------------------------------------------------------------
-        self._document_repository.update_status(
-            document.id,
-            DocumentStatus.PROCESSING,
-        )
+        if claim_document is not None:
+            claim_document(document.id)
+        else:
+            self._document_repository.transition_status(
+                document.id, plugin_id,
+                {DocumentStatus.PENDING, DocumentStatus.SUCCESS, DocumentStatus.FAILED},
+                DocumentStatus.PROCESSING,
+            )
 
         # ------------------------------------------------------------------
         # 3) Chunker 切分：单独 try/except —— 失败走 PROCESSING → FAILED；
@@ -181,7 +184,13 @@ class WebClipService:
         #    状态迁移 / error_message / chunk_count / Milvus ingest，不重复实现）。
         # ------------------------------------------------------------------
         try:
+            if existing_document:
+                self._document_repository.update_webpage_metadata(
+                    document.id, plugin_id, title=title, url=normalized_url,
+                )
             chunks = self._chunker.split(raw_text)
+            if not chunks:
+                raise ValueError("no chunks produced from webpage")
         except Exception as exc:
             self._mark_failed(document.id, exc)
             raise
@@ -195,6 +204,7 @@ class WebClipService:
             chunks,
             plugin_id=plugin_id,
             api_key=api_key,
+            preclaimed=True,
         )
 
         # ------------------------------------------------------------------

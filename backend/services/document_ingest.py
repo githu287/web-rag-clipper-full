@@ -1,56 +1,9 @@
-"""
-DocumentIngestService：Document 生命周期编排层（Phase 2.9 Step 2；Phase 2.11 Step 2
-扩展；Phase 3.5 Step 2-E 增加 plugin_id 参数，实现 ownership check；
-Phase 3.4 Step D 增加 api_key 参数，透传插件工作空间自己的百炼 API Key 到 Embedding）。
+"""Document lifecycle boundary for chunk ingestion.
 
-职责：
-    将「Document 元数据生命周期」与「Milvus chunk 入库」串联为一条完整链路，
-    以 Document 为事实来源驱动 ingest 流程：
-
-      Step 1: document_repository.get_document(document_id, plugin_id)
-              （Phase 3.5 Step 2-E：ownership check —— 插件 A 无法 ingest 插件 B
-               的文档，跨 Workspace 访问表现为 DocumentNotFoundError；在进入
-               PROCESSING 之前完成）
-              不存在 → 直接抛 DocumentNotFoundError，不做任何状态写入。
-      Step 1.5 (Phase 2.11 Step 2): status == DELETING → 直接拒绝
-              抛 DocumentOperationError，不进入 PROCESSING、不触碰 Milvus。
-      Step 2: document_repository.update_status(
-                  document_id, PROCESSING, error_message=None)
-              进入 PROCESSING 时清空旧 error_message（retry 生命周期修复）；
-              不修改 chunk_count。
-      Step 3: ingest_service.ingest_page(page_id=document_id, chunks=chunks,
-                                         plugin_id=plugin_id, api_key=api_key)
-              （复用 Phase 2.6 现有 IngestService，纯 Milvus 编排：query old → embedding
-                → upsert new → stale delete；api_key 为 Phase 3.4 Step D/F6 透传的
-                当前插件工作空间自己的百炼 API Key，严禁回退服务器 Key）
-      Step 4: 成功 → document_repository.update_ingest_result(
-                         document_id, chunk_count=len(chunks),
-                         status=SUCCESS, error_message=None)
-              chunk_count + SUCCESS + 清空 error_message 在同一数据库事务中一次完成
-              （不允许再额外调用 update_status(SUCCESS)）。
-      Step 5: 失败（embedding / upsert / stale-delete / ingest_service 任意异常）
-              → document_repository.update_failure(
-                    document_id, error_message=截断摘要)
-              原子落 status=FAILED + error_message=新错误；不修改 chunk_count
-              （保持数据库原值）；原始异常继续向上传播，不吞异常；
-              若 update_failure 自身也失败，不得覆盖原始业务异常。
-
-映射关系（方案 A，已确认）：
-    document.id == Milvus page_id（1:1）。本阶段不修改 Milvus Schema、
-    不新增 document_id 字段，DocumentIngestService 仅通过 page_id=document_id
-    复用现有 ingest_page 完成 Milvus 侧数据写入。
-
-并发互斥（Phase 2.11 Step 2）：
-    DELETING 状态下 ingest/retry 一律拒绝（Step 1.5 gate），保证
-    DocumentDeleteService 删除流程中不会有新 chunks 写入 Milvus。
-
-设计约束：
-    - 依赖通过 Protocol 注入（DocumentRepository / IngestService），不直接 import
-      pymilvus / openai / 百炼 SDK；
-    - 不创建 Engine / Session（全部委托 DocumentRepository）；
-    - 不处理 HTTP / FastAPI Request（API 层职责，本阶段不新增 Router）；
-    - 异步说明：ingest_page 为 async def，本 Service 也以 async def 暴露入口；
-      内部对同步 Repository 直接同步调用（不使用 asyncio.to_thread，不引入异步 SDK）。
+Validate workspace ownership and acquire PROCESSING atomically before writing
+vectors. Parser/clip services may pass their internal preclaimed flag after
+claiming the document themselves. Success commits chunk count and status;
+failures preserve the document for retry.
 """
 
 from __future__ import annotations
@@ -105,6 +58,8 @@ class DocumentIngestService:
         chunks: list[str],
         plugin_id: str,
         api_key: str | None = None,
+        *,
+        preclaimed: bool = False,
     ) -> None:
         """
         以 Document 生命周期为骨架执行一次完整 ingest（方案 A：page_id = document_id）。
@@ -159,11 +114,14 @@ class DocumentIngestService:
 
         # ---------------------------------------------------------- Step 2: 置 PROCESSING
         # 进入 PROCESSING 时清空旧 error_message（retry 生命周期修复）；不修改 chunk_count
-        self._document_repo.update_status(
-            document_id,
-            DocumentStatus.PROCESSING,
-            error_message=None,
-        )
+        if not preclaimed:
+            self._document_repo.transition_status(
+                document_id, plugin_id,
+                {DocumentStatus.PENDING, DocumentStatus.SUCCESS, DocumentStatus.FAILED},
+                DocumentStatus.PROCESSING,
+            )
+        elif document.status != DocumentStatus.PROCESSING:
+            raise DocumentOperationError("document processing claim was lost")
         logger.info(
             "DocumentIngestService.ingest_document: document_id=%s → PROCESSING",
             document_id,

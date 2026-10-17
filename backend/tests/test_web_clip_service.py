@@ -137,12 +137,19 @@ class WebClipServiceTest(unittest.TestCase):
             source_type=DocumentSourceType.WEBPAGE,
         )
         # 2) PROCESSING 在 Chunker 之前
-        self.document_repo.update_status.assert_called_once_with(
-            1, DocumentStatus.PROCESSING
+        self.document_repo.transition_status.assert_called_once_with(
+            1,
+            'plugin-a',
+            {DocumentStatus.PENDING, DocumentStatus.SUCCESS, DocumentStatus.FAILED},
+            DocumentStatus.PROCESSING,
         )
         self.chunker.split.assert_called_once_with("网页正文纯文本")
         self.ingest_service.ingest_document.assert_awaited_once_with(
-            1, ["chunk-1", "chunk-2"], plugin_id="plugin-a", api_key=None
+            1,
+            ['chunk-1', 'chunk-2'],
+            plugin_id='plugin-a',
+            api_key=None,
+            preclaimed=True,
         )
         # 3) 终态读取（workspace-aware）
         self.document_repo.get_document.assert_called_once_with(1, "plugin-a")
@@ -182,7 +189,11 @@ class WebClipServiceTest(unittest.TestCase):
             42, "plugin-a", title="新标题", url="https://example.com/same"
         )
         self.ingest_service.ingest_document.assert_awaited_once_with(
-            42, ["chunk-1", "chunk-2"], plugin_id="plugin-a", api_key="sk-test"
+            42,
+            ['chunk-1', 'chunk-2'],
+            plugin_id='plugin-a',
+            api_key='sk-test',
+            preclaimed=True,
         )
         self.assertEqual(result.id, 42)
 
@@ -316,7 +327,7 @@ class WebClipServiceTest(unittest.TestCase):
 
         self.document_repo.create_document.assert_not_called()
         self.document_repo.update_webpage_metadata.assert_not_called()
-        self.document_repo.update_status.assert_not_called()
+        self.document_repo.transition_status.assert_not_called()
         self.chunker.split.assert_not_called()
         self.ingest_service.ingest_document.assert_not_called()
 
@@ -340,7 +351,7 @@ class WebClipServiceTest(unittest.TestCase):
 
         self.document_repo.create_document.assert_not_called()
         self.document_repo.update_webpage_metadata.assert_not_called()
-        self.document_repo.update_status.assert_not_called()
+        self.document_repo.transition_status.assert_not_called()
         self.chunker.split.assert_not_called()
         self.ingest_service.ingest_document.assert_not_called()
 
@@ -384,7 +395,11 @@ class WebClipServiceTest(unittest.TestCase):
             9, "plugin-a", title="新标题", url="https://example.com/retry"
         )
         self.ingest_service.ingest_document.assert_awaited_once_with(
-            9, ["chunk-1", "chunk-2"], plugin_id="plugin-a", api_key=None
+            9,
+            ['chunk-1', 'chunk-2'],
+            plugin_id='plugin-a',
+            api_key=None,
+            preclaimed=True,
         )
         self.assertEqual(result.id, 9)
 
@@ -518,8 +533,11 @@ class WebClipServiceTest(unittest.TestCase):
 
         def splitting(text: str) -> list[str]:
             # 顺序哨兵：PROCESSING 置位必须已经发生
-            self.document_repo.update_status.assert_called_once_with(
-                1, DocumentStatus.PROCESSING
+            self.document_repo.transition_status.assert_called_once_with(
+                1,
+                'plugin-a',
+                {DocumentStatus.PENDING, DocumentStatus.SUCCESS, DocumentStatus.FAILED},
+                DocumentStatus.PROCESSING,
             )
             return ["chunk-1", "chunk-2"]
 
@@ -535,12 +553,19 @@ class WebClipServiceTest(unittest.TestCase):
 
         self.assertEqual(result.status, DocumentStatus.SUCCESS)
         # 状态机：create(PENDING) → update_status(PROCESSING) → split → ingest
-        self.document_repo.update_status.assert_called_once_with(
-            1, DocumentStatus.PROCESSING
+        self.document_repo.transition_status.assert_called_once_with(
+            1,
+            'plugin-a',
+            {DocumentStatus.PENDING, DocumentStatus.SUCCESS, DocumentStatus.FAILED},
+            DocumentStatus.PROCESSING,
         )
         self.document_repo.create_document.assert_called_once()
         self.ingest_service.ingest_document.assert_awaited_once_with(
-            1, ["chunk-1", "chunk-2"], plugin_id="plugin-a", api_key=None
+            1,
+            ['chunk-1', 'chunk-2'],
+            plugin_id='plugin-a',
+            api_key=None,
+            preclaimed=True,
         )
 
     # ---------------------------------------------- 3. Chunker 失败（状态机回归）
@@ -563,8 +588,11 @@ class WebClipServiceTest(unittest.TestCase):
 
         self.assertIs(cm.exception, original_error)
         # PROCESSING 先置位（杜绝 PENDING → FAILED）
-        self.document_repo.update_status.assert_called_once_with(
-            1, DocumentStatus.PROCESSING
+        self.document_repo.transition_status.assert_called_once_with(
+            1,
+            'plugin-a',
+            {DocumentStatus.PENDING, DocumentStatus.SUCCESS, DocumentStatus.FAILED},
+            DocumentStatus.PROCESSING,
         )
         # update_failure 落 FAILED + error_message
         self.document_repo.update_failure.assert_called_once_with(
@@ -738,7 +766,7 @@ class WebClipServiceTest(unittest.TestCase):
             )
         self.assertIs(cm.exception, original_error)
         # Document 未创建成功 → 不写 FAILED
-        self.document_repo.update_status.assert_not_called()
+        self.document_repo.transition_status.assert_not_called()
         self.document_repo.update_failure.assert_not_called()
         self.chunker.split.assert_not_called()
         self.ingest_service.ingest_document.assert_not_called()

@@ -205,6 +205,12 @@ class DocumentRepository(Protocol):
             DocumentOperationError: SQLAlchemy 执行异常。
         """
 
+    def transition_status(
+        self, document_id: int, plugin_id: str, expected: set[str], status: str,
+    ) -> Document:
+        """Atomically claim a document; reject a stale state or foreign owner."""
+        ...
+
     # ----------------------------------------------------------- update_status
     def update_status(
         self,

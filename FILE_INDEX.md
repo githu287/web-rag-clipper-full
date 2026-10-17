@@ -30,8 +30,6 @@
 | `backend/api/routers/jobs.py` | 异步入库任务查询与失败重试 |
 | `backend/api/routers/ingest.py` | 已切分 chunks 的底层 re-ingest |
 | `backend/api/routers/rag.py` | 语义检索与生成式问答 |
-| `backend/api/routers/auth.py` | 未接入的旧 User/Bearer 草稿；`main.py` 未注册 |
-| `backend/api/routers/users.py` | 未接入的旧 User 资料/API Key 草稿；`main.py` 未注册 |
 
 ### Core
 
@@ -59,7 +57,6 @@
 | `backend/models/milvus_dto.py` | `ChunkVector` / `ChunkSearchResult` 严格 DTO |
 | `backend/models/api_schema.py` | Ingest、RAG、Plugin 与模型配置 API Schema |
 | `backend/models/document_api_schema.py` | Document、Upload、Clip、列表与详情 Schema |
-| `backend/models/user.py` | 未接入的旧 User/Bearer 草稿 ORM |
 
 ### Services
 
@@ -76,7 +73,6 @@
 | `backend/services/ingest_job.py` | 任务创建、Redis 入队、归属查询与重试编排 |
 | `backend/services/rag.py` | Query 向量化、范围过滤、搜索和 metadata 组装 |
 | `backend/services/rag_answer.py` | Retrieval、Context、Prompt、LLM、Sources 编排 |
-| `backend/services/user_service.py` | 未接入的旧 User/Bearer 草稿 Service |
 
 ### Repository
 
@@ -90,8 +86,6 @@
 | `backend/repositories/mysql/plugin_impl.py` | SQLAlchemy Plugin Workspace Repository |
 | `backend/repositories/mysql/ingest_job_protocol.py` | 异步入库任务 Repository Protocol |
 | `backend/repositories/mysql/ingest_job_impl.py` | 任务创建、原子 claim、终态与崩溃恢复持久化 |
-| `backend/repositories/mysql/user_protocol.py` | 未接入的旧 User Repository Protocol |
-| `backend/repositories/mysql/user_impl.py` | 未接入的旧 User Repository 实现 |
 | `backend/repositories/milvus/__init__.py` | 导出 Milvus Protocol、实现与初始化器 |
 | `backend/repositories/milvus/protocol.py` | Milvus Repository Protocol |
 | `backend/repositories/milvus/impl.py` | pymilvus 查询、upsert、删除与搜索实现 |
@@ -153,9 +147,6 @@
 | `backend/tests/test_redis_ingest_queue.py` | Redis 原子入队、processing ack 与恢复 |
 | `backend/tests/test_ingest_worker.py` | Worker 成功、失败、重复投递、中断恢复与优雅停机 |
 | `backend/tests/test_evaluation_baseline.py` | 指标、数据对齐和隔离泄漏计算 |
-| `backend/tests/test_auth_api.py` | 未接入 User/Bearer 草稿测试；当前收集失败 |
-| `backend/tests/test_user_repository.py` | 未接入 User Repository 草稿测试；当前收集失败 |
-| `backend/tests/test_user_service.py` | 未接入 User Service 草稿测试；当前收集失败 |
 
 ## `extension/` — 浏览器扩展
 
@@ -236,21 +227,6 @@
 | 文件 | 说明 |
 |---|---|
 | `tests/conftest.py` | 根级 pytest 路径/fixture 配置 |
-| `tests/test_render_report.py` | Markdown 报告结构与输出测试 |
-
-## `docs/` — 历史设计记录
-
-该目录用于设计追溯，不是当前运行规范。当前行为以根目录 `README.md`、`ARCHITECTURE.md` 和代码为准。
-
-| 文件 | 说明 |
-|---|---|
-| `docs/ARCHITECTURE.md` | 较早阶段架构快照；部分内容已过时 |
-| `docs/PHASE0_ARCHITECTURE.md` | 初始阶段架构方案 |
-| `docs/PHASE2_DATA_MODEL.md` | Phase 2 关系数据模型设计 |
-| `docs/PHASE2_MILVUS_SCHEMA.md` | Milvus Schema、索引和约束设计 |
-| `docs/PHASE2.3_MILVUS_REPOSITORY_DESIGN.md` | Milvus Repository 分层设计 |
-| `docs/REAL_BASELINE_RUNBOOK.md` | 真实环境评测对齐和运行手册 |
-| `docs/INTERVIEW_MATERIALS.md` | 项目讲解/面试材料，不是运行规范 |
 
 ## 运行时目录
 
@@ -260,3 +236,11 @@
 | `evaluation/private/` | 本地 Plugin Secret 等凭证；Git 忽略 |
 | `evaluation/aligned*/` | 运行时 ID 对齐数据；Git 忽略 |
 | `evaluation/reports/` | 基线输出和报告；Git 忽略 |
+
+## Reliability maintenance
+
+| File | Purpose |
+|---|---|
+| `conftest.py` | Disable personal dotenv loading in tests |
+| `requirements-dev.txt` | Runtime and pytest dependencies |
+| `backend/tests/test_ingest_reliability.py` | Persistent state, recovery, ownership and event loop regressions |

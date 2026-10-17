@@ -180,7 +180,11 @@ class DocumentUploadServiceTest(unittest.TestCase):
         )
         self.chunker.split.assert_called_once_with("hello world")
         self.ingest_service.ingest_document.assert_awaited_once_with(
-            1, ["hello world"], plugin_id="plugin-a", api_key=None
+            1,
+            ['hello world'],
+            plugin_id='plugin-a',
+            api_key=None,
+            preclaimed=True,
         )
         # 2) 终态读取（workspace-aware）
         self.document_repo.get_document.assert_called_once_with(1, "plugin-a")
@@ -218,9 +222,10 @@ class DocumentUploadServiceTest(unittest.TestCase):
         self.file_storage.resolve.assert_called_once_with("stored.txt")
         self.ingest_service.ingest_document.assert_awaited_once_with(
             7,
-            ["hello world"],
-            plugin_id="plugin-a",
-            api_key="sk-test",
+            ['hello world'],
+            plugin_id='plugin-a',
+            api_key='sk-test',
+            preclaimed=True,
         )
         self.assertIs(result, success)
 
@@ -234,7 +239,7 @@ class DocumentUploadServiceTest(unittest.TestCase):
         with self.assertRaises(DocumentUploadError):
             self.run_async(self.service.process_upload(8, "plugin-a"))
 
-        self.document_repo.update_status.assert_not_called()
+        self.document_repo.transition_status.assert_not_called()
         self.file_storage.resolve.assert_not_called()
         self.ingest_service.ingest_document.assert_not_awaited()
 
@@ -625,8 +630,11 @@ class DocumentUploadServiceTest(unittest.TestCase):
 
         def failing_parse(file_path: str) -> str:
             # 顺序哨兵：PROCESSING 置位必须已经发生
-            self.document_repo.update_status.assert_called_once_with(
-                1, DocumentStatus.PROCESSING
+            self.document_repo.transition_status.assert_called_once_with(
+                1,
+                'plugin-a',
+                {DocumentStatus.PENDING, DocumentStatus.SUCCESS, DocumentStatus.FAILED},
+                DocumentStatus.PROCESSING,
             )
             raise original_error
 
@@ -646,8 +654,11 @@ class DocumentUploadServiceTest(unittest.TestCase):
             )
         self.assertIs(cm.exception, original_error)
         # create(PENDING) → update_status(PROCESSING) → Parser(失败)
-        self.document_repo.update_status.assert_called_once_with(
-            1, DocumentStatus.PROCESSING
+        self.document_repo.transition_status.assert_called_once_with(
+            1,
+            'plugin-a',
+            {DocumentStatus.PENDING, DocumentStatus.SUCCESS, DocumentStatus.FAILED},
+            DocumentStatus.PROCESSING,
         )
         # 失败落盘：FAILED + error_message
         self._assert_failure_state_written("read failed")
@@ -663,8 +674,11 @@ class DocumentUploadServiceTest(unittest.TestCase):
 
         def failing_split(text: str) -> list[str]:
             # 顺序哨兵：PROCESSING 置位必须已经发生
-            self.document_repo.update_status.assert_called_once_with(
-                1, DocumentStatus.PROCESSING
+            self.document_repo.transition_status.assert_called_once_with(
+                1,
+                'plugin-a',
+                {DocumentStatus.PENDING, DocumentStatus.SUCCESS, DocumentStatus.FAILED},
+                DocumentStatus.PROCESSING,
             )
             raise original_error
 
@@ -683,8 +697,11 @@ class DocumentUploadServiceTest(unittest.TestCase):
                 )
             )
         self.assertIs(cm.exception, original_error)
-        self.document_repo.update_status.assert_called_once_with(
-            1, DocumentStatus.PROCESSING
+        self.document_repo.transition_status.assert_called_once_with(
+            1,
+            'plugin-a',
+            {DocumentStatus.PENDING, DocumentStatus.SUCCESS, DocumentStatus.FAILED},
+            DocumentStatus.PROCESSING,
         )
         self._assert_failure_state_written("split failed")
         self.document_repo.update_ingest_result.assert_not_called()
@@ -694,8 +711,11 @@ class DocumentUploadServiceTest(unittest.TestCase):
         """C：空 chunks → create(PENDING) → PROCESSING → FAILED（无 PENDING→FAILED）。"""
         def empty_split(text: str) -> list[str]:
             # 顺序哨兵：PROCESSING 置位必须已经发生
-            self.document_repo.update_status.assert_called_once_with(
-                1, DocumentStatus.PROCESSING
+            self.document_repo.transition_status.assert_called_once_with(
+                1,
+                'plugin-a',
+                {DocumentStatus.PENDING, DocumentStatus.SUCCESS, DocumentStatus.FAILED},
+                DocumentStatus.PROCESSING,
             )
             return []
 
@@ -713,8 +733,11 @@ class DocumentUploadServiceTest(unittest.TestCase):
                     mime_type=None,
                 )
             )
-        self.document_repo.update_status.assert_called_once_with(
-            1, DocumentStatus.PROCESSING
+        self.document_repo.transition_status.assert_called_once_with(
+            1,
+            'plugin-a',
+            {DocumentStatus.PENDING, DocumentStatus.SUCCESS, DocumentStatus.FAILED},
+            DocumentStatus.PROCESSING,
         )
         self._assert_failure_state_written(
             "no chunks produced after parsing (empty or whitespace-only text)"
@@ -731,10 +754,14 @@ class DocumentUploadServiceTest(unittest.TestCase):
             chunks: list[str],
             plugin_id: str,
             api_key: str | None = None,  # Phase 3.4 Step 4：api_key 透传
+            preclaimed: bool = False,
         ) -> None:
             # 顺序哨兵：PROCESSING 置位必须已经发生
-            self.document_repo.update_status.assert_called_once_with(
-                1, DocumentStatus.PROCESSING
+            self.document_repo.transition_status.assert_called_once_with(
+                1,
+                'plugin-a',
+                {DocumentStatus.PENDING, DocumentStatus.SUCCESS, DocumentStatus.FAILED},
+                DocumentStatus.PROCESSING,
             )
             raise original_error
 
@@ -753,8 +780,11 @@ class DocumentUploadServiceTest(unittest.TestCase):
                 )
             )
         self.assertIs(cm.exception, original_error)
-        self.document_repo.update_status.assert_called_once_with(
-            1, DocumentStatus.PROCESSING
+        self.document_repo.transition_status.assert_called_once_with(
+            1,
+            'plugin-a',
+            {DocumentStatus.PENDING, DocumentStatus.SUCCESS, DocumentStatus.FAILED},
+            DocumentStatus.PROCESSING,
         )
         # FAILED + error_message（UploadService 补写；DocumentIngestService 已置 FAILED）
         self._assert_failure_state_written("milvus upsert failed")
@@ -765,8 +795,11 @@ class DocumentUploadServiceTest(unittest.TestCase):
         """E：成功 → create(PENDING) → PROCESSING → SUCCESS；chunk_count 正确。"""
         def parsing(file_path: str) -> str:
             # 顺序哨兵：PROCESSING 置位必须已经发生
-            self.document_repo.update_status.assert_called_once_with(
-                1, DocumentStatus.PROCESSING
+            self.document_repo.transition_status.assert_called_once_with(
+                1,
+                'plugin-a',
+                {DocumentStatus.PENDING, DocumentStatus.SUCCESS, DocumentStatus.FAILED},
+                DocumentStatus.PROCESSING,
             )
             return "hello world"
 
@@ -786,8 +819,11 @@ class DocumentUploadServiceTest(unittest.TestCase):
                 mime_type="text/plain",
             )
         )
-        self.document_repo.update_status.assert_called_once_with(
-            1, DocumentStatus.PROCESSING
+        self.document_repo.transition_status.assert_called_once_with(
+            1,
+            'plugin-a',
+            {DocumentStatus.PENDING, DocumentStatus.SUCCESS, DocumentStatus.FAILED},
+            DocumentStatus.PROCESSING,
         )
         self.assertEqual(result.status, DocumentStatus.SUCCESS)
         self.assertEqual(result.chunk_count, 1)
@@ -798,7 +834,7 @@ class DocumentUploadServiceTest(unittest.TestCase):
         """F：update_status(PROCESSING) 失败 → 原异常直接传播，不触发 PENDING→FAILED
         （与 DocumentIngestService Step 2 行为一致：置位失败 Document 保持 PENDING）。"""
         original_error = DocumentRepositoryError("mysql down")
-        self.document_repo.update_status.side_effect = original_error
+        self.document_repo.transition_status.side_effect = original_error
         self.document_repo.create_document.return_value = self._make_document(
             status=DocumentStatus.PENDING
         )

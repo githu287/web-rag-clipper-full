@@ -359,7 +359,7 @@ class EmbeddingClientUserKeyTest(unittest.TestCase):
         )
         self.client._get_client(credentials)
         self.mock_openai_cls.assert_called_once_with(
-            api_key="embedding-key", base_url="https://embedding.example/v1"
+            api_key="embedding-key", base_url="https://embedding.example/v1", timeout=30
         )
 
 

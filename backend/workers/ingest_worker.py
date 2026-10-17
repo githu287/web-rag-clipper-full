@@ -89,6 +89,7 @@ class IngestWorker:
                         raw_text=request.raw_text,
                         plugin_id=job.plugin_id,
                         api_key=api_key,
+                        claim_document=lambda document_id: self._repository.begin_document(job_id, document_id),
                     )
                 )
             else:
@@ -104,6 +105,7 @@ class IngestWorker:
                         document_id=document_id,
                         plugin_id=job.plugin_id,
                         api_key=api_key,
+                        claim_document=lambda document_id: self._repository.begin_document(job_id, document_id),
                     )
                 )
             self._repository.mark_succeeded(job_id, document.id)
@@ -120,15 +122,6 @@ class IngestWorker:
 
     def _record_failure(self, job, exc: Exception) -> bool:
         """写失败终态；写不进时返回 False，让 processing 保留给恢复流程重跑。"""
-        if job.job_type == IngestJobType.FILE_UPLOAD and job.document_id is not None:
-            try:
-                self._document_upload_service.fail_prepared_upload(job.document_id, exc)
-            except Exception:
-                logger.exception(
-                    "failed to mark document upload failed: job_id=%s document_id=%s",
-                    job.id,
-                    job.document_id,
-                )
         try:
             self._repository.mark_failed(job.id, str(exc))
         except Exception:

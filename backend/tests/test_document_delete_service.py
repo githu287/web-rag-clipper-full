@@ -1,30 +1,4 @@
-"""
-DocumentDeleteService 单元测试（Phase 2.11 Step 2；Phase 3.5 Step 2-E workspace-aware）。
-
-技术栈：unittest + unittest.mock（不引入 pytest）。
-注入方式：Mock(spec=DocumentRepository) + Mock(spec=MilvusRepository) +
-Mock(spec=FileStorage)，符合 Protocol 注入约定。
-
-Phase 3.5 Step 2-E 变更（workspace-aware，user_id → plugin_id）：
-  - delete_document(document_id, plugin_id)：Step 1 get_document(document_id,
-    plugin_id) ownership check；Step 6 delete_document(document_id, plugin_id)；
-  - A delete A：完整删除流程，get_document/delete_document 均带 plugin_id；
-  - A delete B（跨 Workspace）：get_document 抛 DocumentNotFoundError → 幂等成功
-    （按「不存在」处理，不泄露归属），后续步骤（Milvus/FileStorage/MySQL）
-    均不执行；
-  - Milvus → FileStorage → MySQL 删除顺序不变。
-
-覆盖用例：
-  A. 删除顺序：get_document → update_status(DELETING) → query_page_chunks →
-     delete_chunks → FileStorage.delete → delete_document（MySQL 最终提交点）。
-  B. webpage 来源：不调用 FileStorage.delete。
-  C. upload 来源：调用 FileStorage.delete，且以实际物理路径删除。
-  D. webpage + FileStorage 抛错：不触发 FileStorage.delete（不误删网页文档）。
-  E. MySQL delete_document 抛 DocumentNotFoundError（并发删除）→ 重试收敛成功。
-  F. get_document NotFound → 幂等成功（不写 DELETING、不触碰 Milvus / 文件系统）。
-  G. Protocol 注入。
-  H. 回归：update_status 状态机约束不受 workspace-aware 影响（SQLite）。
-"""
+"""Regression tests for document ownership and lifecycle contracts."""
 
 from __future__ import annotations
 
@@ -94,7 +68,7 @@ class DocumentDeleteServiceTest(unittest.TestCase):
             self.document_repo.mock_calls,
             [
                 call.get_document(7, _PLUGIN_ID),
-                call.update_status(7, DocumentStatus.DELETING),
+                call.transition_status(7, _PLUGIN_ID, {DocumentStatus.PENDING, DocumentStatus.SUCCESS, DocumentStatus.FAILED, DocumentStatus.DELETING}, DocumentStatus.DELETING),
                 call.delete_document(7, _PLUGIN_ID),
             ],
         )
@@ -204,7 +178,7 @@ class DocumentDeleteServiceTest(unittest.TestCase):
 
         # 幂等成功：不抛异常
         # 不写 DELETING
-        self.document_repo.update_status.assert_not_called()
+        self.document_repo.transition_status.assert_not_called()
         # 不触碰 Milvus
         self.milvus_repo.query_page_chunks.assert_not_called()
         self.milvus_repo.delete_chunks.assert_not_called()
@@ -251,7 +225,7 @@ class DocumentDeleteServiceTest(unittest.TestCase):
             self.document_repo.mock_calls,
             [
                 call.get_document(7, _PLUGIN_ID),
-                call.update_status(7, DocumentStatus.DELETING),
+                call.transition_status(7, _PLUGIN_ID, {DocumentStatus.PENDING, DocumentStatus.SUCCESS, DocumentStatus.FAILED, DocumentStatus.DELETING}, DocumentStatus.DELETING),
                 call.delete_document(7, _PLUGIN_ID),
             ],
         )
@@ -280,7 +254,7 @@ class DocumentDeleteServiceTest(unittest.TestCase):
         # ownership check 以 (8, plugin_id=_PLUGIN_ID) 调用
         self.document_repo.get_document.assert_called_once_with(8, _PLUGIN_ID)
         # 幂等成功：不写 DELETING、不触碰 Milvus/FileStorage/MySQL
-        self.document_repo.update_status.assert_not_called()
+        self.document_repo.transition_status.assert_not_called()
         self.milvus_repo.query_page_chunks.assert_not_called()
         self.milvus_repo.delete_chunks.assert_not_called()
         self.file_storage.delete.assert_not_called()

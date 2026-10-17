@@ -38,7 +38,7 @@ detached ORM 对象安全。后续增加 Document 与 Page/Chunk relationship �
 
 from __future__ import annotations
 
-from sqlalchemy import Engine, func, or_, select
+from sqlalchemy import Engine, func, or_, select, update
 from sqlalchemy.exc import DBAPIError, IntegrityError, OperationalError
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -47,6 +47,7 @@ from ...core.exceptions import (
     DocumentOperationError,
 )
 from ...models.document import Document, DocumentSourceType, DocumentStatus
+from ...models.ingest_job import IngestJob, IngestJobStatus
 from .protocol import DocumentRepository, _UNSET
 
 
@@ -300,6 +301,36 @@ class DocumentRepositoryImpl(DocumentRepository):
                 f"get_success_document_ids failed: "
                 f"plugin_id={plugin_id!r}, error={_db_error_brief(e)}"
             ) from e
+
+    def transition_status(
+        self, document_id: int, plugin_id: str, expected: set[str], status: str,
+    ) -> Document:
+        if status not in DocumentStatus.ALL or not expected or not expected <= DocumentStatus.ALL:
+            raise ValueError("invalid document transition")
+        try:
+            with self._session_factory() as session:
+                result = session.execute(
+                    update(Document).where(
+                        Document.id == document_id, Document.plugin_id == plugin_id,
+                        Document.status.in_(expected),
+                        ~select(IngestJob.id).where(
+                            IngestJob.document_id == Document.id,
+                            IngestJob.status == IngestJobStatus.RUNNING,
+                            IngestJob.stage == "PROCESSING_DOCUMENT",
+                        ).exists(),
+                    ).values(status=status, error_message=None)
+                )
+                if result.rowcount != 1:
+                    document = session.scalar(select(Document).where(
+                        Document.id == document_id, Document.plugin_id == plugin_id,
+                    ))
+                    if document is None:
+                        raise DocumentNotFoundError("document not found")
+                    raise DocumentOperationError("document state changed; retry the operation")
+                session.commit()
+                return session.get(Document, document_id)
+        except (OperationalError, IntegrityError, DBAPIError) as exc:
+            raise DocumentOperationError("document transition failed") from exc
 
     # ----------------------------------------------------------- update_status
     def update_status(

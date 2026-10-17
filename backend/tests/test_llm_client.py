@@ -320,7 +320,7 @@ class BailianLLMClientUserKeyTest(unittest.TestCase):
         )
         self.client.generate("s", "u", api_key=credentials)
         self.mock_openai_cls.assert_called_once_with(
-            api_key="llm-key", base_url="https://chat.example/v1"
+            api_key="llm-key", base_url="https://chat.example/v1", timeout=60
         )
         call = self.mock_client.chat.completions.create.call_args
         self.assertEqual(call.kwargs["model"], "chat-model")

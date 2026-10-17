@@ -49,6 +49,7 @@ DocumentUploadService（Phase 2.10 Step 3）。
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 import os
 
 from ..chunkers import Chunker
@@ -155,10 +156,12 @@ class DocumentUploadService:
         document_id: int,
         plugin_id: str,
         api_key: str | None = None,
+        *,
+        claim_document: Callable[[int], None] | None = None,
     ) -> Document:
         """Parse and ingest a previously prepared upload."""
         document = self._document_repository.get_document(document_id, plugin_id)
-        return await self._process_document(document, plugin_id, api_key)
+        return await self._process_document(document, plugin_id, api_key, claim_document)
 
     def fail_prepared_upload(self, document_id: int, exc: Exception) -> None:
         """Persist a terminal failure when a prepared upload cannot be queued."""
@@ -215,16 +218,21 @@ class DocumentUploadService:
         document: Document,
         plugin_id: str,
         api_key: str | None,
+        claim_document: Callable[[int], None] | None = None,
     ) -> Document:
         """Shared processing phase for synchronous and queued uploads."""
         if document.source_type != DocumentSourceType.UPLOAD:
             raise DocumentUploadError(
                 f"document is not an uploaded file: id={document.id}"
             )
-        self._document_repository.update_status(
-            document.id,
-            DocumentStatus.PROCESSING,
-        )
+        if claim_document is not None:
+            claim_document(document.id)
+        else:
+            self._document_repository.transition_status(
+                document.id, plugin_id,
+                {DocumentStatus.PENDING, DocumentStatus.SUCCESS, DocumentStatus.FAILED},
+                DocumentStatus.PROCESSING,
+            )
         try:
             text = self._parser.parse(
                 self._file_storage.resolve(document.file_path)
@@ -239,6 +247,7 @@ class DocumentUploadService:
                 chunks,
                 plugin_id=plugin_id,
                 api_key=api_key,
+                preclaimed=True,
             )
         except Exception as exc:
             self._mark_failed(document.id, exc)

@@ -81,7 +81,7 @@ lifespan 启动阶段调用 `MilvusInitializer.initialize()`：连接 Milvus；C
 
 注册 `POST /plugins/register` 时，服务端生成公开的 `plugin_id` 和只返回一次的 `plugin_secret`。数据库只保存 Secret 的 SHA-256 哈希。
 
-除注册外，所有业务 API 都通过 `get_current_plugin()` 读取 `X-Plugin-ID` 与 `X-Plugin-Secret`，再由 `PluginService.authenticate()` 校验。禁用的 Workspace 返回 403；无效凭证返回 401。
+除注册和模型服务商目录外，业务 API 都通过 `get_current_plugin()` 读取 `X-Plugin-ID` 与 `X-Plugin-Secret`，再由 `PluginService.authenticate()` 校验。禁用的 Workspace 返回 403；无效凭证返回 401。`/ingest/page` 也必须通过 DocumentIngestService 校验目标文档归属，不允许绕过文档生命周期直接写向量。
 
 ### 4.2 模型服务配置
 
@@ -193,7 +193,9 @@ Side Panel 注入 extractor.js + content.js
 
 网页文档固定使用 `filename=webclip.txt`，不写本地文件。后端会在查重前移除 URL fragment、默认端口和 `utm_*` / `fbclid` / `gclid` 等跟踪参数。同一 Workspace、同一规范化 URL 的失败文档可原位重试；不同 Workspace 的相同 URL 相互独立。
 
-Worker 使用 Redis 待处理列表和 processing 列表实现确认语义。任务写入 MySQL 终态后才从 processing 移除；Worker 重启时会将未确认项恢复到队列并把中断的 `RUNNING` 任务置回 `QUEUED`。Redis payload 不包含用户 API Key，Worker 执行时才从 Workspace 解密当前 Key。
+Worker 使用 Redis 待处理列表和 processing 列表实现确认语义。执行正文解析前，在一个 MySQL 事务内领取文档、绑定 `job.document_id` 并设置 `stage=PROCESSING_DOCUMENT`。恢复中断任务时，同一事务释放该任务占用的 `PROCESSING` 文档为 `FAILED`，并把 Job 置回 `QUEUED`，之后才搬运 Redis 队列。失败任务同样只释放自己领取的文档，不影响竞争中的其他操作。任务写入终态后才确认队列。Redis payload 不包含用户 API Key，Worker 执行时才解密当前 Key。
+
+恢复策略仍要求只运行一个 Worker。旧版本未记录文档绑定的网页任务不具备这一恢复保证，更新代码前应先完成在途任务。
 
 ### 6.3 Milvus re-ingest
 
@@ -234,9 +236,9 @@ POST /rag/ask
 
 ### 8.1 文档删除
 
-删除流程按 Milvus chunks → 本地文件 → MySQL Document 的顺序执行。接口对不存在的文档幂等返回 204；网页文档跳过文件删除。`DELETING` 状态用于阻止 ingest 与 delete 并发进入。
+删除流程按 Milvus chunks → 本地文件 → MySQL Document 的顺序执行。接口对不存在的文档幂等返回 204；网页文档跳过文件删除。入库和删除用带归属、预期状态及活动任务条件的原子 UPDATE 领取文档，避免先检查再更新的竞争。异步任务尚未提交终态时，其文档也不可被其他操作领取。
 
-这不是分布式事务。若中途失败，保留的 MySQL 权威记录使重试可以继续收敛；错误由 API 映射为可观察的 5xx。
+这不是分布式事务。若中途失败，文档保持 `DELETING`，避免部分向量已删除却恢复 `SUCCESS`；Side Panel 提供“继续删除”。保留的 MySQL 权威记录使重试可以继续收敛；错误由 API 映射为可观察的 5xx。
 
 ### 8.2 Workspace 删除
 
@@ -261,15 +263,16 @@ Workspace 删除要求 `confirm=true` 且提交名称与当前名称完全一致
 
 ## 10. 测试、可观测性与维护状态
 
-主测试集覆盖 Router、Service、Repository、DTO、安全工具、URL 规范化、异步队列/Worker、Workspace 隔离、评测计算和报告渲染。当前活动集实测为 563 passed，并包含 37 个 subtests。扩展另有 Node.js 回归测试，覆盖正文候选评分、噪声识别、结构化文本规范化、URL 规范化和任务持久化。
+主测试集覆盖 Router、Service、Repository、DTO、安全工具、URL 规范化、异步队列/Worker、Workspace 隔离和评测计算。具体数量以当前 pytest 输出为准。根目录 conftest.py 禁止测试加载个人 `.env`；可靠性回归使用真实 SQLite Repository 与外部服务替身。扩展另有 Node.js 回归测试。
 
 日志记录操作类型、Document ID 和候选数量等诊断信息；安全代码避免记录 Plugin Secret 与 API Key 明文。项目目前没有统一 metrics/tracing、结构化审计日志或请求 ID 中间件。
 
-工作区中存在未接入主应用的旧 User/Bearer 草稿。`main.py` 不注册 `auth.py` 与 `users.py`，`deps.py` 也只提供 Plugin 身份；这些文件不属于当前运行架构。
+当前工作区没有旧 User/Bearer 路由和服务；历史 User 相关数据库迁移仍保留。`deps.py` 只提供 Plugin 身份。
 
 ## 11. 已知演进约束
 
 - 网页和文件 ingest 已异步化；当前恢复策略假定只运行一个 Worker 进程。
+- RAG 的同步数据库、向量检索、Embedding 和 LLM 调用通过 `asyncio.to_thread` 执行，避免阻塞 API 事件循环；旧同步入库兼容路径仍不适合作为高并发入口。
 - 网页正文提取基于浏览器可见 DOM；Shadow DOM、跨域 iframe、分页内容、登录墙及尚未渲染完成的 SPA 需要后续专项适配。
 - 向量维度或 Collection Schema 改动不能仅改环境变量，必须重建 Collection 并全量重新 ingest。
 - 若启用公网访问，需要补齐 CORS、TLS、限流、Secret 轮换、审计和更严格的部署配置。

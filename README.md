@@ -121,7 +121,7 @@ python -c "import secrets; print(secrets.token_hex(16))"
 ```powershell
 python -m venv .venv
 .venv\Scripts\Activate.ps1
-python -m pip install -r backend\requirements.txt
+python -m pip install -r requirements-dev.txt
 alembic upgrade head
 ```
 
@@ -205,7 +205,7 @@ Worker 会初始化 Milvus，恢复上次意外中断且未确认的任务，然
 | POST | `/clips/async` | 创建网页剪藏任务并立即返回 `202` |
 | GET | `/jobs/{job_id}` | 查询当前 Workspace 任务进度与结果 |
 | POST | `/jobs/{job_id}/retry` | 重试未超过上限的失败任务 |
-| POST | `/ingest/page` | 直接写入已切分 chunks 的底层接口 |
+| POST | `/ingest/page` | 向当前 Workspace 的已有文档写入 chunks，校验归属并更新文档状态 |
 | POST | `/rag/search` | 返回语义检索结果及文档元数据 |
 | POST | `/rag/ask` | 检索、构造 Context 并生成带 Sources 的回答 |
 
@@ -259,7 +259,9 @@ MySQL 是文档状态和归属的权威来源；Milvus 只保存向量检索所�
 .venv\Scripts\python.exe -m pytest -q
 ```
 
-当前活动测试集结果为：`588 passed, 1 skipped, 37 subtests passed`（另有 2 个依赖弃用警告）。
+测试默认不加载个人 `.env`，数据库单元测试使用 SQLite，模型和 Milvus 使用替身。运行 `pytest` 获取当前结果；新增 `backend/tests/test_ingest_reliability.py` 覆盖越权写入、中断恢复、状态竞争、删除补偿及问答事件循环响应。
+
+`requirements-dev.txt` 包含运行依赖和 pytest；仅部署运行环境时可安装 `backend/requirements.txt`。
 
 扩展侧的纯 JavaScript 回归测试无需启动后端：
 
@@ -323,6 +325,5 @@ backend/       FastAPI、业务服务、Repository、模型与测试
 extension/     Chrome/Edge Manifest V3 扩展
 alembic/       MySQL Schema 迁移（0001 → 0010）
 evaluation/    Retrieval/隔离评测数据与工具
-docs/          历史设计、数据模型和运行手册
 uploads/       本地运行时上传目录（Git 忽略）
 ```

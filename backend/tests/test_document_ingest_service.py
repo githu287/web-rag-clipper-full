@@ -1,40 +1,4 @@
-"""
-DocumentIngestService 单元测试（Phase 2.9 Step 2；Phase 2.11 Step 2 扩展；
-Phase 3.5 Step 2-E workspace-aware）。
-
-技术栈：unittest + unittest.mock（不引入 pytest；不依赖真实 MySQL/Milvus/百炼）。
-注入方式：Mock(spec=DocumentRepository) + Mock(spec=IngestService)，保证：
-  - 通过 Protocol runtime_checkable 校验（H. Protocol 注入）；
-  - 断言调用顺序与方法签名，防止实现回归。
-
-Phase 3.5 Step 2-E 变更（workspace-aware）：
-  - ingest_document(document_id, chunks, plugin_id)：Step 1 ownership check 使用
-    get_document(document_id, plugin_id)；
-  - A ingest A：成功，get_document 以 (document_id, plugin_id) 调用；
-  - A ingest B（跨 Workspace）：get_document 抛 DocumentNotFoundError → 直接传播，
-    无任何状态写入（不泄露归属）。
-
-覆盖用例（A~H + Phase 2.11 Step 2 扩展 I + Step 2-E workspace-aware）：
-  A. 成功路径：get_document → update_status(PROCESSING, error_message=None)
-     → ingest_page → update_ingest_result(chunk_count=len(chunks),
-       status=SUCCESS, error_message=None)；
-     明确断言不存在单独的 update_status(SUCCESS)。
-  B. Embedding/ingest 失败：ingest_page 抛异常 → update_failure(
-     error_message=摘要) → 原异常继续抛出 → update_ingest_result 不被调用。
-  C. stale-delete 失败：与 B 相同语义（统一走 ingest_page 抛异常）。
-  D. get_document NotFound：DocumentNotFoundError 直接传播，
-     PROCESSING / FAILED / ingest_page 均不调用。
-  E. chunk_count：成功时 update_ingest_result(chunk_count=len(chunks), ...)。
-  F. 失败路径 chunk_count：失败只调用 update_failure(document_id,
-     error_message=摘要)（原子落 FAILED + error_message），不传 chunk_count，
-     不调用 update_ingest_result。
-  G. 幂等：同一 document_id 连续调用两次，两次都执行完整成功流程。
-  H. Protocol 注入：DocumentRepository / IngestService 均以 Mock(spec=...) 注入。
-  I. DELETING gate（Phase 2.11 Step 2）：status == DELETING → 抛
-     DocumentOperationError，不调用 update_status(PROCESSING)、不触碰 Milvus、
-     不调用 embedding；原状态保持 DELETING。
-  J. Step 2-E：A ingest A 成功（get_document 带 plugin_id）；A ingest B → NotFound。
-"""
+"""Regression tests for document ownership and lifecycle contracts."""
 
 from __future__ import annotations
 
@@ -95,9 +59,7 @@ class DocumentIngestServiceTest(unittest.TestCase):
             self.document_repo.mock_calls,
             [
                 unittest.mock.call.get_document(1, "plugin-a"),
-                unittest.mock.call.update_status(
-                    1, DocumentStatus.PROCESSING, error_message=None
-                ),
+                unittest.mock.call.transition_status(1, "plugin-a", {DocumentStatus.PENDING, DocumentStatus.SUCCESS, DocumentStatus.FAILED}, DocumentStatus.PROCESSING),
                 unittest.mock.call.update_ingest_result(
                     1,
                     chunk_count=2,
@@ -124,14 +86,12 @@ class DocumentIngestServiceTest(unittest.TestCase):
         # 遍历所有调用，update_status 只允许出现 PROCESSING 一次，绝无 SUCCESS
         status_calls = [
             c for c in self.document_repo.mock_calls
-            if c[0] == "update_status"
+            if c[0] == "transition_status"
         ]
         self.assertEqual(len(status_calls), 1)
         self.assertEqual(
             status_calls[0],
-            unittest.mock.call.update_status(
-                1, DocumentStatus.PROCESSING, error_message=None
-            ),
+            unittest.mock.call.transition_status(1, "plugin-a", {DocumentStatus.PENDING, DocumentStatus.SUCCESS, DocumentStatus.FAILED}, DocumentStatus.PROCESSING),
         )
         # SUCCESS 必须通过 update_ingest_result 完成（并清空 error_message）
         self.document_repo.update_ingest_result.assert_called_once_with(
@@ -178,11 +138,11 @@ class DocumentIngestServiceTest(unittest.TestCase):
         # update_status 只出现 PROCESSING（带 error_message=None），无 FAILED
         status_calls = [
             c for c in self.document_repo.mock_calls
-            if c[0] == "update_status"
+            if c[0] == "transition_status"
         ]
         self.assertEqual(len(status_calls), 1)
         self.assertEqual(
-            status_calls[0][1], (1, DocumentStatus.PROCESSING)
+            status_calls[0][1], (1, "plugin-a", {DocumentStatus.PENDING, DocumentStatus.SUCCESS, DocumentStatus.FAILED}, DocumentStatus.PROCESSING)
         )
         # 所有 update_status 调用均不带 chunk_count
         for c in status_calls:
@@ -224,7 +184,7 @@ class DocumentIngestServiceTest(unittest.TestCase):
         self.run_async(scenario())
 
         # PROCESSING / FAILED 均不调用
-        self.document_repo.update_status.assert_not_called()
+        self.document_repo.transition_status.assert_not_called()
         self.document_repo.update_failure.assert_not_called()
         # ingest_page 不调用
         self.ingest_service.ingest_page.assert_not_called()
@@ -271,8 +231,8 @@ class DocumentIngestServiceTest(unittest.TestCase):
         # PROCESSING 两次
         processing_calls = [
             c for c in self.document_repo.mock_calls
-            if c[0] == "update_status"
-            and c[1] == (1, DocumentStatus.PROCESSING)
+            if c[0] == "transition_status"
+            and c[1] == (1, "plugin-a", {DocumentStatus.PENDING, DocumentStatus.SUCCESS, DocumentStatus.FAILED}, DocumentStatus.PROCESSING)
         ]
         self.assertEqual(len(processing_calls), 2)
         # ingest_page 两次（page_id 始终等于 document_id）
@@ -325,9 +285,7 @@ class DocumentIngestServiceTest(unittest.TestCase):
             self.document_repo.mock_calls,
             [
                 unittest.mock.call.get_document(1, "plugin-a"),
-                unittest.mock.call.update_status(
-                    1, DocumentStatus.PROCESSING, error_message=None
-                ),
+                unittest.mock.call.transition_status(1, "plugin-a", {DocumentStatus.PENDING, DocumentStatus.SUCCESS, DocumentStatus.FAILED}, DocumentStatus.PROCESSING),
                 unittest.mock.call.update_ingest_result(
                     1,
                     chunk_count=1,
@@ -347,7 +305,7 @@ class DocumentIngestServiceTest(unittest.TestCase):
         self.document_repo.update_failure.assert_not_called()
         failed_calls = [
             c for c in self.document_repo.mock_calls
-            if c[0] == "update_status"
+            if c[0] == "transition_status"
             and c[1][1] == DocumentStatus.FAILED
         ]
         self.assertEqual(failed_calls, [])
@@ -355,14 +313,14 @@ class DocumentIngestServiceTest(unittest.TestCase):
         # 3) SUCCESS 不被单独调用（update_status 只出现 PROCESSING 一次）
         success_calls = [
             c for c in self.document_repo.mock_calls
-            if c[0] == "update_status"
+            if c[0] == "transition_status"
             and c[1][1] == DocumentStatus.SUCCESS
         ]
         self.assertEqual(success_calls, [])
 
         # 4) 所有 update_status 调用均不带 chunk_count（chunk_count 未被额外修改）
         for c in self.document_repo.mock_calls:
-            if c[0] == "update_status":
+            if c[0] == "transition_status":
                 self.assertNotIn("chunk_count", c[2])
 
     # ------------------------------------------- I. DELETING gate（Phase 2.11 Step 2）
@@ -377,7 +335,7 @@ class DocumentIngestServiceTest(unittest.TestCase):
         self.run_async(scenario())
 
         # 不调用 update_status（不写 PROCESSING，原状态保持 DELETING）
-        self.document_repo.update_status.assert_not_called()
+        self.document_repo.transition_status.assert_not_called()
         # 不触碰 Milvus（ingest_page 不调用 → 不 query/upsert/embedding）
         self.ingest_service.ingest_page.assert_not_called()
         # 不落 SUCCESS / FAILED
@@ -392,7 +350,7 @@ class DocumentIngestServiceTest(unittest.TestCase):
             self.assertEqual(str(cm.exception), "chunks must not be empty")
 
         self.run_async(scenario())
-        self.document_repo.update_status.assert_not_called()
+        self.document_repo.transition_status.assert_not_called()
         self.ingest_service.ingest_page.assert_not_called()
 
     # -------------------------------------------------------- H. Protocol 注入
@@ -425,8 +383,11 @@ class DocumentIngestServiceTest(unittest.TestCase):
         # ownership check：get_document(document_id, plugin_id)
         self.document_repo.get_document.assert_called_once_with(1, "plugin-a")
         # 成功流程照常（PROCESSING → ingest_page → SUCCESS）
-        self.document_repo.update_status.assert_called_once_with(
-            1, DocumentStatus.PROCESSING, error_message=None
+        self.document_repo.transition_status.assert_called_once_with(
+            1,
+            'plugin-a',
+            {DocumentStatus.PENDING, DocumentStatus.SUCCESS, DocumentStatus.FAILED},
+            DocumentStatus.PROCESSING,
         )
         self.document_repo.update_ingest_result.assert_called_once_with(
             1,
@@ -450,7 +411,7 @@ class DocumentIngestServiceTest(unittest.TestCase):
         # ownership check 以 (8, plugin_id="plugin-a") 调用（plugin-a 视角文档 8 不存在）
         self.document_repo.get_document.assert_called_once_with(8, "plugin-a")
         # 不写 PROCESSING / FAILED / SUCCESS、不触碰 Milvus
-        self.document_repo.update_status.assert_not_called()
+        self.document_repo.transition_status.assert_not_called()
         self.document_repo.update_failure.assert_not_called()
         self.document_repo.update_ingest_result.assert_not_called()
         self.ingest_service.ingest_page.assert_not_called()

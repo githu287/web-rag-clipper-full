@@ -11,6 +11,7 @@ from ...core.exceptions import (
     IngestJobNotFoundError,
     IngestJobOperationError,
 )
+from ...models.document import Document, DocumentStatus
 from ...models.ingest_job import IngestJob, IngestJobStatus, IngestJobType
 from .ingest_job_protocol import IngestJobRepository
 
@@ -109,10 +110,59 @@ class IngestJobRepositoryImpl(IngestJobRepository):
             error_message=None,
         )
 
+    def begin_document(self, job_id: str, document_id: int) -> None:
+        """Claim document and bind its RUNNING job in one transaction."""
+        try:
+            with self._session_factory() as session:
+                job = session.scalar(select(IngestJob).where(
+                    IngestJob.id == job_id,
+                ).with_for_update())
+                if job is None or job.status != IngestJobStatus.RUNNING:
+                    raise IngestJobConflictError("only RUNNING jobs can claim documents")
+                if job.stage == "PROCESSING_DOCUMENT":
+                    raise IngestJobConflictError("job already holds a document")
+                result = session.execute(update(Document).where(
+                    Document.id == document_id, Document.plugin_id == job.plugin_id,
+                    Document.status.in_([DocumentStatus.PENDING, DocumentStatus.SUCCESS, DocumentStatus.FAILED]),
+                    ~select(IngestJob.id).where(
+                        IngestJob.document_id == Document.id,
+                        IngestJob.status == IngestJobStatus.RUNNING,
+                        IngestJob.stage == "PROCESSING_DOCUMENT",
+                    ).exists(),
+                ).values(status=DocumentStatus.PROCESSING, error_message=None))
+                if result.rowcount != 1:
+                    raise IngestJobConflictError("document is unavailable or already processing")
+                job.document_id = document_id
+                job.stage = "PROCESSING_DOCUMENT"
+                session.commit()
+        except (OperationalError, DBAPIError) as exc:
+            raise IngestJobOperationError("claim job document failed") from exc
+
+    @staticmethod
+    def _release_document(session: Session, job: IngestJob, message: str) -> None:
+        # Preflight failures (missing credentials/payload) may occur before claim.
+        # Only a still-PENDING prepared upload may be failed in that case.
+        expected = (
+            DocumentStatus.PROCESSING if job.stage == "PROCESSING_DOCUMENT"
+            else DocumentStatus.PENDING if job.job_type == IngestJobType.FILE_UPLOAD
+            else None
+        )
+        if expected is not None and job.document_id is not None:
+            session.execute(update(Document).where(
+                Document.id == job.document_id, Document.plugin_id == job.plugin_id,
+                Document.status == expected,
+            ).values(status=DocumentStatus.FAILED, error_message=message[:_MAX_ERROR_LENGTH]))
+
     def recover_interrupted(self, job_id: str) -> bool:
         """Reset a worker-crashed RUNNING job so a recovered queue item can run."""
         try:
             with self._session_factory() as session:
+                job = session.scalar(select(IngestJob).where(
+                    IngestJob.id == job_id,
+                ).with_for_update())
+                if job is None or job.status != IngestJobStatus.RUNNING:
+                    return False
+                self._release_document(session, job, "worker interrupted; retry queued")
                 result = session.execute(
                     update(IngestJob)
                     .where(
@@ -156,6 +206,18 @@ class IngestJobRepositoryImpl(IngestJobRepository):
     ) -> IngestJob:
         try:
             with self._session_factory() as session:
+                job = session.scalar(select(IngestJob).where(
+                    IngestJob.id == job_id,
+                ).with_for_update())
+                if (
+                    job is not None
+                    and job.status in {IngestJobStatus.RUNNING, IngestJobStatus.QUEUED}
+                    and status == IngestJobStatus.FAILED
+                ):
+                    self._release_document(session, job, error_message or "ingest failed")
+                expected_statuses = [IngestJobStatus.RUNNING]
+                if status == IngestJobStatus.FAILED:
+                    expected_statuses.append(IngestJobStatus.QUEUED)
                 values: dict[str, object] = {
                     "status": status,
                     "stage": stage,
@@ -170,7 +232,7 @@ class IngestJobRepositoryImpl(IngestJobRepository):
                     update(IngestJob)
                     .where(
                         IngestJob.id == job_id,
-                        IngestJob.status == IngestJobStatus.RUNNING,
+                        IngestJob.status.in_(expected_statuses),
                     )
                     .values(**values)
                 )
@@ -178,7 +240,7 @@ class IngestJobRepositoryImpl(IngestJobRepository):
                     job = session.get(IngestJob, job_id)
                     if job is None:
                         raise IngestJobNotFoundError("ingest job not found")
-                    raise IngestJobConflictError("only RUNNING jobs can finish")
+                    raise IngestJobConflictError("job is already terminal")
                 session.commit()
                 job = session.get(IngestJob, job_id)
                 if job is None:
