@@ -208,8 +208,9 @@ Worker 使用 Redis 待处理列表和 processing 列表实现确认语义。执
 ```text
 POST /rag/search
   → 解密当前 Workspace API Key
+  → 确定检索范围与文档归属/状态；空库直接返回
   → query embedding
-  → 确定检索范围与 Milvus expr
+  → 构造 Milvus expr
   → Milvus HNSW/COSINE 候选
   → MySQL 批量反查 Document
   → Workspace + SUCCESS + orphan 后过滤
@@ -224,13 +225,17 @@ POST /rag/search
 POST /rag/ask
   → 可选 document_id 的归属与 SUCCESS 前置校验
   → RagService.search(top_k=5)
-  → 最多 4000 字符 Context
-  → 固定六条约束 System Prompt
+  → 按来源逐块填充最多 4000 字符 Context（完整来源头 + 正文片段）
+  → System Prompt 约束回答范围、引用编号和资料中的指令
   → 当前 Workspace 配置的 OpenAI-compatible LLM
   → answer + sources
 ```
 
-没有检索结果时不调用 LLM，直接返回固定提示和空 Sources。回答仅使用本次 retrieval 结果；服务端不读取扩展里的历史会话。
+没有检索结果、正文为空或预算不足以容纳正文时不调用 LLM，直接返回固定提示和空 Sources。Sources 只包含实际进入 Context 的正文来源，编号与 Context 一致；重复 chunk ID 不重复占用预算。标题和 URL 在提示词内压缩并限制长度，API 返回的来源元数据保持原样。最后一个正文片段可以截短，来源头不会被截断。
+
+回答仅使用本次 retrieval 结果；服务端不读取扩展里的历史会话。空库、越权及非 SUCCESS 文档在调用 Embedding 前就返回或报错。检索和回答的常规日志不记录问题原文。
+
+当前不启用固定相似度拒答阈值。评测工具中的阈值分析是探索性结果，需在真实数据和所选 Embedding 模型上验证；错误前提问题可能需要检索证据来反驳，不能一律按无答案过滤。提示词约束也不代表已经验证了真实模型的拒答或抗指令干扰能力。
 
 ## 8. 删除与一致性
 

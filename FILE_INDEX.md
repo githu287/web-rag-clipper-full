@@ -244,3 +244,5 @@
 | `conftest.py` | Disable personal dotenv loading in tests |
 | `requirements-dev.txt` | Runtime and pytest dependencies |
 | `backend/tests/test_ingest_reliability.py` | Persistent state, recovery, ownership and event loop regressions |
+| `backend/services/rag_context.py` | Context 字符预算、正文去重与来源编号一致性 |
+| `backend/tests/test_rag_context.py` | 截断来源、空证据、元数据预算与日志回归 |

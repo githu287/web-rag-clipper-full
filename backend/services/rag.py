@@ -61,85 +61,12 @@ class RagService:
         plugin_id: str | None = None,
         api_key: str | None = None,
     ) -> list[RagSearchResult]:
+        """Resolve workspace scope, embed, retrieve, then recheck ownership/state.
+
+        Empty libraries and unavailable documents never call the embedding API.
+        Document scope uses max(limit * 4, 40) candidates; full-library scope uses
+        max(limit, 10). Final results retain Milvus order and authoritative metadata.
         """
-        RAG 检索：query → embedding → Milvus candidate → SUCCESS-only filter → top-K。
-
-        Phase 3.3 Step 3 新增可选参数 document_id（默认 None，行为与之前完全一致）：
-            当 document_id is None     → 完全执行原逻辑（candidate_limit = max(limit, 10)）。
-            当 document_id is not None → candidate_limit = max(limit * 4, 40)，并在
-                SUCCESS / orphan filter 后只保留 candidate.page_id == document_id，
-                最后 results[:limit]（当前网页模式）。
-
-        流程（Phase 2.12 Step 2；Phase 2.13 Step 2 增 metadata 组装）：
-          Step 1: query → EmbeddingClient.embed([query]) → 取 vector[0]
-          Step 2: Milvus search(vector, limit=candidate_limit) → 候选结果列表
-                  （candidate_limit = max(limit, 10)；document_id 模式 = max(limit*4, 40)）
-          Step 3: 应用层 status post-filter：
-                  1) 收集候选 page_id 并去重（保持首次出现顺序）；
-                  2) DocumentRepository.get_documents_by_ids(page_ids) 一次批量反查
-                     （禁止对每个 chunk 单独查询，无 N+1）；
-                  3) 只保留 Document.status == DocumentStatus.SUCCESS 的候选；
-                  4) MySQL 中不存在的 page_id（孤儿 chunk）自动被过滤；
-          Step 3.5（Phase 2.13 Step 2）: 构建 document_map = {doc.id: doc}，
-                  用于按 ID 关联 Document 元数据；禁止依赖 Repository 返回顺序。
-          Step 3.6（Phase 3.3 Step 3）: 若指定 document_id，仅保留
-                  candidate.page_id == document_id（应用层过滤，不修改 Milvus Schema /
-                  MilvusRepository Protocol）。
-          Step 4: 截取前 limit 条返回，组装 RagSearchResult（继承 ChunkSearchResult 的
-                  5 个检索字段 + document_id / filename / status / created_at）。
-                  过滤后不足 limit 时直接返回，不二次召回。
-
-        Phase 3.5 Step 2-E：参数 user_id 已迁移为 plugin_id（与 DocumentRepository
-        契约一致）——plugin_id 用于 get_documents_by_ids(page_ids, plugin_id) 的
-        SQL 层归属过滤（workspace ownership 约束，Router 必传）；api_key 用于
-        query embedding（当前插件工作空间自己的 Key，None 回退测试 Key）。
-
-        RAG 检索 Workspace 隔离（Phase 3.4 Step E 的 user 隔离迁移为 plugin 隔离）：
-            - 全部知识库模式（document_id is None）：
-                1) plugin_id 为 None → 禁止匿名访问，直接返回 []（绝不查库）；
-                2) success_ids = DocumentRepository.get_success_document_ids(plugin_id)
-                   （SQL 层 plugin_id + SUCCESS 双条件过滤；严禁先查全部文档再 Python 过滤）；
-                3) success_ids 为空 → 返回 []，不调用 Milvus；
-                4) Milvus search 携带 expr = "page_id in [...]"（Milvus 侧收敛召回）；
-                5) 应用层最终兜底 candidate.page_id in success_ids（双保险）。
-            - 当前网页模式（document_id is not None）：
-                1) get_document(document_id, plugin_id) 前置校验：不存在 / 跨 Workspace
-                   → DocumentNotFoundError（404）；非 SUCCESS → DocumentNotSuccessError（409）；
-                2) Milvus search 携带 expr = "page_id == {document_id}"；
-                3) 应用层最终兜底 candidate.page_id == document_id。
-            权限判断必须是 document_id + plugin_id 同时进入 Repository ownership check，
-            严禁仅凭 document_id 判断。
-
-        Args:
-            query: 用户查询文本（非空字符串）。
-            limit: 最终返回结果数上限；默认 5（硬编码），范围 [1, 20]。
-            document_id: 可选；指定后仅返回该 Document（page_id）的检索结果
-                （当前网页模式，需归属当前插件工作空间）；None = 全部知识库模式。
-            plugin_id: 当前插件工作空间 ID（Phase 3.5 Step 2-E；workspace 隔离；
-                全库模式必传，None 时全库模式直接返回 []，禁止匿名访问）。
-            api_key: 插件工作空间自己的百炼 API Key（Phase 3.4 Step D；None 回退测试 Key）。
-
-        Returns:
-            按 COSINE similarity 降序（最相似在前；保持 Milvus 返回顺序，不做二次排序）
-            的 RagSearchResult 列表，长度 ≤ limit。
-            每个结果含 Document 元数据（document_id = page_id；filename / status /
-            created_at / title / url / source_type 来自 MySQL）；orphan / 非 SUCCESS
-            文档已被过滤。
-            空列表 = 无 SUCCESS 检索结果（或 Milvus 无候选）。
-
-        Raises:
-            EmbeddingClientError: 百炼 Embedding 调用失败（向上传播，不吞异常）。
-            MilvusRepositoryError: Milvus 检索失败（向上传播，不吞异常）。
-            DocumentOperationError: MySQL 批量反查失败（向上传播，不吞异常；
-                main.py 已映射 HTTP 503，禁止伪装为空结果）。
-        """
-        # ---------------------------------------------------------- Step 1: query → embedding
-        # Phase 3.4 Step D：query 向量使用用户自己的 API Key（None 回退测试 Key）
-        vectors: list[list[float]] = await asyncio.to_thread(self._embedding.embed, [query], api_key=api_key)
-        query_vector: list[float] = vectors[0]
-
-        # ---------------------------------------------------------- Step 2: Milvus candidate retrieval
-        # Phase 3.4 Step E：RAG 检索按用户隔离，构造 Milvus expr。
         if document_id is not None:
             # 当前网页模式：document_id + plugin_id 一起进入 ownership check（Step C 已
             # 实现 get_document(document_id, plugin_id) SQL 层归属过滤）。
@@ -177,15 +104,18 @@ class RagService:
             candidate_limit = max(limit, _MILVUS_SEARCH_CANDIDATE_LIMIT)
             expr = f"page_id in [{','.join(map(str, success_ids))}]"
 
+        # Resolve access and searchable scope before spending an embedding call.
+        vectors = await asyncio.to_thread(self._embedding.embed, [query], api_key=api_key)
+        query_vector = vectors[0]
+
         candidates: list[ChunkSearchResult] = await asyncio.to_thread(
             self._repo.search, query_vector,
             limit=candidate_limit,
             expr=expr,
         )
         logger.info(
-            "RagService.search: query=%r, document_id=%r, Milvus 候选召回数=%d, "
+            "RagService.search: document_id=%r, Milvus 候选召回数=%d, "
             "candidate_limit=%d, expr=%r, 最终 limit=%d",
-            query,
             document_id,
             len(candidates),
             candidate_limit,

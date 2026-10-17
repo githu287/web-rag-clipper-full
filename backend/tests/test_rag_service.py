@@ -810,6 +810,7 @@ class RagServiceUserIsolationTest(unittest.TestCase):
             self._search(document_id=999, plugin_id="plugin-a")
 
         self.milvus.search.assert_not_called()
+        self.embedding.embed.assert_not_called()
 
     # 7. 非 SUCCESS → DocumentNotSuccessError
     def test_current_page_mode_non_success_raises(self) -> None:
@@ -821,6 +822,7 @@ class RagServiceUserIsolationTest(unittest.TestCase):
             self._search(document_id=1, plugin_id="plugin-a")
 
         self.milvus.search.assert_not_called()
+        self.embedding.embed.assert_not_called()
 
     # 8. success_ids=[] → 不调用 Milvus
     def test_empty_success_ids_skips_milvus(self) -> None:
@@ -830,6 +832,7 @@ class RagServiceUserIsolationTest(unittest.TestCase):
 
         self.assertEqual(results, [])
         self.milvus.search.assert_not_called()
+        self.embedding.embed.assert_not_called()
         self.documents.get_documents_by_ids.assert_not_called()
 
     # 9. limit 仍正确（全库模式 top-K）
@@ -877,6 +880,7 @@ class RagServiceUserIsolationTest(unittest.TestCase):
         self.assertEqual(results, [])
         self.documents.get_success_document_ids.assert_not_called()
         self.milvus.search.assert_not_called()
+        self.embedding.embed.assert_not_called()
 
 
 if __name__ == "__main__":
