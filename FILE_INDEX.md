@@ -26,7 +26,7 @@
 | `backend/api/routers/__init__.py` | Router 子包标记；文件内按 prefix 列出当前 6 个路由器 |
 | `backend/api/routers/plugins.py` | Workspace 注册、详情、改名、多服务商模型配置与删除 |
 | `backend/api/routers/documents.py` | 文档列表/详情、创建、上传、ingest 与删除 |
-| `backend/api/routers/clips.py` | 网页正文剪藏 |
+| `backend/api/routers/clips.py` | 网页正文剪藏：同步入库与异步提交（提交前校验 Key 配置与 Workspace 配额） |
 | `backend/api/routers/jobs.py` | 异步入库任务查询与失败重试 |
 | `backend/api/routers/ingest.py` | 已切分 chunks 的底层 re-ingest |
 | `backend/api/routers/rag.py` | 语义检索与生成式问答 |

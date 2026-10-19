@@ -37,7 +37,8 @@ WebClipService（Phase 3.1 Step 3）。
 7) 写入侧配额（Phase 优化 #24b）：仅在**新建** Document 前校验
    count_documents(plugin_id) < max_documents_per_workspace，与 DocumentUploadService
    共用同一个 Settings 上限；命中同 URL 既有 Document 的重新剪藏不占新额度，
-   因此不受配额拦截。
+   因此不受配额拦截。该校验抽成公开方法 ensure_capacity()，供 `POST /clips/async`
+   在入队前做只读预检（#24c），让满额的 Workspace 在提交时就拿到 429。
 
 禁止修改：DocumentIngestService / IngestService / DocumentUploadService /
 FileStorage / MilvusRepository / Milvus Schema / ChunkVector / EmbeddingClient。
@@ -95,6 +96,26 @@ class WebClipService:
         self._chunker = chunker
         self._document_ingest_service = document_ingest_service
         self._max_documents_per_workspace = max_documents_per_workspace
+
+    def ensure_capacity(self, plugin_id: str) -> None:
+        """
+        新建 Document 前的只读配额预检（优化 #24b 写入侧配额 / #24c 提交时预检）。
+
+        count_documents 含**全部状态**（PENDING / FAILED 等同样占额度）。预检与
+        真正创建之间没有事务串联，并发提交最多让 Workspace 略超上限几篇，不会无界
+        增长；因此本方法只是「准入提示」，clip() 在 create_document 前调的同一检查
+        才是权威闸口（异步任务在 Worker 里执行时会再查一次）。
+
+        Raises:
+            DocumentQuotaExceededError: 文档数已达 max_documents_per_workspace
+                （API 层映射 429；不建 Document、不入库任务）。
+        """
+        document_count = self._document_repository.count_documents(plugin_id)
+        if document_count >= self._max_documents_per_workspace:
+            raise DocumentQuotaExceededError(
+                f"知识库文档数已达上限（{self._max_documents_per_workspace} 篇），"
+                "请先删除部分文档后再剪藏"
+            )
 
     async def clip(
         self,
@@ -158,16 +179,8 @@ class WebClipService:
             )
         existing_document = document is not None
         if document is None:
-            # 配额校验只针对新建文档：放在复用判断之后，同 URL 重新剪藏不占新额度、
-            # 永不被配额拦截。count_documents 含全部状态（PENDING / FAILED 等也占额度），
-            # 创建与校验之间没有事务串联，并发剪藏最多让 Workspace 略超上限几篇，
-            # 不会无界增长。
-            document_count = self._document_repository.count_documents(plugin_id)
-            if document_count >= self._max_documents_per_workspace:
-                raise DocumentQuotaExceededError(
-                    f"知识库文档数已达上限（{self._max_documents_per_workspace} 篇），"
-                    "请先删除部分文档后再剪藏"
-                )
+            # 配额检查只针对新建文档：放在复用判断之后，同 URL 重新剪藏不占新额度。
+            self.ensure_capacity(plugin_id)
             document = self._document_repository.create_document(
                 filename=_WEB_CLIP_FILENAME,
                 file_path=_WEB_CLIP_FILE_PATH,

@@ -312,7 +312,7 @@ python -c "import secrets; print(secrets.token_hex(16))"
 ## 已知限制
 
 - 扩展的网页剪藏和文件上传已使用 Redis Worker 异步入库；旧 `/clips` 与 `/documents/upload` 兼容接口仍是同步。
-- Workspace 文档数配额（`MAX_DOCUMENTS_PER_WORKSPACE`）在写入入口校验：上传达到上限时同步与异步接口都返回 429；`/clips/async` 只入队，超限表现为任务失败并提示先删除文档。计数与创建之间没有事务串联，并发提交最多让该 Workspace 略超上限几篇。
+- Workspace 文档数配额（`MAX_DOCUMENTS_PER_WORKSPACE`）在提交入口校验：剪藏（同步与异步）和上传（同步与异步）达到上限时都直接返回 429，不再排入注定失败的任务；同一 URL 重新剪藏不占新额度。计数与创建之间没有事务串联，并发提交最多让该 Workspace 略超上限几篇；`/clips/async` 的提交预检只是准入提示，Worker 执行 `clip()` 时的那次检查才是创建 Document 前的权威闸口。
 - 当前 Worker 是单进程模式；启动时会恢复 Redis processing 列表中未确认的任务。
 - 仅解析 UTF-8 文本和 Markdown；PDF、DOCX、OCR 尚未接入。
 - 扩展正文提取采用 DOM 候选评分和启发式清理；复杂 SPA、Shadow DOM、跨域 iframe、分页和登录墙仍可能提取不完整。

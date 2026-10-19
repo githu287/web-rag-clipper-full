@@ -7,8 +7,16 @@ from unittest.mock import Mock
 from fastapi.testclient import TestClient
 
 from backend.api.deps import get_current_plugin
-from backend.core.di import get_ingest_job_service, get_plugin_service
-from backend.core.exceptions import IngestJobConflictError, IngestJobNotFoundError
+from backend.core.di import (
+    get_ingest_job_service,
+    get_plugin_service,
+    get_web_clip_service,
+)
+from backend.core.exceptions import (
+    DocumentQuotaExceededError,
+    IngestJobConflictError,
+    IngestJobNotFoundError,
+)
 from backend.main import create_app
 from backend.models.ingest_job import IngestJobStatus, IngestJobType
 
@@ -35,11 +43,15 @@ class IngestJobApiTest(unittest.TestCase):
     def setUp(self) -> None:
         self.job_service = Mock()
         self.plugin_service = Mock()
+        self.web_clip_service = Mock()
         self.plugin = Mock(plugin_id="plugin-a")
         self.app = create_app()
         self.app.dependency_overrides[get_current_plugin] = lambda: self.plugin
         self.app.dependency_overrides[get_ingest_job_service] = lambda: self.job_service
         self.app.dependency_overrides[get_plugin_service] = lambda: self.plugin_service
+        self.app.dependency_overrides[get_web_clip_service] = (
+            lambda: self.web_clip_service
+        )
         self.client = TestClient(self.app)
 
     def tearDown(self) -> None:
@@ -57,7 +69,27 @@ class IngestJobApiTest(unittest.TestCase):
         self.assertEqual(response.json()["id"], job.id)
         self.assertEqual(response.json()["status"], "QUEUED")
         self.plugin_service.decrypt_api_key.assert_called_once_with(self.plugin)
+        self.web_clip_service.ensure_capacity.assert_called_once_with("plugin-a")
         self.job_service.create_web_clip_job.assert_called_once()
+
+    def test_submit_async_clip_rejected_at_quota_429_without_job(self) -> None:
+        """#24c：满额时提交即 429，不创建注定失败的任务、不写 Redis payload。"""
+        self.web_clip_service.ensure_capacity.side_effect = (
+            DocumentQuotaExceededError(
+                "知识库文档数已达上限（188 篇），请先删除部分文档后再剪藏"
+            )
+        )
+
+        response = self.client.post(
+            "/clips/async",
+            json={"url": "https://example.com/", "title": "Example", "raw_text": "body"},
+        )
+
+        self.assertEqual(response.status_code, 429)
+        body = response.json()
+        self.assertEqual(body["type"], "DocumentQuotaExceededError")
+        self.assertIn("请先删除部分文档", body["detail"])
+        self.job_service.create_web_clip_job.assert_not_called()
 
     def test_get_and_retry_are_workspace_scoped(self) -> None:
         job = make_job(IngestJobStatus.FAILED)

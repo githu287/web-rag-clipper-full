@@ -2,12 +2,15 @@
 Web Clip Router（Phase 3.1 Step 3）。
 
 路由：
-    POST /clips   → 网页剪藏后端接收：Document(PENDING) → PROCESSING → Chunker
-                  → DocumentIngestService → SUCCESS，返回来源元数据（201）
+    POST /clips        → 网页剪藏后端接收：Document(PENDING) → PROCESSING → Chunker
+                         → DocumentIngestService → SUCCESS，返回来源元数据（201）
+    POST /clips/async  → 只创建任务并入队（202），Document 由 Worker 创建；
+                         提交前先做 Key 配置与 Workspace 配额两道只读检查
 
 依赖注入（通过 DI 工厂，不直接实例化任何 Repository / Service）：
     - Depends(get_current_plugin)  → PluginWorkspace（X-Plugin-ID + X-Plugin-Secret，Phase 3.5 Step 2-D）
-    - Depends(get_web_clip_service)→ WebClipService
+    - Depends(get_web_clip_service)→ WebClipService（同步链路与异步配额预检）
+    - Depends(get_ingest_job_service) → IngestJobService（异步任务创建与入队）
     - Depends(get_plugin_service)  → PluginService（解密插件工作空间 API Key）
 
 职责边界：
@@ -29,6 +32,8 @@ filename 固定 "webclip.txt"。
     - DocumentChunkingError / DocumentNotFoundError / DocumentOperationError /
       MilvusRepositoryError / EmbeddingClientError 由 main.py 全局 handler 转
       500 / 404 / 503 / 503 / 502；
+    - DocumentQuotaExceededError → 429（Workspace 文档数达上限；同步链路与
+      异步提交的配额预检都可能抛出，见 #24b/#24c）；
     - 本 Router 不 try/except 吞异常。
 """
 
@@ -68,9 +73,21 @@ def create_clip_async(
     current_plugin: PluginWorkspace = Depends(get_current_plugin),
     job_service: IngestJobService = Depends(get_ingest_job_service),
     plugin_service: PluginService = Depends(get_plugin_service),
+    web_clip_service: WebClipService = Depends(get_web_clip_service),
 ) -> IngestJobResponse:
+    """
+    POST /clips/async —— 只入队，Document 由 Worker 创建。
+
+    提交前的两道只读检查刻意放在入队之前：
+        1) decrypt_api_key：Workspace 未配置 Key → 409（不写 Redis payload）；
+        2) ensure_capacity：Workspace 文档数已达 max_documents_per_workspace
+           → 429（#24c），避免排入一个注定失败的任务。
+    预检与 Worker 实际创建之间没有事务串联，因此 WebClipService.clip() 在
+    create_document 前还会再查一次，那一次才是权威闸口。
+    """
     # 提交时就检查 Workspace 已配置 Key；明文 Key 不写入 Redis payload。
     plugin_service.decrypt_api_key(current_plugin)
+    web_clip_service.ensure_capacity(current_plugin.plugin_id)
     job = job_service.create_web_clip_job(current_plugin.plugin_id, request)
     return build_job_response(job)
 
@@ -125,6 +142,8 @@ async def create_clip(
             凭证缺失 / 无效（401，get_current_plugin 抛出）。
         PluginDisabledError: 插件工作空间被禁用（403）。
         SecurityDecryptionError: API Key 解密失败（500）。
+        DocumentQuotaExceededError: 新建 Document 时 Workspace 文档数已达上限
+            （429，不创建 Document；同 URL 复用既有 Document 不触发）。
         DocumentChunkingError: Chunker 切分失败（500，Document 已置 FAILED）。
         DocumentRepositoryError / MilvusRepositoryError / EmbeddingClientError:
             链路失败（503 / 502）。

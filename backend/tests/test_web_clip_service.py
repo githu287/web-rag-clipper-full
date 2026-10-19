@@ -24,7 +24,8 @@ Phase 3.5 Step 2-E 变更（user_id → plugin_id）：
   10. create_document 失败直接传播（Document 未创建，不误标 FAILED）。
   11. Workspace 文档数配额（优化 #24b）：满额新建 → DocumentQuotaExceededError，
       不 create / 不迁移状态 / 不进链路；上限 - 1 放行；同 URL 复用不查配额、
-      满额仍可重新剪藏。
+      满额仍可重新剪藏；公开只读预检 ensure_capacity() 与 clip() 同阈值
+      （#24c，供 POST /clips/async 入队前调用）。
 """
 
 from __future__ import annotations
@@ -847,6 +848,17 @@ class WebClipServiceTest(unittest.TestCase):
         self.document_repo.count_documents.assert_not_called()
         self.document_repo.create_document.assert_not_called()
         self.ingest_service.ingest_document.assert_called_once()
+
+    def test_ensure_capacity_is_the_shared_read_only_precheck(self) -> None:
+        """11d：路由用的公开预检与 clip() 内闸口同阈值；预检本身不建 Document。"""
+        self.document_repo.count_documents.return_value = 50
+        with self.assertRaises(DocumentQuotaExceededError):
+            self.service.ensure_capacity("plugin-a")
+        self.document_repo.count_documents.assert_called_once_with("plugin-a")
+
+        self.document_repo.count_documents.return_value = 49
+        self.assertIsNone(self.service.ensure_capacity("plugin-a"))
+        self.document_repo.create_document.assert_not_called()
 
     # ----------------------------------------------------- 附加：Protocol 注入
     def test_protocol_injection(self) -> None:
