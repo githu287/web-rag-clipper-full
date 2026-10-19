@@ -7,7 +7,7 @@ DocumentUploadService（Phase 2.10 Step 3）。
         ↓
     DocumentUploadService.upload()
         ↓
-    输入校验（filename / 空文件 / 大小 / 扩展名）
+    输入校验（filename / 空文件 / 大小 / 扩展名 / Workspace 文档数配额）
         ↓
     FileStorage.save()                      # 落盘（相对路径）
         ↓
@@ -24,8 +24,9 @@ DocumentUploadService（Phase 2.10 Step 3）。
     status = SUCCESS，返回终态 Document
 
 失败语义：
-1) 输入校验（空文件 / 超限 / 扩展名）在落盘与建 Document **之前**完成，
-   不产生任何文件与 Document 行，抛 DocumentUploadError 族（API 映射 4xx）。
+1) 输入校验（空文件 / 超限 / 扩展名 / Workspace 文档数配额）在落盘与建 Document
+   **之前**完成，不产生任何文件与 Document 行，抛 DocumentUploadError 族或
+   DocumentQuotaExceededError（API 映射 4xx）。
 2) Document 创建后的任一环节失败：
    - 保留已保存文件（便于 retry 与问题定位，本阶段第一版策略）；
    - Document.status = FAILED + error_message = 截断后的错误摘要（update_failure）；
@@ -56,6 +57,7 @@ from ..chunkers import Chunker
 from ..core.exceptions import (
     DocumentFileEmptyError,
     DocumentFileTooLargeError,
+    DocumentQuotaExceededError,
     DocumentUploadError,
     DocumentUnsupportedExtensionError,
 )
@@ -87,6 +89,9 @@ class DocumentUploadService:
         chunker: Chunker（Protocol）——str → list[str]。
         document_ingest_service: DocumentIngestService——Embedding + Milvus 入库。
         max_content_bytes: 单文件大小上限（来自 Settings.max_page_content_bytes）。
+        max_documents_per_workspace: 单 Workspace Document 数上限
+            （来自 Settings.max_documents_per_workspace）；新建前校验，配额与
+            检索侧上界是同一政策值的两侧。
     """
 
     def __init__(
@@ -97,6 +102,7 @@ class DocumentUploadService:
         chunker: Chunker,
         document_ingest_service: DocumentIngestService,
         max_content_bytes: int,
+        max_documents_per_workspace: int,
     ) -> None:
         self._document_repository = document_repository
         self._file_storage = file_storage
@@ -104,6 +110,7 @@ class DocumentUploadService:
         self._chunker = chunker
         self._document_ingest_service = document_ingest_service
         self._max_content_bytes = max_content_bytes
+        self._max_documents_per_workspace = max_documents_per_workspace
 
     def prepare_upload(
         self,
@@ -130,6 +137,16 @@ class DocumentUploadService:
             raise DocumentUnsupportedExtensionError(
                 f"unsupported file extension: {extension!r}, "
                 f"supported: {sorted(_SUPPORTED_EXTENSIONS)}"
+            )
+
+        # 配额校验必须在 save() 之前：满额 Workspace 既不落盘也不建 Document 行。
+        # count_documents 含全部状态（PENDING / FAILED 等也占额度），因此并发剪藏
+        # 与上传之间没有事务串联时最多让 Workspace 略超上限几篇，不会无界增长。
+        document_count = self._document_repository.count_documents(plugin_id)
+        if document_count >= self._max_documents_per_workspace:
+            raise DocumentQuotaExceededError(
+                f"知识库文档数已达上限（{self._max_documents_per_workspace} 篇），"
+                "请先删除部分文档后再上传"
             )
 
         file_path = self._file_storage.save(filename, content)
@@ -182,7 +199,9 @@ class DocumentUploadService:
             1. filename 非空且为纯文件名（不含 `/` `\\`，路径穿越在入口拦截）；
             2. content 非空（0 字节直接拒绝，不创建 Document）；
             3. len(content) <= max_content_bytes（超限直接拒绝，不落盘）；
-            4. 扩展名 ∈ {.txt, .md, .markdown}（.pdf / .docx 等返回明确异常）。
+            4. 扩展名 ∈ {.txt, .md, .markdown}（.pdf / .docx 等返回明确异常）；
+            5. Workspace 文档数 < max_documents_per_workspace（满额直接拒绝，
+               不落盘也不建 Document 行）。
 
         Phase 3.4 Step D：新增 api_key 参数 —— 当前插件工作空间的百炼 API Key
         （PluginService 解密后传入），透传至 Embedding；
@@ -206,6 +225,8 @@ class DocumentUploadService:
             DocumentFileEmptyError: 文件内容为空。
             DocumentFileTooLargeError: 文件超过 max_content_bytes。
             DocumentUnsupportedExtensionError: 扩展名不受支持。
+            DocumentQuotaExceededError: Workspace 文档数已达
+                max_documents_per_workspace（API 映射 429，不落盘、不建 Document）。
             DocumentParserError / DocumentChunkingError / DocumentRepositoryError /
             MilvusRepositoryError / EmbeddingClientError: 链路失败（Document 已置
             FAILED + error_message，原异常继续传播）。

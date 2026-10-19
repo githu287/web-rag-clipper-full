@@ -95,7 +95,12 @@ def test_interrupted_web_clip_can_resume_same_document(repos):
     documents, jobs = repos
     chunker = Mock(split=Mock(return_value=["body"]))
     vectors = SimpleNamespace(ingest_page=AsyncMock(side_effect=KeyboardInterrupt()))
-    clip = WebClipService(documents, chunker, DocumentIngestService(documents, vectors))
+    clip = WebClipService(
+        documents,
+        chunker,
+        DocumentIngestService(documents, vectors),
+        max_documents_per_workspace=5,
+    )
     job = jobs.create_job("a", IngestJobType.WEB_CLIP)
     jobs.claim_job(job.id)
     with pytest.raises(KeyboardInterrupt):

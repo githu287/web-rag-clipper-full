@@ -33,7 +33,11 @@ WebClipService（Phase 3.1 Step 3）。
 5) update_status(PROCESSING) 自身失败直接向上传播（Document 保持 PENDING，
    不误标 FAILED），与 DocumentUploadService 行为一致；
 6) 本服务不建 Protocol：直接普通 Service，复用 DocumentRepository / Chunker /
-   DocumentIngestService。
+   DocumentIngestService；
+7) 写入侧配额（Phase 优化 #24b）：仅在**新建** Document 前校验
+   count_documents(plugin_id) < max_documents_per_workspace，与 DocumentUploadService
+   共用同一个 Settings 上限；命中同 URL 既有 Document 的重新剪藏不占新额度，
+   因此不受配额拦截。
 
 禁止修改：DocumentIngestService / IngestService / DocumentUploadService /
 FileStorage / MilvusRepository / Milvus Schema / ChunkVector / EmbeddingClient。
@@ -45,7 +49,7 @@ import logging
 from collections.abc import Callable
 
 from ..chunkers import Chunker
-from ..core.exceptions import DocumentOperationError
+from ..core.exceptions import DocumentOperationError, DocumentQuotaExceededError
 from ..core.url_normalization import normalize_web_url
 from ..models.document import Document, DocumentSourceType, DocumentStatus
 from ..repositories.mysql import DocumentRepository
@@ -75,6 +79,9 @@ class WebClipService:
         chunker: Chunker（Protocol）——str → list[str]。
         document_ingest_service: DocumentIngestService——Embedding + Milvus 入库
             （含 PROCESSING → SUCCESS/FAILED 全生命周期，本服务不重复实现）。
+        max_documents_per_workspace: 单 Workspace Document 数上限
+            （来自 Settings.max_documents_per_workspace）；仅对**新建**文档校验，
+            同 URL 重新剪藏不占新额度、不受配额限制。
     """
 
     def __init__(
@@ -82,10 +89,12 @@ class WebClipService:
         document_repository: DocumentRepository,
         chunker: Chunker,
         document_ingest_service: DocumentIngestService,
+        max_documents_per_workspace: int,
     ) -> None:
         self._document_repository = document_repository
         self._chunker = chunker
         self._document_ingest_service = document_ingest_service
+        self._max_documents_per_workspace = max_documents_per_workspace
 
     async def clip(
         self,
@@ -121,6 +130,9 @@ class WebClipService:
             title / url / source_type="webpage" 正确落库）。
 
         Raises:
+            DocumentQuotaExceededError: 新建 Document 时当前 Workspace 的文档数已达
+                max_documents_per_workspace（不创建 Document，API 映射 429）；
+                复用同 URL 既有 Document 重新剪藏不触发本异常。
             DocumentChunkingError: Chunker 切分失败（Document 已置 FAILED +
                 error_message，原异常继续传播）。
             DocumentRepositoryError / MilvusRepositoryError / EmbeddingClientError:
@@ -146,6 +158,16 @@ class WebClipService:
             )
         existing_document = document is not None
         if document is None:
+            # 配额校验只针对新建文档：放在复用判断之后，同 URL 重新剪藏不占新额度、
+            # 永不被配额拦截。count_documents 含全部状态（PENDING / FAILED 等也占额度），
+            # 创建与校验之间没有事务串联，并发剪藏最多让 Workspace 略超上限几篇，
+            # 不会无界增长。
+            document_count = self._document_repository.count_documents(plugin_id)
+            if document_count >= self._max_documents_per_workspace:
+                raise DocumentQuotaExceededError(
+                    f"知识库文档数已达上限（{self._max_documents_per_workspace} 篇），"
+                    "请先删除部分文档后再剪藏"
+                )
             document = self._document_repository.create_document(
                 filename=_WEB_CLIP_FILENAME,
                 file_path=_WEB_CLIP_FILE_PATH,

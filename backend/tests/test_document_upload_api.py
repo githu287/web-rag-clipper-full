@@ -16,6 +16,8 @@ POST /documents/upload API 集成测试（Phase 2.10 Step 3）。
     5. .txt 上传成功，filename/mime_type/content 透传正确
     6. .md 上传成功
     7. .pdf（service 抛 DocumentUnsupportedExtensionError）→ 415
+    7b. Workspace 文档数达上限（DocumentQuotaExceededError）→ 429
+        （同步 /documents/upload 与异步 /documents/upload/async；异步不排队）
     8. Parser 错误 → 500
     9. EmbeddingClientError → 502 / MilvusRepositoryError → 503
     10. response schema 字段完整且无多余字段（extra=forbid 生效）
@@ -42,6 +44,7 @@ from backend.core.exceptions import (
     DocumentFileEmptyError,
     DocumentFileTooLargeError,
     DocumentParserError,
+    DocumentQuotaExceededError,
     DocumentUnsupportedExtensionError,
     DocumentUploadError,
     MilvusRepositoryError,
@@ -290,6 +293,42 @@ class DocumentUploadApiTest(unittest.TestCase):
         self.assertEqual(response.status_code, 415)
         body = response.json()
         self.assertEqual(body["type"], "DocumentUnsupportedExtensionError")
+
+    # ------------------------- 7b. Workspace 文档数配额 → 429（优化 #24b）
+    def test_upload_quota_exceeded_429(self) -> None:
+        """7b：service 抛 DocumentQuotaExceededError → 429 + 中文 detail 透传。"""
+        self.fake_upload_service.upload.side_effect = DocumentQuotaExceededError(
+            "知识库文档数已达上限（188 篇），请先删除部分文档后再上传"
+        )
+
+        response = self.client.post(
+            "/documents/upload",
+            files={"file": ("note.txt", b"hello", "text/plain")},
+        )
+
+        self.assertEqual(response.status_code, 429)
+        body = response.json()
+        self.assertEqual(body["type"], "DocumentQuotaExceededError")
+        self.assertIn("已达上限", body["detail"])
+
+    def test_upload_async_quota_exceeded_429_without_job(self) -> None:
+        """7b：异步入口配额拒绝发生在 prepare_upload，不建 Document 也不排队。"""
+        self.fake_upload_service.prepare_upload.side_effect = (
+            DocumentQuotaExceededError(
+                "知识库文档数已达上限（188 篇），请先删除部分文档后再上传"
+            )
+        )
+
+        response = self.client.post(
+            "/documents/upload/async",
+            files={"file": ("note.txt", b"hello", "text/plain")},
+        )
+
+        self.assertEqual(response.status_code, 429)
+        self.assertEqual(
+            response.json()["type"], "DocumentQuotaExceededError"
+        )
+        self.fake_job_service.create_file_upload_job.assert_not_called()
 
     # ------------------------------------------- 8. 通用 Upload 错误 → 400
     def test_upload_invalid_filename_400(self) -> None:

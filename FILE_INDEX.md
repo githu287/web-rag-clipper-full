@@ -64,11 +64,11 @@
 |---|---|
 | `backend/services/__init__.py` | Service 包标记 |
 | `backend/services/plugin_service.py` | Workspace 注册、认证、改名、双模型配置加密与向量空间切换保护 |
-| `backend/services/document_upload.py` | 可分阶段的文件校验/落盘与解析/切块/入库编排 |
+| `backend/services/document_upload.py` | 可分阶段的文件校验/落盘与解析/切块/入库编排（落盘前校验 Workspace 文档数配额） |
 | `backend/services/document_ingest.py` | Document 状态机和 ingest 成功/失败收敛 |
 | `backend/services/document_delete.py` | Milvus → 文件 → MySQL 的幂等文档删除 |
 | `backend/services/workspace_delete.py` | 分批清理文档后删除 Workspace |
-| `backend/services/web_clip.py` | 网页文档创建/复用、切块、入库与元数据更新 |
+| `backend/services/web_clip.py` | 网页文档创建/复用、切块、入库与元数据更新（新建受 Workspace 配额限制，同 URL 复用不受限） |
 | `backend/services/ingest.py` | old IDs → upsert new → delete stale |
 | `backend/services/ingest_job.py` | 任务创建、Redis 入队、归属查询与重试编排 |
 | `backend/services/rag.py` | Query 向量化、检索文档数上界、范围过滤、搜索和 metadata 组装 |

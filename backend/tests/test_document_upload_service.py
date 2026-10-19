@@ -20,6 +20,8 @@ Phase 3.5 Step 2-E 变更（user_id → plugin_id）：
   D. 空文件（0 字节）→ DocumentFileEmptyError，不 save 不 create
   E. 不支持扩展名（.pdf）→ DocumentUnsupportedExtensionError，不 save 不 create
   F. 空文件名 / 含路径分隔符 → DocumentUploadError
+  F2. Workspace 文档数达上限 → DocumentQuotaExceededError，不 save 不 create
+      （优化 #24b；同段另断言边界放行与「输入校验先于配额查询」）
   G. Storage 失败 → 原异常传播，create / parse / split / ingest 均不调用
   H. Parser 失败 → update_failure(FAILED + error_message)，ingest 不调用，原异常传播
   I. Chunker 失败 → update_failure(FAILED + error_message)，ingest 不调用，原异常传播
@@ -51,6 +53,7 @@ from backend.core.exceptions import (
     DocumentFileEmptyError,
     DocumentFileTooLargeError,
     DocumentParserError,
+    DocumentQuotaExceededError,
     DocumentRepositoryError,
     DocumentStorageError,
     DocumentUnsupportedExtensionError,
@@ -72,7 +75,8 @@ class DocumentUploadServiceTest(unittest.TestCase):
     """DocumentUploadService 单元测试（unittest + mock）。"""
 
     def setUp(self) -> None:
-        """构造注入依赖：Mock(spec=Protocol/Service)，max_content_bytes=100。"""
+        """构造注入依赖：Mock(spec=Protocol/Service)，max_content_bytes=100、
+        max_documents_per_workspace=50。"""
         self.document_repo = Mock(spec=DocumentRepository)
         self.file_storage = Mock(spec=FileStorage)
         self.parser = Mock(spec=DocumentParser)
@@ -81,6 +85,10 @@ class DocumentUploadServiceTest(unittest.TestCase):
 
         # async 方法
         self.ingest_service.ingest_document = AsyncMock(return_value=None)
+
+        # 配额默认未使用：Mock(spec=...) 未桩的方法返回子 Mock，
+        # 与 int 做 >= 比较会抛 TypeError，因此必须在 setUp 固定为整数。
+        self.document_repo.count_documents.return_value = 0
 
         # 默认成功路径返回值
         # save 返回逻辑路径（相对 upload_dir，裸文件名）；resolve 将其转换为
@@ -97,6 +105,7 @@ class DocumentUploadServiceTest(unittest.TestCase):
             chunker=self.chunker,
             document_ingest_service=self.ingest_service,
             max_content_bytes=100,
+            max_documents_per_workspace=50,
         )
 
     def run_async(self, coro) -> object:
@@ -397,6 +406,59 @@ class DocumentUploadServiceTest(unittest.TestCase):
                         )
                     )
                 self.file_storage.save.assert_not_called()
+
+    # ------------------------------------- F2. Workspace 文档数配额（优化 #24b）
+    def test_upload_rejected_when_workspace_quota_reached(self) -> None:
+        """配额：count == max_documents_per_workspace → QuotaExceeded，不落盘不建 Document。"""
+        self.document_repo.count_documents.return_value = 50
+
+        with self.assertRaises(DocumentQuotaExceededError):
+            self.run_async(
+                self.service.upload(
+                    filename="test.txt",
+                    content=b"hello",
+                    plugin_id="plugin-a",
+                    mime_type=None,
+                )
+            )
+        self.document_repo.count_documents.assert_called_once_with("plugin-a")
+        # 拒绝发生在 save() 之前：既不落盘，也就不需要清理孤儿文件
+        self.file_storage.save.assert_not_called()
+        self.file_storage.delete.assert_not_called()
+        self.document_repo.create_document.assert_not_called()
+        self.parser.parse.assert_not_called()
+        self.ingest_service.ingest_document.assert_not_called()
+
+    def test_prepare_upload_allowed_one_below_quota(self) -> None:
+        """配额边界：count = 上限 - 1 放行，正常落盘并创建 Document。"""
+        self.document_repo.count_documents.return_value = 49
+        created = self._make_document()
+        self.document_repo.create_document.return_value = created
+
+        document = self.service.prepare_upload(
+            filename="test.txt",
+            content=b"hello",
+            plugin_id="plugin-a",
+            mime_type=None,
+        )
+
+        self.assertIs(document, created)
+        self.document_repo.count_documents.assert_called_once_with("plugin-a")
+        self.file_storage.save.assert_called_once_with("test.txt", b"hello")
+        self.document_repo.create_document.assert_called_once()
+
+    def test_quota_not_checked_for_invalid_input(self) -> None:
+        """校验顺序：输入校验先于配额查询，非法请求不会打到 DB。"""
+        with self.assertRaises(DocumentUnsupportedExtensionError):
+            self.run_async(
+                self.service.upload(
+                    filename="report.pdf",
+                    content=b"%PDF-1.4",
+                    plugin_id="plugin-a",
+                    mime_type=None,
+                )
+            )
+        self.document_repo.count_documents.assert_not_called()
 
     # ------------------------------------------------- G. Storage 失败
     def test_storage_failure_propagates(self) -> None:

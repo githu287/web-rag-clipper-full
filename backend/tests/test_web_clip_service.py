@@ -22,6 +22,9 @@ Phase 3.5 Step 2-E 变更（user_id → plugin_id）：
   8. url / title / source_type 正确透传给 create_document。
   9. update_failure 自身失败不吞原异常。
   10. create_document 失败直接传播（Document 未创建，不误标 FAILED）。
+  11. Workspace 文档数配额（优化 #24b）：满额新建 → DocumentQuotaExceededError，
+      不 create / 不迁移状态 / 不进链路；上限 - 1 放行；同 URL 复用不查配额、
+      满额仍可重新剪藏。
 """
 
 from __future__ import annotations
@@ -34,6 +37,7 @@ from backend.chunkers import Chunker
 from backend.core.exceptions import (
     DocumentChunkingError,
     DocumentOperationError,
+    DocumentQuotaExceededError,
     DocumentRepositoryError,
 )
 from backend.models.document import (
@@ -67,11 +71,15 @@ class WebClipServiceTest(unittest.TestCase):
         self.chunker.split.return_value = ["chunk-1", "chunk-2"]
         self.document_repo.get_webpage_by_url.return_value = None
         self.document_repo.list_documents.return_value = []
+        # 配额默认未使用：Mock(spec=...) 未桩的方法返回子 Mock，
+        # 与 int 做 >= 比较会抛 TypeError，因此必须在 setUp 固定为整数。
+        self.document_repo.count_documents.return_value = 0
 
         self.service = WebClipService(
             document_repository=self.document_repo,
             chunker=self.chunker,
             document_ingest_service=self.ingest_service,
+            max_documents_per_workspace=50,
         )
 
     def run_async(self, coro) -> object:
@@ -770,6 +778,75 @@ class WebClipServiceTest(unittest.TestCase):
         self.document_repo.update_failure.assert_not_called()
         self.chunker.split.assert_not_called()
         self.ingest_service.ingest_document.assert_not_called()
+
+    # ------------------------------------ 11. Workspace 文档数配额（优化 #24b）
+    def test_clip_rejected_when_workspace_quota_reached(self) -> None:
+        """11a：新建时 count == 上限 → QuotaExceeded，不建 Document、不进链路。"""
+        self.document_repo.count_documents.return_value = 50
+
+        with self.assertRaises(DocumentQuotaExceededError):
+            self.run_async(
+                self.service.clip(
+                    url="https://example.com/a",
+                    raw_text="hello world",
+                    plugin_id="plugin-a",
+                )
+            )
+        self.document_repo.count_documents.assert_called_once_with("plugin-a")
+        self.document_repo.create_document.assert_not_called()
+        # 拒绝发生在状态迁移之前：不产生 PENDING 残留行
+        self.document_repo.transition_status.assert_not_called()
+        self.chunker.split.assert_not_called()
+        self.ingest_service.ingest_document.assert_not_called()
+
+    def test_clip_allowed_one_below_quota(self) -> None:
+        """11b：配额边界 count = 上限 - 1 放行，正常新建并走完整链路。"""
+        self.document_repo.count_documents.return_value = 49
+        pending = self._make_document(status=DocumentStatus.PENDING)
+        success = self._make_document(status=DocumentStatus.SUCCESS, chunk_count=2)
+        self.document_repo.create_document.return_value = pending
+        self.document_repo.get_document.return_value = success
+
+        result = self.run_async(
+            self.service.clip(
+                url="https://example.com/a",
+                raw_text="hello world",
+                plugin_id="plugin-a",
+            )
+        )
+
+        self.assertIs(result, success)
+        self.document_repo.create_document.assert_called_once()
+        self.ingest_service.ingest_document.assert_called_once()
+
+    def test_reclip_allowed_when_workspace_quota_full(self) -> None:
+        """11c：同 URL 命中既有 Document → 复用不占新额度，满额也放行且不查配额。"""
+        self.document_repo.count_documents.return_value = 50
+        existing = self._make_document(
+            status=DocumentStatus.SUCCESS,
+            url="https://example.com/a",
+        )
+        success = self._make_document(
+            status=DocumentStatus.SUCCESS,
+            chunk_count=2,
+            url="https://example.com/a",
+        )
+        self.document_repo.get_webpage_by_url.return_value = existing
+        self.document_repo.get_document.return_value = success
+
+        result = self.run_async(
+            self.service.clip(
+                url="https://example.com/a",
+                raw_text="hello world",
+                plugin_id="plugin-a",
+            )
+        )
+
+        self.assertIs(result, success)
+        # 复用路径不新建 Document，因此完全不触发配额查询
+        self.document_repo.count_documents.assert_not_called()
+        self.document_repo.create_document.assert_not_called()
+        self.ingest_service.ingest_document.assert_called_once()
 
     # ----------------------------------------------------- 附加：Protocol 注入
     def test_protocol_injection(self) -> None:

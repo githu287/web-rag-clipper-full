@@ -50,6 +50,7 @@ from .core.exceptions import (
     DocumentOperationError,
     DocumentParserError,
     DocumentParserUnsupportedExtensionError,
+    DocumentQuotaExceededError,
     DocumentStorageError,
     DocumentStoragePathTraversalError,
     DocumentUnsupportedExtensionError,
@@ -163,6 +164,7 @@ def _register_exception_handlers(app: FastAPI) -> None:
         - EmbeddingClientError → 502 Bad Gateway
           （百炼侧问题：API Key 错误 / 限流 / 超时 / 响应异常；可重试）
         - DocumentUploadError 族 → 400 / 413 / 415（客户端输入校验失败，Phase 2.10 Step 3）
+        - DocumentQuotaExceededError → 429（Workspace 文档数达上限，需先清理再重试）
         - DocumentStorageError 族 → 400（路径穿越）/ 500（存储 IO 失败）
         - DocumentParserError 族 → 400（不支持扩展名，防御）/ 500（读取失败）
         - DocumentChunkingError 族 → 500（切分内部错误）
@@ -373,6 +375,30 @@ def _register_exception_handlers(app: FastAPI) -> None:
         logger.warning("DocumentUploadError -> %s: %s", status_code, exc)
         return JSONResponse(
             status_code=status_code,
+            content={
+                "detail": str(exc),
+                "type": type(exc).__name__,
+            },
+        )
+
+    @app.exception_handler(DocumentQuotaExceededError)
+    async def handle_document_quota_exceeded(
+        request: Request,
+        exc: DocumentQuotaExceededError,
+    ) -> JSONResponse:
+        """
+        DocumentQuotaExceededError → 429 Too Many Requests（Workspace 容量配额）。
+
+        触发场景：WebClipService.clip / DocumentUploadService.prepare_upload 在
+        新建 Document 前发现该 Workspace 文档数已达 max_documents_per_workspace。
+
+        处理策略：不可重试（需用户先删除文档）；校验发生在落盘 / 建 Document
+        之前，不产生任何 Document 行。detail 是面向用户的中文文案，
+        扩展端 parseErrorMessage 会直接展示它。4xx 属客户端错误，仅记 warning。
+        """
+        logger.warning("DocumentQuotaExceededError -> 429: %s", exc)
+        return JSONResponse(
+            status_code=429,
             content={
                 "detail": str(exc),
                 "type": type(exc).__name__,

@@ -263,6 +263,29 @@ class DocumentUnsupportedExtensionError(DocumentUploadError):
 
 
 # ============================================================================
+# Workspace 容量配额异常（单工作空间文档数上限 max_documents_per_workspace）
+# ============================================================================
+
+
+class DocumentQuotaExceededError(Exception):
+    """
+    当前 Workspace 的 Document 数已达 max_documents_per_workspace 上限，
+    拒绝再新建（网页剪藏 / 文件上传）。
+
+    触发场景：新建 Document 之前 count_documents(plugin_id) >= 上限。
+    计数含**全部状态**（SUCCESS / PENDING / PROCESSING / FAILED / DELETING），
+    因此满额的 Workspace 也不会继续积累失败的文档行。
+
+    与检索侧上界是同一政策值的两侧：写入侧配额阻止 Workspace 无限增长，
+    检索侧上界（RagService.max_searchable_documents）限制单次检索的表达式规模。
+
+    设计：与 DocumentUploadError 族一样发生在落盘 / 建 Document 之前，
+    不产生任何 Document 行；属「需用户先清理」的容量错误，不可重试，
+    API 映射 429 Too Many Requests。
+    """
+
+
+# ============================================================================
 # Security 异常族（Phase 3.4 Step 3 新增：纯安全工具模块 core.security）
 # ============================================================================
 

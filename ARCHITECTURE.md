@@ -263,6 +263,7 @@ Workspace 删除要求 `confirm=true` 且提交名称与当前名称完全一致
 | 413 | 上传超过 2 MiB |
 | 415 | 上传类型不支持 |
 | 422 | Pydantic/FastAPI 契约校验失败 |
+| 429 | Workspace 文档数达 `MAX_DOCUMENTS_PER_WORKSPACE`，拒绝新剪藏/上传 |
 | 502 | Embedding 或 LLM 上游调用异常 |
 | 503 | MySQL/Milvus 操作异常 |
 

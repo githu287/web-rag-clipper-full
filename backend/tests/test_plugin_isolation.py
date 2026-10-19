@@ -204,6 +204,8 @@ class PluginIsolationServiceTest(unittest.TestCase):
         self.embedding.embed.return_value = [_QUERY_VECTOR]
         self.ingest_service = Mock(spec=IngestService)
         self.file_storage = Mock(spec=FileStorage)
+        # 配额校验（#24b）需要整数返回值：未桩的 spec Mock 与 int 比较会抛 TypeError。
+        self.document_repo.count_documents.return_value = 0
 
     def run_async(self, coro) -> object:
         return asyncio.run(coro)
@@ -306,6 +308,7 @@ class PluginIsolationServiceTest(unittest.TestCase):
             document_repository=self.document_repo,
             chunker=chunker,
             document_ingest_service=document_ingest,
+            max_documents_per_workspace=50,
         )
         self.run_async(
             service.clip(
@@ -316,6 +319,7 @@ class PluginIsolationServiceTest(unittest.TestCase):
             )
         )
 
+        self.document_repo.count_documents.assert_called_once_with(PLUGIN_B)
         self.document_repo.create_document.assert_called_once()
         _, kwargs = self.document_repo.create_document.call_args
         self.assertEqual(kwargs["plugin_id"], PLUGIN_B)
@@ -352,6 +356,7 @@ class PluginIsolationServiceTest(unittest.TestCase):
             chunker=chunker,
             document_ingest_service=document_ingest,
             max_content_bytes=100,
+            max_documents_per_workspace=50,
         )
         self.run_async(
             service.upload(

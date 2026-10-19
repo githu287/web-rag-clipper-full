@@ -65,6 +65,8 @@ _DEFAULT_MAX_PAGE_CONTENT_BYTES: Final[int] = 2097152  # 2 MiB
 # 全库检索会把该空间的 SUCCESS 文档 id 逐项拼进 Milvus 过滤表达式，没有上限时
 # 表达式长度、MySQL 取回行数与日志规模都随文档数线性增长，且表达式被服务端拒绝
 # 时是一次硬失败（问答直接报错）；188 是让这三者同时有界的政策值。
+# 同一值也是写入侧配额（优化 #24b）：全状态文档数达到上限时新的剪藏/上传被拒（429），
+# 因此 Workspace 的文档总数本身有界，检索侧上界不会被无限增长的前端绕过。
 # RagService 的构造默认值与此对齐（services/rag.py 的 _DEFAULT_MAX_SEARCHABLE_DOCUMENTS）。
 _DEFAULT_MAX_DOCUMENTS_PER_WORKSPACE: Final[int] = 188
 
@@ -202,12 +204,14 @@ class Settings(BaseSettings):
         description="单文件最大字节数；超过该上限的文本应在进入 Chunker 前由上层拒绝",
     )
 
-    # ---- Workspace 容量（全库检索上界）----
+    # ---- Workspace 容量（检索上界 + 写入配额）----
     max_documents_per_workspace: int = Field(
         default=_DEFAULT_MAX_DOCUMENTS_PER_WORKSPACE,
         ge=1,
-        description="单个工作空间文档数上限：全库检索仅取最新 N 篇 SUCCESS 文档参与"
-                    "（被排除的旧文档记 WARNING）；该值同时是 Milvus 过滤表达式的长度上界",
+        description="单个工作空间文档数上限（同一值的两侧）：写入侧——达到上限时新的"
+                    "剪藏/上传被拒（429，计数含全部状态）；检索侧——全库检索仅取最新 N 篇"
+                    " SUCCESS 文档参与（被排除的旧文档记 WARNING），该值同时是 Milvus "
+                    "过滤表达式的长度上界",
     )
 
     @model_validator(mode="after")

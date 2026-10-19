@@ -427,7 +427,9 @@ class DocumentRepository(Protocol):
         行为约束：
         - 过滤条件（plugin_id / keyword / status / source_type）必须与
           list_documents 完全一致（共享同一条件构造逻辑，禁止两套漂移 WHERE）；
-        - 无结果返回 0（不抛异常）。
+        - 无结果返回 0（不抛异常）；
+        - 不传 status 即全状态计数，写入侧配额（优化 #24b）正依赖该语义：
+          PENDING / PROCESSING / FAILED 文档同样占用额度。
 
         Args:
             plugin_id : 当前 Workspace 标识（归属过滤条件）。

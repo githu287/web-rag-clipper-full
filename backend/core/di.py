@@ -480,18 +480,21 @@ def get_document_upload_service() -> DocumentUploadService:
         get_chunker()                  → Chunker (Protocol)
         get_document_ingest_service()  → DocumentIngestService
         Settings.max_page_content_bytes
+        Settings.max_documents_per_workspace
             ↓
         DocumentUploadService(...)
 
     只负责依赖装配：
     - 获取已缓存的下游单例（DocumentRepository / FileStorage / Parser / Chunker /
       DocumentIngestService）；
-    - 从 Settings 注入 max_content_bytes（上传大小上限）；
+    - 从 Settings 注入 max_content_bytes（上传大小上限）与
+      max_documents_per_workspace（Workspace 文档数配额，优化 #24b）；
     - 创建 DocumentUploadService 实例（构造函数仅保存依赖引用 + 上限值）。
 
     不执行（生命周期红线）：
     - upload() 调用（由 API 层按需触发）
-    - save / parse / split / ingest_document / create_document / get_document 调用
+    - save / parse / split / ingest_document / create_document / get_document /
+      count_documents 调用
     - 任何 MySQL / Milvus / 百炼网络请求
 
     设计要点：
@@ -520,6 +523,7 @@ def get_document_upload_service() -> DocumentUploadService:
         chunker=chunker,
         document_ingest_service=document_ingest_service,
         max_content_bytes=settings.max_page_content_bytes,
+        max_documents_per_workspace=settings.max_documents_per_workspace,
     )
 
 
@@ -576,16 +580,20 @@ def get_web_clip_service() -> WebClipService:
         get_document_repository()      → DocumentRepository (Protocol)
         get_chunker()                  → Chunker (Protocol)
         get_document_ingest_service()  → DocumentIngestService
+        Settings.max_documents_per_workspace
             ↓
-        WebClipService(document_repository, chunker, document_ingest_service)
+        WebClipService(document_repository, chunker, document_ingest_service,
+                       max_documents_per_workspace)
 
     只负责依赖装配：
     - 获取已缓存的 DocumentRepository / Chunker / DocumentIngestService 单例；
-    - 创建 WebClipService 实例（构造函数仅保存三个依赖引用）。
+    - 从 Settings 注入 max_documents_per_workspace（Workspace 文档数配额，
+      优化 #24b）；
+    - 创建 WebClipService 实例（构造函数仅保存依赖引用 + 上限值）。
 
     不执行（生命周期红线）：
     - clip() 调用（由 API 层按需触发）
-    - create_document / update_status / split / ingest_document 调用
+    - create_document / update_status / split / ingest_document / count_documents 调用
     - 任何 MySQL / Milvus / 百炼网络请求
 
     设计要点：
@@ -604,10 +612,12 @@ def get_web_clip_service() -> WebClipService:
     document_repository = get_document_repository()
     chunker = get_chunker()
     document_ingest_service = get_document_ingest_service()
+    settings = get_settings()
     return WebClipService(
         document_repository=document_repository,
         chunker=chunker,
         document_ingest_service=document_ingest_service,
+        max_documents_per_workspace=settings.max_documents_per_workspace,
     )
 
 
