@@ -388,14 +388,17 @@ class BailianLLMClientUserKeyTest(unittest.TestCase):
     def test_close_failure_during_eviction_keeps_returned_client(self) -> None:
         """close 失败只该记日志，不能把已经建好的 client 换成一次请求失败。"""
         created = self._use_distinct_clients()
+        for index in range(32):
+            self.client._get_client(f"sk-user-{index}")
+        # 队首 = 最久未使用，会在下一次淘汰时被 close：让它抛错
         created[0].close.side_effect = RuntimeError("close failed")
 
-        client = None
-        for index in range(33):
-            client = self.client._get_client(f"sk-user-{index}")
+        with self.assertLogs("backend.clients.llm", level="WARNING") as logs:
+            client = self.client._get_client("sk-user-32")
 
         self.assertIs(client, created[32])
         self.assertEqual(len(self.client._clients), 32)  # noqa: SLF001
+        self.assertIn("close failed", " ".join(logs.output))
 
     def test_workspace_config_uses_llm_endpoint(self) -> None:
         credentials = WorkspaceModelCredentials(
