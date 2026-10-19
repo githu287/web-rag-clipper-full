@@ -36,6 +36,11 @@ Phase 3.1 Step 3 metadata 覆盖（类 RagServiceMetadataTest，M~P）：
   O. Repository 返回顺序打乱时 title/url/source_type 仍按 document_map 正确匹配。
   P. orphan filter / SUCCESS-only filter 不变（metadata 不改变过滤行为）。
 
+日志定长预览覆盖（类 RagServiceLogPreviewTest + 隔离用例 11）：
+  success_ids / expr 的规模 = 该 Workspace SUCCESS 文档数（SQL 层无 LIMIT），
+  全量 %r 会打出无界日志行；改为定长预览后日志长度有界，
+  且下发给 Milvus 的 expr 保持完整不变（表达式本身的收敛仍是待决策项）。
+
 技术栈：unittest + unittest.mock（Mock(spec=...)），禁止真实连接
 MySQL / Milvus / 百炼。
 """
@@ -58,7 +63,11 @@ from backend.models.document import Document, DocumentStatus
 from backend.models.milvus_dto import ChunkSearchResult
 from backend.repositories.milvus import MilvusRepository
 from backend.repositories.mysql import DocumentRepository
-from backend.services.rag import RagService
+from backend.services.rag import (
+    _LOG_PREVIEW_CHARS,
+    _log_preview,
+    RagService,
+)
 
 _QUERY_VECTOR: list[float] = [0.1] * 1024
 
@@ -654,6 +663,7 @@ class RagServiceUserIsolationTest(unittest.TestCase):
       8. success_ids=[] → 不调用 Milvus，直接返回 []
       9. limit 仍正确
       10. document_id 模式 candidate_limit 仍为 max(limit*4, 40)
+      11. success_ids 规模无界 → 日志定长预览（传给 Milvus 的 expr 不变）
     """
 
     def setUp(self) -> None:
@@ -871,6 +881,29 @@ class RagServiceUserIsolationTest(unittest.TestCase):
             _QUERY_VECTOR, limit=40, expr="page_id == 1"
         )
 
+    # 11. success_ids 规模无界 → 日志定长预览（expr 不变）
+    def test_logs_bounded_with_large_success_ids(self) -> None:
+        self.documents.get_success_document_ids.return_value = list(range(1, 5001))
+        self.milvus.search.return_value = [self._chunk("1_0", 1)]
+        self.documents.get_documents_by_ids.return_value = [
+            self._doc(1, DocumentStatus.SUCCESS),
+        ]
+
+        with self.assertLogs("backend.services.rag", level="INFO") as captured:
+            results = self._search()
+
+        self.assertEqual([r.id for r in results], ["1_0"])
+        joined = "".join(captured.output)
+        for line in captured.output:
+            self.assertLessEqual(len(line), _LOG_PREVIEW_CHARS + 200)
+        # 未截断列表的尾部 id 不得出现在日志中
+        self.assertNotIn("4999, 5000", joined)
+        self.assertNotIn("4999,5000", joined)
+        # 日志收敛不得改变实际下发给 Milvus 的表达式（expr 无界仍是待决策项）
+        self.assertTrue(
+            self.milvus.search.call_args.kwargs["expr"].endswith("4999,5000]")
+        )
+
     # 全库模式匿名（plugin_id=None）→ 拒绝并返回 []（不调用 Milvus / MySQL）
     def test_anonymous_full_knowledge_rejected(self) -> None:
         results = asyncio.run(
@@ -881,6 +914,23 @@ class RagServiceUserIsolationTest(unittest.TestCase):
         self.documents.get_success_document_ids.assert_not_called()
         self.milvus.search.assert_not_called()
         self.embedding.embed.assert_not_called()
+
+
+class RagServiceLogPreviewTest(unittest.TestCase):
+    """`_log_preview` 契约：短值原样返回，超长值定长截断并标注原始长度。"""
+
+    def test_short_value_returned_verbatim(self) -> None:
+        self.assertEqual(_log_preview([1, 2, 3]), "[1, 2, 3]")
+        self.assertEqual(_log_preview("page_id == 7"), "'page_id == 7'")
+
+    def test_long_value_truncated_with_total_length(self) -> None:
+        value = list(range(1, 5001))
+
+        text = _log_preview(value)
+
+        self.assertTrue(text.startswith("[1, 2, 3"))
+        self.assertTrue(text.endswith(f"...(共 {len(repr(value))} 字符)"))
+        self.assertLessEqual(len(text), _LOG_PREVIEW_CHARS + 40)
 
 
 if __name__ == "__main__":

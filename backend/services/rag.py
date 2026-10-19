@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import logging
 import asyncio
+from typing import Final
 
 from ..clients.embedding import EmbeddingClient
 from ..core.exceptions import DocumentNotFoundError, DocumentNotSuccessError
@@ -21,6 +22,19 @@ logger: logging.Logger = logging.getLogger(__name__)
 # Phase 2.12 Step 2：实际召回数 = max(limit, 该下限)，保证 status post-filter 后
 # 仍有机会凑满用户请求的 limit（limit ∈ [1, 20]）。
 _MILVUS_SEARCH_CANDIDATE_LIMIT: int = 10
+
+# 日志预览长度上限：success_ids 规模 = 该 Workspace 的 SUCCESS 文档数（SQL 层无 LIMIT），
+# expr 又由它逐项拼接，直接 %r 会打出随文档数无界增长的日志行（可达数十 KB）。
+# 收敛为定长预览，完整规模通过预览尾部标注的原始长度体现。
+_LOG_PREVIEW_CHARS: Final[int] = 200
+
+
+def _log_preview(value: object) -> str:
+    """返回定长日志预览；超长时尾部标注未打印的原始长度。"""
+    text = repr(value)
+    if len(text) <= _LOG_PREVIEW_CHARS:
+        return text
+    return f"{text[:_LOG_PREVIEW_CHARS]}...(共 {len(text)} 字符)"
 
 
 class RagService:
@@ -115,11 +129,11 @@ class RagService:
         )
         logger.info(
             "RagService.search: document_id=%r, Milvus 候选召回数=%d, "
-            "candidate_limit=%d, expr=%r, 最终 limit=%d",
+            "candidate_limit=%d, expr=%s, 最终 limit=%d",
             document_id,
             len(candidates),
             candidate_limit,
-            expr,
+            _log_preview(expr),
             limit,
         )
 
@@ -171,9 +185,10 @@ class RagService:
         else:
             filtered = [c for c in filtered if c.page_id in success_ids]
             logger.info(
-                "RagService.search: 插件工作空间 %s success_ids=%r 最终兜底后候选=%d",
+                "RagService.search: 插件工作空间 %s success_ids(%d 个)=%s 最终兜底后候选=%d",
                 plugin_id,
-                success_ids,
+                len(success_ids),
+                _log_preview(success_ids),
                 len(filtered),
             )
 
