@@ -96,8 +96,8 @@
 | 文件 | 说明 |
 |---|---|
 | `backend/clients/__init__.py` | Client 包标记 |
-| `backend/clients/embedding.py` | 多服务商 OpenAI-compatible Embedding Client、batch、维度与 Key 隔离 |
-| `backend/clients/llm.py` | LLM Protocol 与多服务商 OpenAI-compatible Chat Completion 实现 |
+| `backend/clients/embedding.py` | 多服务商 OpenAI-compatible Embedding Client、batch、维度与 Key 隔离（缓存按 LRU 淘汰并关闭连接池） |
+| `backend/clients/llm.py` | LLM Protocol 与多服务商 OpenAI-compatible Chat Completion 实现（缓存按 LRU 淘汰并关闭连接池） |
 | `backend/parsers/__init__.py` | Parser 包标记 |
 | `backend/parsers/protocol.py` | Document Parser Protocol |
 | `backend/parsers/text.py` | UTF-8/BOM 文本与 Markdown Parser |
@@ -118,8 +118,8 @@
 | `backend/tests/test_chunker.py` | Chunk 大小、重叠、顺序和配置边界 |
 | `backend/tests/test_text_parser.py` | UTF-8/BOM、扩展名和异常 |
 | `backend/tests/test_file_storage.py` | 保存/删除、幂等与路径穿越 |
-| `backend/tests/test_embedding_client.py` | 批处理、维度、异常和 Key 隔离 |
-| `backend/tests/test_llm_client.py` | LLM 参数、响应和异常包装 |
+| `backend/tests/test_embedding_client.py` | 批处理、维度、异常、Key 隔离与缓存淘汰 |
+| `backend/tests/test_llm_client.py` | LLM 参数、响应、异常包装与缓存淘汰 |
 | `backend/tests/test_model_provider.py` | 服务商预设、端点安全、配置加密兼容与向量空间切换保护 |
 | `backend/tests/test_security.py` | AES-GCM、哈希、随机凭证与篡改检测 |
 | `backend/tests/test_url_normalization.py` | URL 规范化、跟踪参数和非法 URL 边界 |

@@ -25,6 +25,8 @@
 from __future__ import annotations
 
 import logging
+import threading
+from collections import OrderedDict
 from typing import Final
 
 from openai import OpenAI
@@ -83,9 +85,12 @@ class EmbeddingClient:
         """
         self._settings: Settings = settings
         # 按 API Key 隔离的 OpenAI client 缓存（Phase 3.4 Step D）：
-        # key = sha256(api_key)，value = OpenAI client；只存进程内存。
+        # key = sha256(base_url + model + api_key)，value = OpenAI client；只存进程内存。
         # 避免用户 A 的 client 被用户 B 复用（错误使用 A 的 Key）。
-        self._clients: dict[str, OpenAI] = {}
+        # OrderedDict 维持使用顺序：命中移到队尾，淘汰只丢最久未使用的队首。
+        # _clients_lock 保护读写：embed 经 asyncio.to_thread 调用，缓存会被多个线程共享。
+        self._clients: OrderedDict[str, OpenAI] = OrderedDict()
+        self._clients_lock: threading.Lock = threading.Lock()
 
     # ------------------------------------------------------------------ 对外入口
     def embed(
@@ -161,9 +166,12 @@ class EmbeddingClient:
         client_key = sha256_hex(
             f"{endpoint.base_url}\0{endpoint.model}\0{effective_key}"
         )
-        cached = self._clients.get(client_key)
-        if cached is not None:
-            return cached
+        with self._clients_lock:
+            cached = self._clients.get(client_key)
+            if cached is not None:
+                # 命中即移到队尾：被淘汰的始终是最久未使用的 Key，而不是最早创建的 Key
+                self._clients.move_to_end(client_key)
+                return cached
 
         base_url = endpoint.base_url
         model = endpoint.model
@@ -184,10 +192,17 @@ class EmbeddingClient:
             base_url=base_url,
             timeout=self._settings.bailian_embedding_timeout_seconds,
         )
-        self._clients[client_key] = client
-        if len(self._clients) > _MAX_CLIENT_CACHE_SIZE:
-            oldest_key = next(iter(self._clients))
-            del self._clients[oldest_key]
+        with self._clients_lock:
+            self._clients[client_key] = client
+            evicted: OpenAI | None = None
+            if len(self._clients) > _MAX_CLIENT_CACHE_SIZE:
+                # 队首 = 最久未使用；先摘出再锁外关闭，避免 close 的 IO 占着锁
+                _, evicted = self._clients.popitem(last=False)
+        if evicted is not None:
+            try:
+                evicted.close()
+            except Exception as exc:  # noqa: BLE001 — 关闭失败不得影响本次请求
+                logger.warning("关闭被淘汰的 Embedding OpenAI 客户端失败：%s", exc)
         return client
 
     def _resolve_endpoint(

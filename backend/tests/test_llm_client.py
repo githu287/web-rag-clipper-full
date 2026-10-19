@@ -347,6 +347,56 @@ class BailianLLMClientUserKeyTest(unittest.TestCase):
 
         self.assertEqual(len(self.client._clients), 32)  # noqa: SLF001
 
+    # ----------------------------------------------------- #26 淘汰语义
+    def _use_distinct_clients(self) -> list[Mock]:
+        """让每次 OpenAI(...) 构造返回独立 Mock，才能断言被淘汰/关闭的是哪一个。"""
+        created: list[Mock] = []
+
+        def factory(**_kwargs: object) -> Mock:
+            client = Mock()
+            created.append(client)
+            return client
+
+        self.mock_openai_cls.side_effect = factory
+        return created
+
+    def test_evicted_client_is_closed(self) -> None:
+        """淘汰必须 close()：httpx 连接池不能等 GC 才释放。"""
+        created = self._use_distinct_clients()
+        for index in range(33):
+            self.client._get_client(f"sk-user-{index}")
+
+        self.assertEqual(len(self.client._clients), 32)  # noqa: SLF001
+        created[0].close.assert_called_once_with()
+        created[1].close.assert_not_called()
+
+    def test_eviction_drops_least_recently_used_not_oldest_created(self) -> None:
+        """命中要刷新使用顺序：先丢最久未使用的 Key，而不是最早创建的 Key。"""
+        created = self._use_distinct_clients()
+        for index in range(32):
+            self.client._get_client(f"sk-user-{index}")
+        # 重新触碰 Key 0（命中不重复构造），它变成最新使用，Key 1 退回队首
+        self.assertIs(self.client._get_client("sk-user-0"), created[0])  # noqa: SLF001
+        self.assertEqual(self.mock_openai_cls.call_count, 32)
+
+        self.client._get_client("sk-user-32")
+
+        created[1].close.assert_called_once_with()
+        created[0].close.assert_not_called()
+        self.assertEqual(len(self.client._clients), 32)  # noqa: SLF001
+
+    def test_close_failure_during_eviction_keeps_returned_client(self) -> None:
+        """close 失败只该记日志，不能把已经建好的 client 换成一次请求失败。"""
+        created = self._use_distinct_clients()
+        created[0].close.side_effect = RuntimeError("close failed")
+
+        client = None
+        for index in range(33):
+            client = self.client._get_client(f"sk-user-{index}")
+
+        self.assertIs(client, created[32])
+        self.assertEqual(len(self.client._clients), 32)  # noqa: SLF001
+
     def test_workspace_config_uses_llm_endpoint(self) -> None:
         credentials = WorkspaceModelCredentials(
             build_endpoint(
