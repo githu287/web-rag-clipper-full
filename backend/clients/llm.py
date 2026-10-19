@@ -90,8 +90,9 @@ class BailianLLMClient:
     百炼 LLM Chat Completion 客户端（OpenAI 兼容模式）。
 
     依赖：
-        settings.bailian_base_url    → OpenAI base_url
-        settings.bailian_llm_model   → 请求 model 参数（默认 qwen-plus）
+        settings.bailian_base_url       → OpenAI base_url
+        settings.bailian_llm_model      → 请求 model 参数（默认 qwen-plus）
+        settings.bailian_llm_max_tokens → 请求 max_tokens 参数（单次回答输出 token 上限）
         （Phase 3.4 Step F6：API Key 由调用方显式传入，禁止读取 settings.bailian_api_key）
     """
 
@@ -151,6 +152,7 @@ class BailianLLMClient:
                     {"role": "user", "content": user_prompt},
                 ],
                 temperature=0.2,
+                max_tokens=self._settings.bailian_llm_max_tokens,
             )
         except Exception as exc:  # noqa: BLE001 — 统一包装，保留 __cause__
             raise LLMClientRequestError(
@@ -170,11 +172,19 @@ class BailianLLMClient:
             raise LLMClientResponseError("LLM API 返回 choices 为空列表")
 
         try:
-            content = choices[0].message.content
+            choice = choices[0]
+            content = choice.message.content
         except (AttributeError, IndexError, TypeError) as exc:
             raise LLMClientResponseError(
                 f"LLM API 返回 choices[0].message.content 字段缺失或类型异常：{exc}"
             ) from exc
+
+        if getattr(choice, "finish_reason", None) == "length":
+            logger.warning(
+                "LLM 回答达到 max_tokens=%d 上限被截断（model=%s），返回内容可能不完整",
+                self._settings.bailian_llm_max_tokens,
+                model,
+            )
 
         if content is None:
             raise LLMClientEmptyResponseError("LLM API 返回 content 为 None")

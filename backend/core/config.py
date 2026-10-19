@@ -38,6 +38,11 @@ _DEFAULT_BAILIAN_LLM_MODEL: Final[str] = "qwen-plus"
 _DEFAULT_BAILIAN_EMBEDDING_TIMEOUT_SECONDS: Final[int] = 30
 _DEFAULT_BAILIAN_LLM_TIMEOUT_SECONDS: Final[int] = 60
 
+# 百炼 LLM 单次回答输出 token 上限（与 .env.example 的 BAILIAN_LLM_MAX_TOKENS 对齐）。
+# 不传 max_tokens 时输出长度只受模型默认上限约束，成本与延迟无上界；
+# 2048 足够容纳 Context 4000 字符内的简洁回答，正常链路不会触发截断。
+_DEFAULT_BAILIAN_LLM_MAX_TOKENS: Final[int] = 2048
+
 # 百炼 text-embedding-v3 单次请求最大行数硬限制为 10（.env.example L42 注释明确）
 _DEFAULT_EMBEDDING_BATCH_SIZE: Final[int] = 10
 _EMBEDDING_BATCH_SIZE_MAX: Final[int] = 10
@@ -120,6 +125,11 @@ class Settings(BaseSettings):
         default=_DEFAULT_BAILIAN_LLM_TIMEOUT_SECONDS,
         ge=1,
         description="百炼 LLM Chat Completion 单次请求超时（秒）；替代 openai SDK 的 600 秒默认值",
+    )
+    bailian_llm_max_tokens: int = Field(
+        default=_DEFAULT_BAILIAN_LLM_MAX_TOKENS,
+        ge=1,
+        description="百炼 LLM 单次回答输出 token 硬上限；达到上限时返回会被截断并记录告警",
     )
 
     # ---- 认证体系（Phase 3.4 Step D 新增）----

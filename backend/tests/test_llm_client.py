@@ -81,7 +81,7 @@ class BailianLLMClientTest(unittest.TestCase):
         result = client.generate("system prompt", "user prompt", api_key="test-user-key")
 
         self.assertEqual(result, "你好，这是回答内容。")
-        # 断言请求参数：model / messages（system + user）/ temperature
+        # 断言请求参数：model / messages（system + user）/ temperature / max_tokens
         self.mock_client.chat.completions.create.assert_called_once_with(
             model="qwen-plus",
             messages=[
@@ -89,6 +89,7 @@ class BailianLLMClientTest(unittest.TestCase):
                 {"role": "user", "content": "user prompt"},
             ],
             temperature=0.2,
+            max_tokens=2048,
         )
 
     # ----------------------------------------------------- 2. strip 由用例 1 覆盖；补充内嵌空白保留
@@ -102,6 +103,45 @@ class BailianLLMClientTest(unittest.TestCase):
         result = client.generate("s", "u", api_key="test-user-key")
 
         self.assertEqual(result, "第一段\n\n第二段")
+
+    # ----------------------------------------------------- 2b. max_tokens 硬上界（优化项 #25）
+    def test_generate_max_tokens_comes_from_settings(self) -> None:
+        """max_tokens 必须是 Settings 单源，而不是客户端里的硬编码值。"""
+        self.mock_client.chat.completions.create.return_value = (
+            _make_client_response("ok")
+        )
+        client = self._make_client(_make_settings(bailian_llm_max_tokens=64))
+
+        client.generate("s", "u", api_key="test-user-key")
+
+        call = self.mock_client.chat.completions.create.call_args
+        self.assertEqual(call.kwargs["max_tokens"], 64)
+
+    def test_generate_truncated_by_max_tokens_warns(self) -> None:
+        """达到上限（finish_reason=length）必须留下可观测告警，但回答本身仍返回。"""
+        completion = _make_client_response("被截断的回答")
+        completion.choices[0].finish_reason = "length"
+        self.mock_client.chat.completions.create.return_value = completion
+        client = self._make_client(_make_settings(bailian_llm_max_tokens=16))
+
+        with self.assertLogs("backend.clients.llm", level="WARNING") as logs:
+            result = client.generate("s", "u", api_key="test-user-key")
+
+        self.assertEqual(result, "被截断的回答")
+        self.assertIn("max_tokens=16", " ".join(logs.output))
+
+    def test_generate_normal_finish_reason_does_not_warn(self) -> None:
+        """正常结束（finish_reason=stop）不得产生截断告警。"""
+        completion = _make_client_response("正常回答")
+        completion.choices[0].finish_reason = "stop"
+        self.mock_client.chat.completions.create.return_value = completion
+        client = self._make_client()
+
+        with patch("backend.clients.llm.logger") as module_logger:
+            result = client.generate("s", "u", api_key="test-user-key")
+
+        self.assertEqual(result, "正常回答")
+        module_logger.warning.assert_not_called()
 
     # ----------------------------------------------------- 3. empty response
     def test_generate_empty_string_raises_empty_response(self) -> None:
