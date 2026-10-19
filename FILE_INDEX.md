@@ -23,7 +23,7 @@
 | `backend/main.py` | FastAPI 工厂、模块级 `app`、Milvus lifespan、Router 与全局异常处理器 |
 | `backend/api/__init__.py` | API 包标记 |
 | `backend/api/deps.py` | 从双请求头解析当前 Workspace |
-| `backend/api/routers/__init__.py` | Router 子包标记；文件内路由清单注释已落后 |
+| `backend/api/routers/__init__.py` | Router 子包标记；文件内按 prefix 列出当前 6 个路由器 |
 | `backend/api/routers/plugins.py` | Workspace 注册、详情、改名、多服务商模型配置与删除 |
 | `backend/api/routers/documents.py` | 文档列表/详情、创建、上传、ingest 与删除 |
 | `backend/api/routers/clips.py` | 网页正文剪藏 |
@@ -123,6 +123,7 @@
 | `backend/tests/test_model_provider.py` | 服务商预设、端点安全、配置加密兼容与向量空间切换保护 |
 | `backend/tests/test_security.py` | AES-GCM、哈希、随机凭证与篡改检测 |
 | `backend/tests/test_url_normalization.py` | URL 规范化、跟踪参数和非法 URL 边界 |
+| `backend/tests/test_milvus_repository.py` | Milvus 搜索 limit/ef 参数在连接前校验 |
 | `backend/tests/test_document_repository.py` | CRUD、筛选、分页和 Workspace 隔离 |
 | `backend/tests/test_plugin_repository.py` | Plugin Repository 数据契约 |
 | `backend/tests/test_plugin_service.py` | 名称、认证、API Key 与敏感信息保护 |

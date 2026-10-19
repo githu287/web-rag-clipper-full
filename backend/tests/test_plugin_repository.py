@@ -1,7 +1,7 @@
 """
 PluginRepositoryImpl 单元测试（Phase 3.5 Step 2-B 新增：MySQL plugin_workspaces 表 CRUD）。
 
-测试策略（与 test_user_repository.py / test_document_repository.py 完全对齐）：
+测试策略（与 test_document_repository.py 完全对齐）：
 1) 用 SQLite in-memory engine + StaticPool 替换真实 MySQL，避免外部依赖；
 2) setUpClass 建 engine + create_all；setUp 清空 plugin_workspaces 表保证方法间隔离；
 3) 覆盖：创建 / 查询 / 不存在 / 改名 / API Key / 状态 / 唯一约束 / 删除；
