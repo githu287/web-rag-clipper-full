@@ -71,7 +71,7 @@
 | `backend/services/web_clip.py` | 网页文档创建/复用、切块、入库与元数据更新 |
 | `backend/services/ingest.py` | old IDs → upsert new → delete stale |
 | `backend/services/ingest_job.py` | 任务创建、Redis 入队、归属查询与重试编排 |
-| `backend/services/rag.py` | Query 向量化、范围过滤、搜索和 metadata 组装 |
+| `backend/services/rag.py` | Query 向量化、检索文档数上界、范围过滤、搜索和 metadata 组装 |
 | `backend/services/rag_answer.py` | Retrieval、Context、Prompt、LLM、Sources 编排 |
 
 ### Repository
@@ -133,7 +133,7 @@
 | `backend/tests/test_document_delete_service.py` | 删除顺序、幂等和失败收敛 |
 | `backend/tests/test_workspace_delete_service.py` | Workspace 级联删除和重试 |
 | `backend/tests/test_web_clip_service.py` | URL 复用、状态与隔离 |
-| `backend/tests/test_rag_service.py` | 检索范围、后过滤、metadata 与隔离 |
+| `backend/tests/test_rag_service.py` | 检索范围、文档数上界、后过滤、metadata 与隔离 |
 | `backend/tests/test_rag_answer_service.py` | Context、空结果、Sources 与 LLM |
 | `backend/tests/test_ingest_api.py` | `/ingest/page` 契约与错误映射 |
 | `backend/tests/test_rag_api.py` | `/rag/search` 契约和隔离 |

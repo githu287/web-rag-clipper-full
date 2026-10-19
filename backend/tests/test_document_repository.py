@@ -29,6 +29,11 @@ Phase 3.5 Step 2-B 覆盖（plugin-aware，取代 Step C）：
 - delete_document(document_id, plugin_id)：A 删 B → DocumentNotFoundError，B 的文档仍在；
 - update_status / update_ingest_result / update_failure 不受 plugin-aware 影响。
 
+全库检索上界新增覆盖（get_success_document_ids 的可选 limit）：
+- limit 不为 None：SQL 层 ORDER BY id DESC LIMIT → 返回最新 limit 篇（id 倒序）；
+- limit 与 plugin_id 是 AND 关系：他插件文档不会因 limit 进入结果；
+- limit=None：保持原语义（本插件全部 SUCCESS id，不保证顺序）。
+
 不依赖：
 - 真实 MySQL（SQLite in-memory 替代）
 - 真实 .env（无 Settings 依赖，直接构造 engine）
@@ -533,6 +538,39 @@ class DocumentRepositoryImplTest(unittest.TestCase):
         )
         self.repo.update_status(doc.id, DocumentStatus.FAILED)
         self.assertEqual(self.repo.get_success_document_ids(plugin_id=PLUGIN_A), [])
+
+    def test_get_success_document_ids_limit_newest_first(self) -> None:
+        """limit：SQL 层 ORDER BY id DESC LIMIT → 返回最新 limit 篇（id 倒序）。"""
+        doc_old = self.repo.create_document(
+            filename="old.txt", file_path="/data/old.txt", plugin_id=PLUGIN_A
+        )
+        doc_mid = self.repo.create_document(
+            filename="mid.txt", file_path="/data/mid.txt", plugin_id=PLUGIN_A
+        )
+        doc_new = self.repo.create_document(
+            filename="new.txt", file_path="/data/new.txt", plugin_id=PLUGIN_A
+        )
+        for doc in (doc_old, doc_mid, doc_new):
+            self.repo.update_status(doc.id, DocumentStatus.SUCCESS)
+
+        ids = self.repo.get_success_document_ids(plugin_id=PLUGIN_A, limit=2)
+
+        self.assertEqual(ids, [doc_new.id, doc_mid.id])
+
+    def test_get_success_document_ids_limit_still_plugin_scoped(self) -> None:
+        """limit 不放松隔离：B 的更晚 SUCCESS 文档不会进入 A 的结果。"""
+        doc_a = self.repo.create_document(
+            filename="a.txt", file_path="/data/a.txt", plugin_id=PLUGIN_A
+        )
+        self.repo.update_status(doc_a.id, DocumentStatus.SUCCESS)
+        doc_b_newer = self.repo.create_document(
+            filename="b.txt", file_path="/data/b.txt", plugin_id=PLUGIN_B
+        )
+        self.repo.update_status(doc_b_newer.id, DocumentStatus.SUCCESS)
+
+        ids = self.repo.get_success_document_ids(plugin_id=PLUGIN_A, limit=1)
+
+        self.assertEqual(ids, [doc_a.id])
 
     def test_delete_document_cross_plugin_not_found(self) -> None:
         """plugin-aware：A 删除 B 的文档 → DocumentNotFoundError，B 的文档不被删除。"""

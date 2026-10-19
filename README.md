@@ -245,6 +245,7 @@ MySQL 是文档状态和归属的权威来源；Milvus 只保存向量检索所�
 | `UPLOAD_DIR` | `uploads` | 上传文件存储目录 |
 | `CHUNK_SIZE` / `CHUNK_OVERLAP` | `700` / `100` | 字符级递归切块参数 |
 | `MAX_PAGE_CONTENT_BYTES` | `2097152` | 上传文件上限，2 MiB |
+| `MAX_DOCUMENTS_PER_WORKSPACE` | `188` | 全库检索仅取最新 N 篇 SUCCESS 文档参与（被排除的旧文档记 WARNING），同时给 Milvus 过滤表达式长度封顶 |
 | `REDIS_HOST` / `REDIS_PORT` / `REDIS_DB` | `localhost` / `6379` / `0` | 异步队列 Redis |
 | `INGEST_QUEUE_NAME` | `web-rag:ingest` | 待处理任务队列名 |
 | `INGEST_PAYLOAD_TTL_SECONDS` | `604800` | Redis 任务 payload 保留时间 |

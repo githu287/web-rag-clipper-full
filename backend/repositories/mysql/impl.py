@@ -9,7 +9,8 @@ Phase 3.5 Step 2-B 变更（user_id → plugin_id，与 migration 0007 对齐）
   Workspace 按「不存在」处理（DocumentNotFoundError，不泄露归属）；
 - get_documents_by_ids(document_ids, plugin_id)：SQL 层 IN + plugin_id 过滤，
   禁止先查全部再 Python 过滤；
-- get_success_document_ids(plugin_id)：只返回 SUCCESS 的 id 列表；
+- get_success_document_ids(plugin_id, limit=None)：只返回 SUCCESS 的 id 列表；
+  limit 不为 None 时 ORDER BY id DESC LIMIT limit（最新 limit 篇）；
 - delete_document(document_id, plugin_id)：WHERE id + plugin_id，跨 Workspace
   按「不存在」处理；返回被删除的 Document（detached）；
 - update_status / update_ingest_result / update_failure 签名不变：调用方必须
@@ -274,27 +275,33 @@ class DocumentRepositoryImpl(DocumentRepository):
             ) from e
 
     # ------------------------------------------------------- get_success_ids
-    def get_success_document_ids(self, plugin_id: str) -> list[int]:
+    def get_success_document_ids(
+        self,
+        plugin_id: str,
+        limit: int | None = None,
+    ) -> list[int]:
         """
         返回指定 Workspace status == SUCCESS 的 Document id 列表（plugin-aware）。
 
         SQL：SELECT id FROM documents WHERE plugin_id = :plugin_id
-             AND status = :status_success。
+             AND status = :status_success
+             [ORDER BY id DESC LIMIT :limit]   # 仅当 limit 不为 None。
         只返回 id（不构造完整 Document，省内存，单次 SQL）；
         没结果返回 []（不抛异常）。
+
+        limit（全库检索上界）：Document.id 单调递增，倒序取前 limit 个即
+        「最新 limit 篇」；上限交给 SQL 执行，避免把整个 Workspace 的 id
+        拉进内存后再由 Service 切片。None 时不加排序与上限（返回全部）。
         """
         try:
             with self._session_factory() as session:
-                ids = (
-                    session.execute(
-                        select(Document.id).where(
-                            Document.plugin_id == plugin_id,
-                            Document.status == DocumentStatus.SUCCESS,
-                        )
-                    )
-                    .scalars()
-                    .all()
+                statement = select(Document.id).where(
+                    Document.plugin_id == plugin_id,
+                    Document.status == DocumentStatus.SUCCESS,
                 )
+                if limit is not None:
+                    statement = statement.order_by(Document.id.desc()).limit(limit)
+                ids = session.execute(statement).scalars().all()
                 return list(ids)
         except (OperationalError, DBAPIError) as e:
             raise DocumentOperationError(

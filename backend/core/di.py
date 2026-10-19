@@ -243,13 +243,16 @@ def get_rag_service() -> RagService:
         get_milvus_repository()     → MilvusRepository (Protocol)
         get_document_repository()   → DocumentRepository (Protocol)
             ↓
-        RagService(embedding_client, milvus_repository, document_repository)
+        RagService(embedding_client, milvus_repository, document_repository,
+                   max_searchable_documents=settings.max_documents_per_workspace)
 
     只负责依赖装配：
     - 获取已缓存的 EmbeddingClient 单例
     - 获取已缓存的 MilvusRepository（Protocol）单例
     - 获取已缓存的 DocumentRepository（Protocol）单例
-    - 创建 RagService 实例（构造函数仅保存三个依赖引用）
+    - 从 Settings 取 max_documents_per_workspace 作为全库检索的文档数上界
+      （配置单源：DI 不解析默认值，也不自行夹紧范围）
+    - 创建 RagService 实例（构造函数仅保存三个依赖引用 + 该上界值）
 
     不执行（生命周期红线）：
     - search() 调用（由 API 层按需触发）
@@ -272,7 +275,13 @@ def get_rag_service() -> RagService:
     embedding_client = get_embedding_client()
     milvus_repository = get_milvus_repository()
     document_repository = get_document_repository()
-    return RagService(embedding_client, milvus_repository, document_repository)
+    settings = get_settings()
+    return RagService(
+        embedding_client,
+        milvus_repository,
+        document_repository,
+        max_searchable_documents=settings.max_documents_per_workspace,
+    )
 
 
 @lru_cache(maxsize=1)

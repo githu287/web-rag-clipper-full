@@ -23,8 +23,14 @@ logger: logging.Logger = logging.getLogger(__name__)
 # 仍有机会凑满用户请求的 limit（limit ∈ [1, 20]）。
 _MILVUS_SEARCH_CANDIDATE_LIMIT: int = 10
 
-# 日志预览长度上限：success_ids 规模 = 该 Workspace 的 SUCCESS 文档数（SQL 层无 LIMIT），
-# expr 又由它逐项拼接，直接 %r 会打出随文档数无界增长的日志行（可达数十 KB）。
+# 全库检索参与过滤的 SUCCESS 文档数上限默认值。生产值由 DI 从
+# Settings.max_documents_per_workspace 注入（core/config.py 的
+# _DEFAULT_MAX_DOCUMENTS_PER_WORKSPACE，两处必须保持一致），此默认值只服务单测。
+# 达到上限时只检索最新的这些篇（document_id 倒序），并记录 WARNING。
+_DEFAULT_MAX_SEARCHABLE_DOCUMENTS: Final[int] = 188
+
+# 日志预览长度上限：success_ids 虽有检索上限，仍可多达上限那么多项（默认 188 个 id
+# ≈ 1KB 拼接串），expr 又由它逐项拼接，直接 %r 会打出很长的日志行。
 # 收敛为定长预览，完整规模通过预览尾部标注的原始长度体现。
 _LOG_PREVIEW_CHARS: Final[int] = 200
 
@@ -52,6 +58,7 @@ class RagService:
         embedding_client: EmbeddingClient,
         milvus_repository: MilvusRepository,
         document_repository: DocumentRepository,
+        max_searchable_documents: int = _DEFAULT_MAX_SEARCHABLE_DOCUMENTS,
     ) -> None:
         """
         注入 EmbeddingClient + MilvusRepository + DocumentRepository。
@@ -61,10 +68,14 @@ class RagService:
             milvus_repository: Milvus Repository 实例（Protocol 类型，不依赖具体 Impl）。
             document_repository: Document Repository 实例（Protocol 类型，用于
                 Milvus 检索后批量反查 Document.status，实现 SUCCESS-only 过滤）。
+            max_searchable_documents: 全库模式参与 Milvus 过滤表达式的 SUCCESS 文档数
+                上限（按 document_id 倒序取最新 N 篇，超出部分记 WARNING 且不参与检索）。
+                生产值由 DI 从 Settings.max_documents_per_workspace 注入。
         """
         self._embedding: EmbeddingClient = embedding_client
         self._repo: MilvusRepository = milvus_repository
         self._documents: DocumentRepository = document_repository
+        self._max_searchable_documents: int = max_searchable_documents
 
     # ------------------------------------------------------------------ 对外入口
     async def search(
@@ -79,7 +90,9 @@ class RagService:
 
         Empty libraries and unavailable documents never call the embedding API.
         Document scope uses max(limit * 4, 40) candidates; full-library scope uses
-        max(limit, 10). Final results retain Milvus order and authoritative metadata.
+        max(limit, 10) and filters on at most max_searchable_documents newest
+        SUCCESS documents (older ones are excluded with a WARNING). Final results
+        retain Milvus order and authoritative metadata.
         """
         if document_id is not None:
             # 当前网页模式：document_id + plugin_id 一起进入 ownership check（Step C 已
@@ -106,15 +119,29 @@ class RagService:
                 )
                 return []
             # success_ids 必须来自 Repository 的 get_success_document_ids（SQL 层
-            # plugin_id + SUCCESS 双条件过滤，严禁先查全部文档再 Python 过滤）。
-            success_ids: list[int] = await asyncio.to_thread(self._documents.get_success_document_ids, plugin_id)
-            if not success_ids:
+            # plugin_id + SUCCESS 双条件过滤 + id 倒序 LIMIT，严禁先查全部文档再
+            # Python 过滤）。多取 1 个仅用于判断是否发生截断，不进入 expr。
+            fetched_ids: list[int] = await asyncio.to_thread(
+                self._documents.get_success_document_ids,
+                plugin_id,
+                self._max_searchable_documents + 1,
+            )
+            if not fetched_ids:
                 logger.info(
                     "RagService.search: 插件工作空间 %s 无 SUCCESS document，"
                     "返回空结果（不调用 Milvus）",
                     plugin_id,
                 )
                 return []
+            success_ids: list[int] = fetched_ids[: self._max_searchable_documents]
+            if len(fetched_ids) > len(success_ids):
+                logger.warning(
+                    "RagService.search: 插件 %s 的 SUCCESS 文档数超过检索上限 %d，"
+                    "本次仅检索最新的 %d 篇（document_id 倒序）",
+                    plugin_id,
+                    self._max_searchable_documents,
+                    len(success_ids),
+                )
             candidate_limit = max(limit, _MILVUS_SEARCH_CANDIDATE_LIMIT)
             expr = f"page_id in [{','.join(map(str, success_ids))}]"
 

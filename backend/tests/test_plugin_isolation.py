@@ -52,7 +52,10 @@ from backend.services.document_delete import DocumentDeleteService
 from backend.services.document_ingest import DocumentIngestService
 from backend.services.document_upload import DocumentUploadService
 from backend.services.ingest import IngestService
-from backend.services.rag import RagService
+from backend.services.rag import (
+    _DEFAULT_MAX_SEARCHABLE_DOCUMENTS,
+    RagService,
+)
 from backend.services.rag_answer import RagAnswerService
 from backend.services.web_clip import WebClipService
 from backend.storage import FileStorage
@@ -232,7 +235,7 @@ class PluginIsolationServiceTest(unittest.TestCase):
         self.assertEqual([c.id for c in results], ["1_0", "2_0"])
         # 两个 Repository 调用均以本插件 plugin_id 执行（SQL 层隔离）
         self.document_repo.get_success_document_ids.assert_called_once_with(
-            PLUGIN_A
+            PLUGIN_A, _DEFAULT_MAX_SEARCHABLE_DOCUMENTS + 1
         )
         self.document_repo.get_documents_by_ids.assert_called_once_with(
             [1, 2, 99], PLUGIN_A

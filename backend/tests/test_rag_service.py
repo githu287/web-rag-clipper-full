@@ -37,9 +37,13 @@ Phase 3.1 Step 3 metadata 覆盖（类 RagServiceMetadataTest，M~P）：
   P. orphan filter / SUCCESS-only filter 不变（metadata 不改变过滤行为）。
 
 日志定长预览覆盖（类 RagServiceLogPreviewTest + 隔离用例 11）：
-  success_ids / expr 的规模 = 该 Workspace SUCCESS 文档数（SQL 层无 LIMIT），
-  全量 %r 会打出无界日志行；改为定长预览后日志长度有界，
-  且下发给 Milvus 的 expr 保持完整不变（表达式本身的收敛仍是待决策项）。
+  success_ids / expr 的规模已受 max_searchable_documents 约束，但达到上限时
+  仍可达 188 个 id（repr ≈ 1KB），全量 %r 会打出很长的日志行，
+  因此两处日志走定长预览，完整规模由预览尾部标注的原始长度体现。
+
+全库检索文档数上界覆盖（类 RagServiceMaxSearchableDocumentsTest）：
+  SQL 层以 id 倒序 LIMIT「上限 + 1」取 id，Service 截断到上限后构造 expr，
+  截断发生时记录一条 WARNING；被排除的旧文档同时不在应用层兜底允许集合内。
 
 技术栈：unittest + unittest.mock（Mock(spec=...)），禁止真实连接
 MySQL / Milvus / 百炼。
@@ -50,9 +54,10 @@ from __future__ import annotations
 import asyncio
 import unittest
 from datetime import datetime
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from backend.clients.embedding import EmbeddingClient
+from backend.core.config import _DEFAULT_MAX_DOCUMENTS_PER_WORKSPACE
 from backend.core.exceptions import (
     DocumentNotFoundError,
     DocumentNotSuccessError,
@@ -64,6 +69,7 @@ from backend.models.milvus_dto import ChunkSearchResult
 from backend.repositories.milvus import MilvusRepository
 from backend.repositories.mysql import DocumentRepository
 from backend.services.rag import (
+    _DEFAULT_MAX_SEARCHABLE_DOCUMENTS,
     _LOG_PREVIEW_CHARS,
     _log_preview,
     RagService,
@@ -652,7 +658,7 @@ class RagServiceUserIsolationTest(unittest.TestCase):
     """
     Phase 3.5 Step 2-E：RAG 检索按插件工作空间隔离（全部知识库模式 + 当前网页模式）。
 
-    覆盖隔离用例 1-10（user 隔离迁移为 plugin 隔离）：
+    覆盖隔离用例 1-11（user 隔离迁移为 plugin 隔离）：
       1. plugin-a 全库只检索 plugin-a（success_ids=[1]；混入 page_id=999 → 剔除）
       2. plugin-b 全库只检索 plugin-b（success_ids=[2]；混入 page_id=1 → 剔除）
       3. success_ids 正确构造 Milvus expr（expr="page_id in [1,2]"）
@@ -663,7 +669,7 @@ class RagServiceUserIsolationTest(unittest.TestCase):
       8. success_ids=[] → 不调用 Milvus，直接返回 []
       9. limit 仍正确
       10. document_id 模式 candidate_limit 仍为 max(limit*4, 40)
-      11. success_ids 规模无界 → 日志定长预览（传给 Milvus 的 expr 不变）
+      11. success_ids 达到上限规模 → 日志定长预览 + expr 截断为最新上限篇
     """
 
     def setUp(self) -> None:
@@ -725,7 +731,9 @@ class RagServiceUserIsolationTest(unittest.TestCase):
 
         # 应用层兜底：999 不属于 plugin-a 的 success_ids → 被剔除
         self.assertEqual([r.id for r in results], ["1_0"])
-        self.documents.get_success_document_ids.assert_called_once_with("plugin-a")
+        self.documents.get_success_document_ids.assert_called_once_with(
+            "plugin-a", _DEFAULT_MAX_SEARCHABLE_DOCUMENTS + 1
+        )
         self.milvus.search.assert_called_once_with(
             _QUERY_VECTOR, limit=10, expr="page_id in [1]"
         )
@@ -747,7 +755,9 @@ class RagServiceUserIsolationTest(unittest.TestCase):
         # 即使 SQL 层（mock）返回了两份 SUCCESS 文档，post-filter 仍以
         # plugin-b 的 success_ids=[2] 为唯一允许集合 → 剔除 page 1。
         self.assertEqual([r.id for r in results], ["2_0"])
-        self.documents.get_success_document_ids.assert_called_once_with("plugin-b")
+        self.documents.get_success_document_ids.assert_called_once_with(
+            "plugin-b", _DEFAULT_MAX_SEARCHABLE_DOCUMENTS + 1
+        )
         self.milvus.search.assert_called_once_with(
             _QUERY_VECTOR, limit=10, expr="page_id in [2]"
         )
@@ -881,27 +891,37 @@ class RagServiceUserIsolationTest(unittest.TestCase):
             _QUERY_VECTOR, limit=40, expr="page_id == 1"
         )
 
-    # 11. success_ids 规模无界 → 日志定长预览（expr 不变）
+    # 11. success_ids 达到上限规模 → 日志定长预览 + expr 截断为最新上限篇
     def test_logs_bounded_with_large_success_ids(self) -> None:
-        self.documents.get_success_document_ids.return_value = list(range(1, 5001))
-        self.milvus.search.return_value = [self._chunk("1_0", 1)]
+        # Repository 契约是 id 倒序 + LIMIT，这里给足超出上限的返回值
+        self.documents.get_success_document_ids.return_value = list(
+            range(5000, 0, -1)
+        )
+        self.milvus.search.return_value = [self._chunk("5000_0", 5000)]
         self.documents.get_documents_by_ids.return_value = [
-            self._doc(1, DocumentStatus.SUCCESS),
+            self._doc(5000, DocumentStatus.SUCCESS),
         ]
 
         with self.assertLogs("backend.services.rag", level="INFO") as captured:
             results = self._search()
 
-        self.assertEqual([r.id for r in results], ["1_0"])
-        joined = "".join(captured.output)
+        self.assertEqual([r.id for r in results], ["5000_0"])
         for line in captured.output:
             self.assertLessEqual(len(line), _LOG_PREVIEW_CHARS + 200)
-        # 未截断列表的尾部 id 不得出现在日志中
-        self.assertNotIn("4999, 5000", joined)
-        self.assertNotIn("4999,5000", joined)
-        # 日志收敛不得改变实际下发给 Milvus 的表达式（expr 无界仍是待决策项）
-        self.assertTrue(
-            self.milvus.search.call_args.kwargs["expr"].endswith("4999,5000]")
+        # 188 个 id 的 repr ≈ 1KB，日志必须走定长预览而不是全量 %r
+        joined = " ".join(captured.output)
+        self.assertIn(
+            f"success_ids({_DEFAULT_MAX_SEARCHABLE_DOCUMENTS} 个)", joined
+        )
+        self.assertNotIn("4812", joined)
+
+        # expr 由截断后的 success_ids 构造：只含最新的上限篇
+        expr = self.milvus.search.call_args.kwargs["expr"]
+        ids = expr.removeprefix("page_id in [").removesuffix("]").split(",")
+        self.assertEqual(len(ids), _DEFAULT_MAX_SEARCHABLE_DOCUMENTS)
+        self.assertEqual(ids[0], "5000")
+        self.assertEqual(
+            ids[-1], str(5000 - _DEFAULT_MAX_SEARCHABLE_DOCUMENTS + 1)
         )
 
     # 全库模式匿名（plugin_id=None）→ 拒绝并返回 []（不调用 Milvus / MySQL）
@@ -914,6 +934,128 @@ class RagServiceUserIsolationTest(unittest.TestCase):
         self.documents.get_success_document_ids.assert_not_called()
         self.milvus.search.assert_not_called()
         self.embedding.embed.assert_not_called()
+
+
+class RagServiceMaxSearchableDocumentsTest(unittest.TestCase):
+    """
+    全库检索文档数上界契约（max_searchable_documents）。
+
+    覆盖：
+      1. 不传参时使用模块默认上限，且以「上限 + 1」向 Repository 取 id
+         （多取 1 个只用于判断是否发生截断，不进入 expr）。
+      2. 超过上限 → expr 只保留最新 N 篇（id 倒序语义）并记录一条 WARNING。
+      3. 恰好等于上限 → 全部参与，不记录 WARNING。
+      4. 被排除的旧文档即使被 Milvus 异常返回，也会被应用层兜底剔除
+         （截断后的 success_ids 同时是兜底允许集合）。
+      5. Settings 侧默认值与 RagService 构造默认值保持一致。
+    """
+
+    def setUp(self) -> None:
+        self.embedding = Mock(spec=EmbeddingClient)
+        self.embedding.embed.return_value = [_QUERY_VECTOR]
+        self.milvus = Mock(spec=MilvusRepository)
+        self.milvus.search.return_value = []
+        self.documents = Mock(spec=DocumentRepository)
+        self.documents.get_success_document_ids.return_value = []
+
+    def _service(
+        self,
+        max_searchable_documents: int = _DEFAULT_MAX_SEARCHABLE_DOCUMENTS,
+    ) -> RagService:
+        return RagService(
+            embedding_client=self.embedding,
+            milvus_repository=self.milvus,
+            document_repository=self.documents,
+            max_searchable_documents=max_searchable_documents,
+        )
+
+    def _chunk(self, pk: str, page_id: int, index: int = 0) -> ChunkSearchResult:
+        return ChunkSearchResult(
+            id=pk,
+            page_id=page_id,
+            chunk_index=index,
+            chunk_text=f"text-{pk}",
+            distance=0.1,
+        )
+
+    def _doc(self, doc_id: int, status: str) -> Document:
+        return Document(
+            id=doc_id,
+            filename=f"file-{doc_id}.txt",
+            file_path=f"uploads/file-{doc_id}.txt",
+            status=status,
+        )
+
+    def _search(self, service: RagService) -> list[RagSearchResult]:
+        return asyncio.run(
+            service.search(query="hello", limit=5, plugin_id="plugin-a")
+        )
+
+    # 1. 默认上限 → SQL LIMIT = 上限 + 1
+    def test_default_cap_fetches_cap_plus_one(self) -> None:
+        # 不传 max_searchable_documents：走构造默认值，验证默认值即模块常量
+        service = RagService(
+            embedding_client=self.embedding,
+            milvus_repository=self.milvus,
+            document_repository=self.documents,
+        )
+
+        self._search(service)
+
+        self.documents.get_success_document_ids.assert_called_once_with(
+            "plugin-a", _DEFAULT_MAX_SEARCHABLE_DOCUMENTS + 1
+        )
+
+    # 2. 超限 → 截断为最新 N 篇 + WARNING
+    def test_over_limit_trims_to_newest_and_warns(self) -> None:
+        # SQL 契约：id 倒序 + LIMIT 上限+1 → 最新在前，末位是用于检测截断的哨兵
+        self.documents.get_success_document_ids.return_value = [10, 9, 8, 7]
+
+        with patch("backend.services.rag.logger") as module_logger:
+            self._search(self._service(3))
+
+        self.milvus.search.assert_called_once_with(
+            _QUERY_VECTOR, limit=10, expr="page_id in [10,9,8]"
+        )
+        module_logger.warning.assert_called_once()
+        self.assertIn("超过检索上限", module_logger.warning.call_args.args[0])
+
+    # 3. 恰好等于上限 → 全部参与且无 WARNING
+    def test_at_limit_keeps_all_ids_and_does_not_warn(self) -> None:
+        self.documents.get_success_document_ids.return_value = [10, 9, 8]
+
+        with patch("backend.services.rag.logger") as module_logger:
+            self._search(self._service(3))
+
+        self.milvus.search.assert_called_once_with(
+            _QUERY_VECTOR, limit=10, expr="page_id in [10,9,8]"
+        )
+        module_logger.warning.assert_not_called()
+
+    # 4. 被上限排除的旧文档不会泄漏进结果
+    def test_excluded_older_document_cannot_leak(self) -> None:
+        self.documents.get_success_document_ids.return_value = [10, 9, 8, 7]
+        # Milvus 异常返回被排除的 doc 7 候选 → 应用层兜底以截断后的 success_ids 为准
+        self.milvus.search.return_value = [
+            self._chunk("10_0", 10),
+            self._chunk("7_0", 7),
+        ]
+        self.documents.get_documents_by_ids.return_value = [
+            self._doc(10, DocumentStatus.SUCCESS),
+            self._doc(7, DocumentStatus.SUCCESS),
+        ]
+
+        with patch("backend.services.rag.logger"):
+            results = self._search(self._service(3))
+
+        self.assertEqual([r.id for r in results], ["10_0"])
+
+    # 5. 两处默认值必须一致（DI 注入 Settings 值，单测走模块常量）
+    def test_settings_default_matches_service_default(self) -> None:
+        self.assertEqual(
+            _DEFAULT_MAX_DOCUMENTS_PER_WORKSPACE,
+            _DEFAULT_MAX_SEARCHABLE_DOCUMENTS,
+        )
 
 
 class RagServiceLogPreviewTest(unittest.TestCase):
