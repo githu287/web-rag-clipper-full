@@ -7,6 +7,7 @@ Plugin Workspace HTTP 路由（Phase 3.5 Step 2-D 新增）。
     PUT    /plugins/me            —— 修改显示名
     PUT    /plugins/me/api-key    —— 配置 / 更换百炼 API Key
     GET/PUT /plugins/me/model-config —— 读取 / 保存多服务商模型配置
+    GET    /plugins/model-providers —— 内置服务商预设目录（本路由唯一无鉴权端点）
     DELETE /plugins/me/api-key    —— 清除 API Key（204）
     DELETE /plugins/me            —— 删除 Workspace（双重确认，204）
 
@@ -16,6 +17,15 @@ Plugin Workspace HTTP 路由（Phase 3.5 Step 2-D 新增）。
     PluginService.authenticate()
         ↓
     PluginWorkspace（Depends 注入到所有受保护端点）
+
+无鉴权端点（刻意如此，不是遗漏）：
+    - POST /plugins/register：取得凭证的唯一入口，鉴权在逻辑上不可能前置；
+    - GET /plugins/model-providers：provider_catalog() 返回的是**静态厂商公开预设**
+      （id / label / base_url / default_model / send_dimensions，base_url 全部是
+      厂商官方域名），不含任何 Workspace 数据与凭证，也不碰 DB / 网络，因此无泄露面
+      与放大面；扩展端以 `auth: false` 在模型配置表单里读取它。
+      若后续往 ProviderPreset 序列化里新增字段，必须保证仍不含凭证
+      （test_plugin_api.py 的目录用例已按字段白名单钉住这一点）。
 
 分层边界：
     - Router 不写业务规则：plugin_name 校验 / API Key 验证 / 查重 / 删除前置确认
@@ -87,7 +97,11 @@ def _model_config_response(
 
 @router.get("/model-providers")
 def get_model_providers() -> dict[str, list[dict[str, object]]]:
-    """返回不含凭证的内置服务商预设；自定义兼容端点也始终可用。"""
+    """返回不含凭证的内置服务商预设；自定义兼容端点也始终可用。
+
+    刻意不加 Depends(get_current_plugin)：内容是静态厂商公开目录，扩展端在填写
+    模型配置时以 `auth: false` 读取。依据与约束见模块 docstring「无鉴权端点」段。
+    """
     return provider_catalog()
 
 

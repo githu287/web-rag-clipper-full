@@ -23,6 +23,10 @@ Plugin API 集成测试（Phase 3.5 Step 2-D 新增）。
     API Key：配置 200 / 响应不含 Key / 非法格式 422 / 删除 204 /
              删除后 configured=false / ApiKeyNotConfiguredError → 409
     Delete：confirm=false 400 / name 不匹配 400 / 正确确认 204
+    Model Providers（后续多服务商配置阶段新增）：无鉴权直接 200 / 每项字段白名单
+                       （id / label / base_url / default_model / send_dimensions，
+                       即公开目录不得含任何凭证）
+    Model Config：PUT 保存后 GET 读回 / 两个方向的响应都不含 api_key
 """
 
 import unittest
@@ -331,11 +335,20 @@ class PluginApiTest(unittest.TestCase):
         )
 
     def test_model_provider_catalog(self) -> None:
+        # 无鉴权端点：不带任何 Plugin Header 必须 200（扩展端 auth: false 依赖该契约）
         response = self.client.get("/plugins/model-providers")
         self.assertEqual(response.status_code, 200)
-        llm_ids = {item["id"] for item in response.json()["llm"]}
+        body = response.json()
+        llm_ids = {item["id"] for item in body["llm"]}
         self.assertIn("deepseek", llm_ids)
         self.assertIn("openrouter", llm_ids)
+        # 公开目录的唯一泄露面是「以后新增字段」，因此按白名单钉死每项的键集合
+        for category in ("embedding", "llm"):
+            for item in body[category]:
+                self.assertEqual(
+                    set(item),
+                    {"id", "label", "base_url", "default_model", "send_dimensions"},
+                )
 
     def test_update_and_get_model_config_never_returns_keys(self) -> None:
         payload = {
