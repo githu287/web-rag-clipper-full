@@ -1,5 +1,5 @@
 """
-Web Clip API Schema 单元测试（Phase 3.1 Step 3）。
+Web Clip API 测试（Phase 3.1 Step 3 Schema 校验 + POST /clips HTTP 级覆盖）。
 
 覆盖用例（对应 Step 3 §十 测试要求 8~9 及契约）：
   A. WebClipRequest：url / raw_text 必填（缺字段 → ValidationError）。
@@ -10,18 +10,35 @@ Web Clip API Schema 单元测试（Phase 3.1 Step 3）。
   F. title=None / 缺省 → 合法。
   G. extra 字段（如 source_type）→ ValidationError（extra="forbid"，
      禁止客户端伪造 source_type，与 WebClip 契约一致）。
-  H. WebClipResponse 全字段组装（12 字段契约校验）。
+  H. WebClipResponse 全字段组装（8 字段契约校验）。
   I. WebClipRequest 合法示例正常解析。
 
-技术栈：Pydantic v2 模型直接校验（无需 TestClient / 数据库）。
+HTTP 级覆盖（WebClipApiTest，补优化 #24b/#24c 遗留的同步剪藏入口缺口）：
+  1. 201 成功：来源元数据 8 字段透传 + clip() 收到的 kwargs（含 plugin_id /
+     解密后的 api_key）与 decrypt_api_key 调用一次。
+  2. DocumentQuotaExceededError → 429（type / 中文 detail 原样透传给扩展端）。
+  3. 缺 X-Plugin-ID / X-Plugin-Secret → 401 且不进入剪藏链路。
+  4. 客户端伪造 source_type → 422（extra="forbid" 在 HTTP 边界同样生效）。
+
+技术栈：A~I 为 Pydantic v2 模型直接校验（无需 TestClient / 数据库）；
+WebClipApiTest 用 FastAPI TestClient + dependency_overrides 替换
+get_web_clip_service / get_plugin_service，并以
+patch("backend.main.get_milvus_initializer") 阻断 lifespan 的真实 Milvus 连接，
+不连 MySQL / Milvus / 百炼 / Redis。
 """
 
 from __future__ import annotations
 
 import unittest
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock, patch
 
+from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
+from backend.core.di import get_plugin_service, get_web_clip_service
+from backend.core.exceptions import DocumentQuotaExceededError
+from backend.main import create_app
 from backend.models.document_api_schema import WebClipRequest, WebClipResponse
 
 _VALID_URL = "https://example.com/article/1"
@@ -198,6 +215,134 @@ class WebClipResponseTest(unittest.TestCase):
                 title=None,
                 url=_VALID_URL,
             )
+
+
+class WebClipApiTest(unittest.TestCase):
+    """同步 POST /clips 的 HTTP 级测试（路由装配 + 状态码映射 + 认证边界）。"""
+
+    def setUp(self) -> None:
+        """隔离 app + fake WebClipService；不连 MySQL / Milvus / 百炼 / Redis。"""
+        self._milvus_init_patcher = patch("backend.main.get_milvus_initializer")
+        self.mock_initializer = Mock()
+        self.mock_initializer.initialize.return_value = None
+        self._milvus_init_patcher.start().return_value = self.mock_initializer
+
+        self.fake_plugin = SimpleNamespace(plugin_id="plugin-42")
+        self.fake_plugin_service = Mock()
+        self.fake_plugin_service.authenticate.return_value = self.fake_plugin
+        self.fake_plugin_service.decrypt_api_key.return_value = "sk-plugin"
+
+        # clip() 是 async，路由里被 await → 必须是 AsyncMock。
+        self.fake_web_clip_service = Mock()
+        self.fake_web_clip_service.clip = AsyncMock()
+
+        self.app = create_app()
+        self.app.dependency_overrides[get_plugin_service] = (
+            lambda: self.fake_plugin_service
+        )
+        self.app.dependency_overrides[get_web_clip_service] = (
+            lambda: self.fake_web_clip_service
+        )
+        # 刻意不覆盖 get_current_plugin：真实依赖在 header 缺失时先抛
+        # PluginCredentialsMissingError（deps.py），之后才调 authenticate(Mock)。
+        self.client = TestClient(self.app)
+
+    def tearDown(self) -> None:
+        self._milvus_init_patcher.stop()
+        self.app.dependency_overrides.clear()
+
+    @staticmethod
+    def _headers() -> dict[str, str]:
+        return {"X-Plugin-ID": "plugin-42", "X-Plugin-Secret": "secret"}
+
+    @staticmethod
+    def _payload(**overrides) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "url": _VALID_URL,
+            "title": "示例文章",
+            "raw_text": _VALID_TEXT,
+        }
+        payload.update(overrides)
+        return payload
+
+    def _make_document(self) -> Mock:
+        return Mock(
+            id=123,
+            filename="webclip.txt",
+            status="SUCCESS",
+            chunk_count=3,
+            error_message=None,
+            title="示例文章",
+            url=_VALID_URL,
+            source_type="webpage",
+        )
+
+    # ------------------------------------------------------- 1. 201 成功
+    def test_clip_success_201(self) -> None:
+        """1：正常剪藏 → 201，来源元数据 8 字段原样透传。"""
+        self.fake_web_clip_service.clip.return_value = self._make_document()
+
+        response = self.client.post("/clips", json=self._payload(), headers=self._headers())
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(
+            response.json(),
+            {
+                "id": 123,
+                "filename": "webclip.txt",
+                "status": "SUCCESS",
+                "chunk_count": 3,
+                "error_message": None,
+                "title": "示例文章",
+                "url": _VALID_URL,
+                "source_type": "webpage",
+            },
+        )
+        self.fake_plugin_service.decrypt_api_key.assert_called_once_with(self.fake_plugin)
+        self.fake_web_clip_service.clip.assert_called_once_with(
+            url=_VALID_URL,
+            raw_text=_VALID_TEXT,
+            title="示例文章",
+            plugin_id="plugin-42",
+            api_key="sk-plugin",
+        )
+
+    # ------------------------------------- 2. 配额超限 → 429（#24b 写入侧）
+    def test_clip_quota_exceeded_429(self) -> None:
+        """2：WebClipService 抛 DocumentQuotaExceededError → 429，中文 detail 透传。"""
+        self.fake_web_clip_service.clip.side_effect = DocumentQuotaExceededError(
+            "知识库文档数已达上限（188 篇），请先删除部分文档后再剪藏"
+        )
+
+        response = self.client.post("/clips", json=self._payload(), headers=self._headers())
+
+        self.assertEqual(response.status_code, 429)
+        body = response.json()
+        self.assertEqual(body["type"], "DocumentQuotaExceededError")
+        # 扩展端 parseErrorMessage 直接展示 detail，因此文案必须原样出现在响应里
+        self.assertIn("已达上限", body["detail"])
+
+    # --------------------------------------------------- 3. 缺凭证 → 401
+    def test_clip_without_credentials_401(self) -> None:
+        """3：不带 X-Plugin-ID / X-Plugin-Secret → 401，且不进入剪藏链路。"""
+        response = self.client.post("/clips", json=self._payload())
+
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(response.json()["type"], "PluginCredentialsMissingError")
+        self.fake_web_clip_service.clip.assert_not_called()
+        self.fake_plugin_service.decrypt_api_key.assert_not_called()
+
+    # ------------------------------------- 4. 伪造 source_type → 422
+    def test_clip_rejects_forged_source_type_422(self) -> None:
+        """4：extra="forbid" 在 HTTP 边界同样生效，客户端无法指定来源类型。"""
+        response = self.client.post(
+            "/clips",
+            json=self._payload(source_type="upload"),
+            headers=self._headers(),
+        )
+
+        self.assertEqual(response.status_code, 422)
+        self.fake_web_clip_service.clip.assert_not_called()
 
 
 if __name__ == "__main__":
