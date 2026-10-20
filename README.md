@@ -241,6 +241,7 @@ MySQL 是文档状态和归属的权威来源；Milvus 只保存向量检索所�
 | `BAILIAN_LLM_MODEL` | `qwen-plus` | 旧版单 Key 配置的问答模型 |
 | `BAILIAN_EMBEDDING_TIMEOUT_SECONDS` / `BAILIAN_LLM_TIMEOUT_SECONDS` | `30` / `60` | 百炼单次请求超时；替代 openai SDK 的 600 秒默认值 |
 | `BAILIAN_LLM_MAX_TOKENS` | `2048` | 问答单次回答输出 token 硬上限；命中上限时返回被截断并记录 WARNING |
+| `BAILIAN_MAX_RETRIES` | `2` | openai SDK 自动重试次数（默认与 SDK 自身默认值一致，不配置即行为不变）；单请求最坏耗时约 `timeout × (max_retries + 1)`，调小失败更快但减弱 429 限流吸收 |
 | `EMBEDDING_BATCH_SIZE` | `10` | 配置校验上限也是 10 |
 | `UPLOAD_DIR` | `uploads` | 上传文件存储目录 |
 | `CHUNK_SIZE` / `CHUNK_OVERLAP` | `700` / `100` | 字符级递归切块参数 |

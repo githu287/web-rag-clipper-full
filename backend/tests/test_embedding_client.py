@@ -293,6 +293,7 @@ class EmbeddingClientUserKeyTest(unittest.TestCase):
             api_key="sk-user-a",
             base_url="https://example.com/v1",
             timeout=30,
+            max_retries=2,
         )
 
     def test_client_timeout_comes_from_settings(self) -> None:
@@ -306,6 +307,22 @@ class EmbeddingClientUserKeyTest(unittest.TestCase):
         client._get_client("sk-user-a")  # noqa: SLF001
         _, kwargs = self.mock_openai_cls.call_args
         self.assertEqual(kwargs["timeout"], 7)
+
+    def test_client_max_retries_comes_from_settings(self) -> None:
+        """重试次数必须是 Settings 单源；0（禁用 SDK 重试）要能原样传进客户端。"""
+        client = EmbeddingClient(
+            _make_settings(
+                bailian_api_key="server-key",
+                bailian_max_retries=0,
+            )
+        )
+        client._get_client("sk-user-a")  # noqa: SLF001
+        _, kwargs = self.mock_openai_cls.call_args
+        self.assertEqual(kwargs["max_retries"], 0)
+
+    def test_default_max_retries_is_unchanged(self) -> None:
+        """默认钉在 2（当前 openai SDK 的默认值）；改这个数就等于改失败语义，必须是有意的。"""
+        self.assertEqual(Settings(_env_file=None).bailian_max_retries, 2)
 
     def test_missing_api_key_raises_config_error(self) -> None:
         """F6-B：api_key=None → EmbeddingConfigError，且不构造 OpenAI。"""
@@ -412,7 +429,10 @@ class EmbeddingClientUserKeyTest(unittest.TestCase):
         )
         self.client._get_client(credentials)
         self.mock_openai_cls.assert_called_once_with(
-            api_key="embedding-key", base_url="https://embedding.example/v1", timeout=30
+            api_key="embedding-key",
+            base_url="https://embedding.example/v1",
+            timeout=30,
+            max_retries=2,
         )
 
 

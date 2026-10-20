@@ -181,16 +181,20 @@ class EmbeddingClient:
             )
 
         logger.info(
-            "初始化 Embedding OpenAI 兼容客户端：provider=%s, base_url=%s, model=%s, timeout=%ss",
+            "初始化 Embedding OpenAI 兼容客户端：provider=%s, base_url=%s, model=%s, "
+            "timeout=%ss, max_retries=%s",
             endpoint.provider,
             base_url,
             model,
             self._settings.bailian_embedding_timeout_seconds,
+            self._settings.bailian_max_retries,
         )
         client = OpenAI(
             api_key=effective_key,
             base_url=base_url,
             timeout=self._settings.bailian_embedding_timeout_seconds,
+            # 默认 2 = SDK 自身默认值；收紧会同时减少 429 限流吸收，故交运维配置而非硬编码
+            max_retries=self._settings.bailian_max_retries,
         )
         with self._clients_lock:
             self._clients[client_key] = client

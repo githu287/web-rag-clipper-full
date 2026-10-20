@@ -320,6 +320,13 @@ class BailianLLMClientUserKeyTest(unittest.TestCase):
         _, kwargs = self.mock_openai_cls.call_args
         self.assertEqual(kwargs["timeout"], 9)
 
+    def test_client_max_retries_comes_from_settings(self) -> None:
+        """重试次数同样必须是 Settings 单源；0（禁用 SDK 重试）要能原样传进构造。"""
+        client = BailianLLMClient(_make_settings(bailian_max_retries=0))
+        client.generate("s", "u", api_key="sk-user-a")
+        _, kwargs = self.mock_openai_cls.call_args
+        self.assertEqual(kwargs["max_retries"], 0)
+
     def test_missing_api_key_raises_config_error(self) -> None:
         """F6-B：api_key 缺失 → LLMClientConfigError，不构造 OpenAI。"""
         with self.assertRaises(LLMClientConfigError) as ctx:
@@ -413,7 +420,10 @@ class BailianLLMClientUserKeyTest(unittest.TestCase):
         )
         self.client.generate("s", "u", api_key=credentials)
         self.mock_openai_cls.assert_called_once_with(
-            api_key="llm-key", base_url="https://chat.example/v1", timeout=60
+            api_key="llm-key",
+            base_url="https://chat.example/v1",
+            timeout=60,
+            max_retries=2,
         )
         call = self.mock_client.chat.completions.create.call_args
         self.assertEqual(call.kwargs["model"], "chat-model")

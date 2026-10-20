@@ -43,6 +43,12 @@ _DEFAULT_BAILIAN_LLM_TIMEOUT_SECONDS: Final[int] = 60
 # 2048 足够容纳 Context 4000 字符内的简洁回答，正常链路不会触发截断。
 _DEFAULT_BAILIAN_LLM_MAX_TOKENS: Final[int] = 2048
 
+# 百炼客户端的 openai SDK 自动重试次数（与 .env.example 的 BAILIAN_MAX_RETRIES 对齐）。
+# 默认 2 与 SDK 自身的 DEFAULT_MAX_RETRIES 一致 → 不配置时行为完全不变。
+# 重试对超时与连接错误生效（含 429 限流），每次重试都会重新占用一次 timeout，
+# 故单请求最坏耗时约 timeout × (max_retries + 1)：调小可更快失败，但限流吸收随之减弱。
+_DEFAULT_BAILIAN_MAX_RETRIES: Final[int] = 2
+
 # 百炼 text-embedding-v3 单次请求最大行数硬限制为 10（.env.example L42 注释明确）
 _DEFAULT_EMBEDDING_BATCH_SIZE: Final[int] = 10
 _EMBEDDING_BATCH_SIZE_MAX: Final[int] = 10
@@ -139,6 +145,14 @@ class Settings(BaseSettings):
         default=_DEFAULT_BAILIAN_LLM_MAX_TOKENS,
         ge=1,
         description="百炼 LLM 单次回答输出 token 硬上限；达到上限时返回会被截断并记录告警",
+    )
+    bailian_max_retries: int = Field(
+        default=_DEFAULT_BAILIAN_MAX_RETRIES,
+        ge=0,
+        description="百炼 Embedding/LLM 客户端的 openai SDK 自动重试次数（默认 2 与 SDK "
+                    "默认值相同，即不配置时行为不变）；对超时与连接错误生效，也是 429 限流"
+                    "的吸收次数。单请求最坏耗时约 timeout × (max_retries + 1)；0 表示禁用"
+                    " SDK 重试、由调用方自行决定是否重试",
     )
 
     # ---- 认证体系（Phase 3.4 Step D 新增）----
