@@ -31,7 +31,8 @@ async function handleUrlChanged(tabId, url, title) {
   if (!isHttpUrl(url)) return;
   const updated = await sessionStore.updateTabBinding(tabId, function (binding) {
     if (isSameNormalizedUrl(binding.pageUrl, url) && !binding.stale) {
-      // 只有 fragment / 跟踪参数变化时保留 Document 绑定，但更新展示 URL。
+      // 只有页内锚点 / 跟踪参数变化时保留 Document 绑定，但更新展示 URL；
+      // 哈希路由（`#/...`）的变化已是不同页面，会走下面的失效分支。
       return Object.assign({}, binding, {
         pageUrl: url,
         pageTitle: typeof title === "string" && title ? title : binding.pageTitle,

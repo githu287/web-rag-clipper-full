@@ -20,6 +20,55 @@ class NormalizeWebUrlTest(unittest.TestCase):
             "https://example.com/article?id=7",
         )
 
+    def test_keeps_route_fragment_so_spa_routes_stay_distinct(self) -> None:
+        """哈希路由 SPA 的不同页面只在 `#/...` 里：剥掉会让后一次剪藏覆盖上一篇。"""
+        self.assertEqual(
+            normalize_web_url("https://spa.example/#/users/1"),
+            "https://spa.example/#/users/1",
+        )
+        self.assertEqual(
+            normalize_web_url("https://spa.example/#/detail?id=7"),
+            "https://spa.example/#/detail?id=7",
+        )
+        self.assertNotEqual(
+            normalize_web_url("https://spa.example/#/users/1"),
+            normalize_web_url("https://spa.example/#/users/2"),
+        )
+
+    def test_plain_anchor_is_still_stripped(self) -> None:
+        """历史剪藏存的是无 fragment 的 URL，锚点必须照旧剥掉才不会重剪变新建。"""
+        self.assertEqual(
+            normalize_web_url("https://example.com/docs/page#section-2"),
+            "https://example.com/docs/page",
+        )
+        self.assertEqual(
+            normalize_web_url("https://example.com/docs/page#"),
+            "https://example.com/docs/page",
+        )
+
+    def test_legacy_route_prefix_folds_into_canonical_form(self) -> None:
+        """`#!/x` 与 `#/x` 是同一条路由的两种写法，必须落到同一个文档键上。"""
+        self.assertEqual(
+            normalize_web_url("https://spa.example#!/legacy/list"),
+            "https://spa.example/#/legacy/list",
+        )
+        self.assertEqual(
+            normalize_web_url("https://spa.example/#!/legacy/list"),
+            normalize_web_url("https://spa.example/#/legacy/list"),
+        )
+
+    def test_non_ascii_route_fragment_is_percent_encoded_like_browser(self) -> None:
+        """扩展端交给后端的是编码后的键，后端必须编成同一串字符才能命中复用。"""
+        self.assertEqual(
+            normalize_web_url("https://spa.example/#/用户/1"),
+            "https://spa.example/#/%E7%94%A8%E6%88%B7/1",
+        )
+
+    def test_route_fragment_counts_toward_length_limit(self) -> None:
+        """Document.url 列宽 2048：保留路由后超限必须拒绝，不能截断成两个键。"""
+        with self.assertRaisesRegex(ValueError, "at most 2048"):
+            normalize_web_url("https://spa.example/" + "#" + "/r" * 1100)
+
     def test_preserves_non_tracking_query_order_and_blank_values(self) -> None:
         self.assertEqual(
             normalize_web_url("https://example.com/search?b=2&a=&b=3"),

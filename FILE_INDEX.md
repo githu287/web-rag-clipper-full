@@ -41,7 +41,7 @@
 | `backend/core/di.py` | Repository、Client、Service 和存储组件的 DI 工厂 |
 | `backend/core/exceptions.py` | Document、Plugin、Security、Milvus 等领域异常 |
 | `backend/core/security.py` | AES-256-GCM、SHA-256、Plugin ID/Secret 工具 |
-| `backend/core/url_normalization.py` | HTTP(S) URL 校验、跟踪参数清理与网页身份规范化 |
+| `backend/core/url_normalization.py` | HTTP(S) URL 校验、跟踪参数清理、网页身份规范化（保留哈希路由 `#/...`，剥普通锚点） |
 
 ### Models 与契约
 
@@ -122,7 +122,7 @@
 | `backend/tests/test_llm_client.py` | LLM 参数、响应、异常包装与缓存淘汰 |
 | `backend/tests/test_model_provider.py` | 服务商预设、端点安全、配置加密兼容与向量空间切换保护 |
 | `backend/tests/test_security.py` | AES-GCM、哈希、随机凭证与篡改检测 |
-| `backend/tests/test_url_normalization.py` | URL 规范化、跟踪参数和非法 URL 边界 |
+| `backend/tests/test_url_normalization.py` | URL 规范化、跟踪参数、哈希路由 fragment 策略（与 `url-utils.test.js` 共享向量）和非法 URL 边界 |
 | `backend/tests/test_milvus_repository.py` | Milvus 搜索 limit/ef 参数在连接前校验 |
 | `backend/tests/test_document_repository.py` | CRUD、筛选、分页和 Workspace 隔离 |
 | `backend/tests/test_plugin_repository.py` | Plugin Repository 数据契约 |

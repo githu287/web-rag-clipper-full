@@ -183,7 +183,7 @@ Side Panel 注入 extractor.js + content.js
   → 预览/编辑 + 提取诊断 → 用户确认
   → POST /clips/async → MySQL Job(QUEUED) + Redis payload/queue → 202
   → Worker: processing list → Job(RUNNING)
-  → 规范化 URL（移除 fragment / 跟踪参数 / 默认端口）
+  → 规范化 URL（移除页内锚点 / 跟踪参数 / 默认端口，保留哈希路由 `#/...`）
   → 按 (plugin_id, normalized_url) 查询既有网页
   → 新建或复用 Document
   → Chunker → Embedding → Milvus
@@ -191,7 +191,7 @@ Side Panel 注入 extractor.js + content.js
   → Job(SUCCEEDED, document_id) → ack + 删除 payload
 ```
 
-网页文档固定使用 `filename=webclip.txt`，不写本地文件。后端会在查重前移除 URL fragment、默认端口和 `utm_*` / `fbclid` / `gclid` 等跟踪参数。同一 Workspace、同一规范化 URL 的失败文档可原位重试；不同 Workspace 的相同 URL 相互独立。
+网页文档固定使用 `filename=webclip.txt`，不写本地文件。后端会在查重前移除 URL 页内锚点、默认端口和 `utm_*` / `fbclid` / `gclid` 等跟踪参数；唯一的例外是路由型 fragment（`#/...`，旧写法 `#!/...` 会先归一）——哈希路由站点的不同页面只体现在这里，一并剥掉会把 `#/users/1` 与 `#/users/2` 折叠成同一篇文档，后一次剪藏原位覆盖上一篇的分块与向量。同一 Workspace、同一规范化 URL 的失败文档可原位重试；不同 Workspace 的相同 URL 相互独立。
 
 Worker 使用 Redis 待处理列表和 processing 列表实现确认语义。执行正文解析前，在一个 MySQL 事务内领取文档、绑定 `job.document_id` 并设置 `stage=PROCESSING_DOCUMENT`。恢复中断任务时，同一事务释放该任务占用的 `PROCESSING` 文档为 `FAILED`，并把 Job 置回 `QUEUED`，之后才搬运 Redis 队列。失败任务同样只释放自己领取的文档，不影响竞争中的其他操作。任务写入终态后才确认队列。Redis payload 不包含用户 API Key，Worker 执行时才解密当前 Key。
 

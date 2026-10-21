@@ -55,7 +55,14 @@
           return quotePlus(key) + "=" + quotePlus(itemValue);
         }).join("&")
       : "";
-    url.hash = "";
+    // 与后端一致：只保留路由型 fragment（`#/...`，旧写法 `#!/x` 归一成 `#/x`），
+    // 普通页内锚点剥掉。规则源见 backend/core/url_normalization.py，两侧共享
+    // 同一组测试向量（url-utils.test.js ↔ test_url_normalization.py）。
+    let fragment = url.hash.slice(1);
+    if (fragment.startsWith("!/")) {
+      fragment = fragment.slice(1);
+    }
+    url.hash = fragment.startsWith("/") ? "#" + fragment : "";
     return url.toString();
   }
 

@@ -28,15 +28,30 @@ _TRACKING_QUERY_KEYS = frozenset(
     }
 )
 
+# 路由型 fragment 判定：哈希路由 SPA 的不同页面只体现在 `#/...` 里，剥掉会把
+# `#/users/1` 与 `#/users/2` 折叠成同一身份，后一次剪藏原位覆盖上一篇；普通页内
+# 锚点（`#part`）仍剥掉。旧写法 `#!/x` 归一成 `#/x`——两侧本来就都会原样保留它，
+# 归一的理由是让同一条路由的两种写法共享一个文档键。规则须与 url-utils.js 一致，
+# 两侧共享测试向量。
+_ROUTE_FRAGMENT_PREFIX = "/"
+_LEGACY_ROUTE_FRAGMENT_PREFIX = "!/"
+
 
 def normalize_web_url(value: str) -> str:
     """Return a stable HTTP(S) URL suitable for webpage identity matching.
 
-    The transformation is intentionally conservative: it removes fragments and
-    well-known tracking parameters, lowercases the scheme/host, removes default
-    ports, and gives an empty path the canonical ``/`` form. Query parameter
-    order and non-tracking parameters are preserved because some sites treat
-    them as semantically significant.
+    The transformation is intentionally conservative: it removes well-known
+    tracking parameters, lowercases the scheme/host, removes default ports, and
+    gives an empty path the canonical ``/`` form. Query parameter order and
+    non-tracking parameters are preserved because some sites treat them as
+    semantically significant.
+
+    Fragments are stripped with one exception: a *route-like* fragment (one
+    starting with ``/``, where the legacy ``#!/x`` form folds into ``#/x``) is
+    kept, because hash-routing SPA pages differ only there and dropping it would
+    let ``#/users/2`` overwrite ``#/users/1``. Plain in-page anchors (``#part``)
+    stay stripped so documents already stored under a fragment-free URL keep
+    matching; a kept fragment counts toward the 2048-character limit.
     """
 
     raw = value.strip()
@@ -83,7 +98,16 @@ def normalize_web_url(value: str) -> str:
         safe="/:%@!$&'()*+,;=-._~",
     )
     query = urlencode(query_items, doseq=True)
-    normalized = urlunsplit((scheme, netloc, path, query, ""))
+    fragment = parts.fragment
+    if fragment.startswith(_LEGACY_ROUTE_FRAGMENT_PREFIX):
+        fragment = fragment[1:]
+    if fragment.startswith(_ROUTE_FRAGMENT_PREFIX):
+        # 浏览器 URL 解析器已把非 ASCII 路由预先百分号编码，这里必须同样编码，
+        # 否则后端与扩展端会对同一个页面算出两个不同的键。
+        fragment = quote(fragment, safe="/:%@!$&'()*+,;=?-._~")
+    else:
+        fragment = ""
+    normalized = urlunsplit((scheme, netloc, path, query, fragment))
     if len(normalized) > 2048:
         raise ValueError("normalized web URL must be at most 2048 characters")
     return normalized
