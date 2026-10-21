@@ -262,7 +262,7 @@ MySQL 是文档状态和归属的权威来源；Milvus 只保存向量检索所�
 .venv\Scripts\python.exe -m pytest -q
 ```
 
-测试默认不加载个人 `.env`，数据库单元测试使用 SQLite，模型和 Milvus 使用替身。运行 `pytest` 获取当前结果；新增 `backend/tests/test_ingest_reliability.py` 覆盖越权写入、中断恢复、状态竞争、删除补偿及问答事件循环响应。
+测试默认不加载个人 `.env`，数据库单元测试使用 SQLite，模型和 Milvus 使用替身。运行 `pytest` 获取当前结果；新增 `backend/tests/test_ingest_reliability.py` 覆盖越权写入、中断恢复、状态竞争、删除补偿及问答事件循环响应。`backend/tests/test_error_contract.py` 用一张 39 行的表逐条实跑「异常类 → 状态码 → 响应体形状（`type`/`code`）」，并双向守门：新增异常处理器必须同时登记该表与 `ARCHITECTURE.md` 的状态码表。
 
 `requirements-dev.txt` 包含运行依赖和 pytest；仅部署运行环境时可安装 `backend/requirements.txt`。
 

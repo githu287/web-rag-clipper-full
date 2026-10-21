@@ -256,7 +256,7 @@ Workspace 删除要求 `confirm=true` 且提交名称与当前名称完全一致
 | 状态码 | 典型场景 |
 |---:|---|
 | 400 | 非法输入、路径穿越、API Key 验证失败、删除确认失败 |
-| 401 | Plugin Header 缺失或凭证无效 |
+| 401 | Plugin Header 缺失或凭证无效；`plugin_id` 在库中查不到同样返回 401，不泄露「该 ID 是否存在」的差异 |
 | 403 | Workspace 被禁用 |
 | 404 | 文档不存在或不属于当前 Workspace |
 | 409 | API Key 未配置、文档状态冲突、名称冲突 |
@@ -264,8 +264,11 @@ Workspace 删除要求 `confirm=true` 且提交名称与当前名称完全一致
 | 415 | 上传类型不支持 |
 | 422 | Pydantic/FastAPI 契约校验失败 |
 | 429 | Workspace 文档数达 `MAX_DOCUMENTS_PER_WORKSPACE`，拒绝新剪藏/上传 |
+| 500 | 切分异常、AES 解密与安全配置异常、文件读写或解析 IO 失败（非输入非法所致） |
 | 502 | Embedding 或 LLM 上游调用异常 |
-| 503 | MySQL/Milvus 操作异常 |
+| 503 | MySQL/Milvus 操作异常、异步入库队列不可用 |
+
+错误响应体统一为 `{"detail", "type"}`，`type` 是后端异常类名；只有异步入库任务族返回 `{"detail", "code"}`（`INGEST_JOB_NOT_FOUND` / `INGEST_JOB_CONFLICT` / `INGEST_QUEUE_UNAVAILABLE`）。扩展端 `api-client.js` 的 `classifyResponse` 按状态码 + `type` + `detail` 分类成 `ApiRequestError`；`code` 目前只在一处被读到——`isApiKeyNotConfiguredError` 用它把 IngestJob 族的 409 排除掉，UI 尚未按 `code` 分流。整张「异常类 → 状态码 → 响应体形状」映射由 `backend/tests/test_error_contract.py` 逐条实跑钉住，新增或调整 handler 必须同步登记该表和上面的状态码表。
 
 ## 10. 测试、可观测性与维护状态
 

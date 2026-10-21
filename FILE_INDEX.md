@@ -142,6 +142,7 @@
 | `backend/tests/test_document_upload_api.py` | 同步/异步 multipart 上传 API |
 | `backend/tests/test_web_clip_api.py` | Web Clip Schema 与响应 + 同步 `POST /clips` HTTP（201/429/401/422） |
 | `backend/tests/test_plugin_api.py` | Plugin Workspace API |
+| `backend/tests/test_error_contract.py` | 异常类 → 状态码 → 响应体形状（`type`/`code`）的表驱动契约与双向守门 |
 | `backend/tests/test_ingest_job_repository.py` | 任务状态机、原子 claim、恢复与归属 |
 | `backend/tests/test_ingest_job_service.py` | 入队失败补偿、payload 安全与重试上限 |
 | `backend/tests/test_ingest_job_api.py` | 异步提交、进度查询、重试和错误映射 |
