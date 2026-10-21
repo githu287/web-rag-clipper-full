@@ -18,8 +18,15 @@ class ApiRequestError extends Error {
   }
 }
 
+// 409「API Key 未配置」以结构化字段为准：后端该异常固定返回
+// type="ApiKeyNotConfiguredError"（backend/main.py handle_api_key_not_configured_error），
+// 该字段早于本文件存在，所以旧响应照样能命中。带 code 的 409 属 IngestJob 错误族，明确
+// 排除——否则任何 detail 里出现「API Key」的冲突响应都会被误判成未配置。
 function isApiKeyNotConfiguredError(data) {
-  return !!(data && typeof data.detail === "string" && /API\s?Key/i.test(data.detail));
+  if (!data) return false;
+  if (typeof data.type === "string") return data.type === "ApiKeyNotConfiguredError";
+  if (typeof data.code === "string") return false;
+  return typeof data.detail === "string" && /API\s?Key/i.test(data.detail);
 }
 
 function parseErrorMessage(data, fallback) {
@@ -151,7 +158,7 @@ const webRagApiClient = (() => {
       }
       throw new ApiRequestError(403, "DISABLED", "插件已被禁用，请联系管理员");
     }
-    // 409 + API Key 文案 → API Key 未配置
+    // 409 + 结构化 ApiKeyNotConfiguredError → 引导去设置里配置模型服务
     if (response.status === 409 && isApiKeyNotConfiguredError(data)) {
       throw new ApiRequestError(409, "API_KEY_NOT_CONFIGURED", "请前往设置配置模型服务");
     }

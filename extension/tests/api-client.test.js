@@ -185,6 +185,7 @@ async function expectApiError(promise, status, code, messagePattern) {
   }
 
   // ------------------------------------------------------- 409：API Key / 名称占用
+  // 以下两条走「无结构化字段」的文案兜底：响应既没有 type 也没有 code 时仍要识别得出。
   {
     const { api } = respondingWith(makeResponse(409, { detail: "API Key not configured" }));
     await expectApiError(api.request("/clips"), 409, "API_KEY_NOT_CONFIGURED", /配置模型服务/);
@@ -200,7 +201,13 @@ async function expectApiError(promise, status, code, messagePattern) {
   }
   {
     const { api } = respondingWith(
-      makeResponse(409, { type: "PluginNameTakenError", detail: "taken" }),
+      makeResponse(409, { type: "ApiKeyNotConfiguredError", detail: "后端换了文案" }),
+    );
+    await expectApiError(api.request("/clips"), 409, "API_KEY_NOT_CONFIGURED", /配置模型服务/);
+  }
+  {
+    const { api } = respondingWith(
+      makeResponse(409, { type: "PluginNameTakenError", detail: "API Key 无关的占用文案" }),
     );
     await expectApiError(
       api.request("/plugins/register", { method: "POST", auth: false }),
@@ -208,6 +215,12 @@ async function expectApiError(promise, status, code, messagePattern) {
       "PLUGIN_NAME_TAKEN",
       /已经被使用/,
     );
+  }
+  {
+    const { api } = respondingWith(
+      makeResponse(409, { code: "INGEST_JOB_CONFLICT", detail: "API Key 相关的冲突文案" }),
+    );
+    await expectApiError(api.request("/clips/async"), 409, "HTTP");
   }
 
   // ---------------------------------------------------------------- 422 校验
