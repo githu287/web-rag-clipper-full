@@ -151,7 +151,9 @@ Workspace 隔离不只依赖一个过滤点：
 
 ### 5.4 `ingest_jobs`
 
-`ingest_jobs` 持久化 `QUEUED → RUNNING → SUCCEEDED | FAILED` 状态机，包含 `stage`、`progress`、`attempt_count`、可选 `document_id`、错误摘要和开始/完成时间。Workspace 删除时通过外键级联清理任务；Document 删除时任务历史保留但 `document_id` 置空。
+`ingest_jobs` 持久化 `QUEUED → RUNNING → SUCCEEDED | FAILED` 状态机，包含 `stage`、`progress`、`attempt_count`、可选 `document_id`、错误摘要和开始/完成时间。`0011` 增加 JSON payload，任务与投递内容在同一事务中提交；成功时清除 payload，失败时保留以供重试。payload 不含模型凭证。Workspace 删除时通过外键级联清理任务；Document 删除时任务历史保留但 `document_id` 置空。
+
+API 和 Worker 都以 Redis Lua 脚本检查 pending/processing 列表并幂等投递。Redis 不可用时已提交任务保持 QUEUED 并返回 202；Worker 在任务边界每约 5 秒扫描 MySQL 补投，覆盖 API 提交后退出及 Redis 队列丢失的窗口。执行优先读取 MySQL payload，旧任务兼容读取 Redis；无法重建正文的旧网页任务不阻塞新任务的扫描。
 
 ## 6. 写入链路
 
@@ -238,6 +240,10 @@ POST /rag/ask
 当前不启用固定相似度拒答阈值。评测工具中的阈值分析是探索性结果，需在真实数据和所选 Embedding 模型上验证；错误前提问题可能需要检索证据来反驳，不能一律按无答案过滤。提示词约束也不代表已经验证了真实模型的拒答或抗指令干扰能力。
 
 ## 8. 删除与一致性
+
+`POST /documents` 仅创建虚拟元数据，客户端不得提交非空 `file_path`。上传路径仍由服务端生成；删除虚拟元数据跳过物理文件删除。对于历史记录，删除前若发现同一路径被其他文档引用，会保留文件并拒绝删除，需要先核对归属、清理错误的元数据引用。
+
+Embedding 配置保存和 Document 创建使用同一 Workspace 行锁。配置保存时在锁内重新检查文档；解密后的模型快照在创建/领取文档和执行查询前校验指纹，拒绝因并发模型切换而过期的凭证。旧百炼明文密钥解密后也包装为带模型端点的快照。
 
 ### 8.1 文档删除
 

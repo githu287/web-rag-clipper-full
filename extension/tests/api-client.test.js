@@ -101,7 +101,7 @@ async function expectApiError(promise, status, code, messagePattern) {
     const { api, calls } = respondingWith(makeResponse(200, { ok: true }));
     const result = await api.request("/plugins/me", { method: "GET" });
     assert.deepEqual(result.data, { ok: true });
-    assert.equal(calls[0].url, "http://localhost:18000/plugins/me");
+    assert.equal(calls[0].url, "http://localhost:18001/plugins/me");
     assert.equal(calls[0].init.headers["X-Plugin-ID"], "plugin-a");
     assert.equal(calls[0].init.headers["X-Plugin-Secret"], "secret-a");
   }
@@ -123,7 +123,7 @@ async function expectApiError(promise, status, code, messagePattern) {
     const { api, calls } = respondingWith(makeResponse(200, { id: 9 }));
     const data = await uploadVia(api);
     assert.deepEqual(data, { id: 9 });
-    assert.equal(calls[0].url, "http://localhost:18000/documents/upload");
+    assert.equal(calls[0].url, "http://localhost:18001/documents/upload");
     assert.equal(calls[0].init.method, "POST");
     const body = calls[0].init.body;
     assert.equal(body.entries.length, 1);

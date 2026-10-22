@@ -53,6 +53,7 @@ from ..chunkers import Chunker
 from ..core.exceptions import DocumentOperationError, DocumentQuotaExceededError
 from ..core.url_normalization import normalize_web_url
 from ..models.document import Document, DocumentSourceType, DocumentStatus
+from ..models.model_provider import embedding_claim_options
 from ..repositories.mysql import DocumentRepository
 from .document_ingest import DocumentIngestService
 
@@ -188,6 +189,7 @@ class WebClipService:
                 title=title,
                 url=normalized_url,
                 source_type=DocumentSourceType.WEBPAGE,
+                **embedding_claim_options(api_key),
             )
         else:
             if document.status in {
@@ -211,6 +213,7 @@ class WebClipService:
                 document.id, plugin_id,
                 {DocumentStatus.PENDING, DocumentStatus.SUCCESS, DocumentStatus.FAILED},
                 DocumentStatus.PROCESSING,
+                **embedding_claim_options(api_key),
             )
 
         # ------------------------------------------------------------------

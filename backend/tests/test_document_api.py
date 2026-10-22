@@ -122,7 +122,7 @@ class DocumentApiTest(unittest.TestCase):
         created = self._make_document(
             doc_id=1,
             filename="test.txt",
-            file_path="data/test.txt",
+            file_path="",
             status="PENDING",
             chunk_count=0,
         )
@@ -132,7 +132,7 @@ class DocumentApiTest(unittest.TestCase):
             "/documents",
             json={
                 "filename": "test.txt",
-                "file_path": "data/test.txt",
+                "file_path": "",
             },
         )
 
@@ -142,14 +142,14 @@ class DocumentApiTest(unittest.TestCase):
             {
                 "id": 1,
                 "filename": "test.txt",
-                "file_path": "data/test.txt",
+                "file_path": "",
                 "status": "PENDING",
                 "chunk_count": 0,
             },
         )
         self.fake_document_repo.create_document.assert_called_once_with(
             filename="test.txt",
-            file_path="data/test.txt",
+            file_path="",
             plugin_id="plugin-42",  # Phase 3.5 Step 2-E：归属 = 当前插件工作空间
         )
 
@@ -295,7 +295,7 @@ class DocumentApiTest(unittest.TestCase):
             "/documents",
             json={
                 "filename": "test.txt",
-                "file_path": "data/test.txt",
+                "file_path": "",
             },
         )
 

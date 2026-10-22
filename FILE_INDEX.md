@@ -86,6 +86,7 @@
 | `backend/repositories/mysql/plugin_impl.py` | SQLAlchemy Plugin Workspace Repository |
 | `backend/repositories/mysql/ingest_job_protocol.py` | 异步入库任务 Repository Protocol |
 | `backend/repositories/mysql/ingest_job_impl.py` | 任务创建、原子 claim、终态与崩溃恢复持久化 |
+| `backend/repositories/mysql/workspace_lock.py` | 模型配置与文档写入共享的 Workspace 行锁、Embedding 快照校验 |
 | `backend/repositories/milvus/__init__.py` | 导出 Milvus Protocol、实现与初始化器 |
 | `backend/repositories/milvus/protocol.py` | Milvus Repository Protocol |
 | `backend/repositories/milvus/impl.py` | pymilvus 查询、upsert、删除与搜索实现 |
@@ -144,7 +145,8 @@
 | `backend/tests/test_plugin_api.py` | Plugin Workspace API |
 | `backend/tests/test_error_contract.py` | 异常类 → 状态码 → 响应体形状（`type`/`code`）的表驱动契约与双向守门 |
 | `backend/tests/test_ingest_job_repository.py` | 任务状态机、原子 claim、恢复与归属 |
-| `backend/tests/test_ingest_job_service.py` | 入队失败补偿、payload 安全与重试上限 |
+| `backend/tests/test_ingest_job_service.py` | Redis 故障下的持久化接收、payload 安全与重试上限 |
+| `backend/tests/test_priority_fixes.py` | 文件归属、崩溃补投、缓存丢失、Embedding 切换交错与旧凭证回归 |
 | `backend/tests/test_ingest_job_api.py` | 异步提交、进度查询、重试和错误映射 |
 | `backend/tests/test_redis_ingest_queue.py` | Redis 原子入队、processing ack 与恢复 |
 | `backend/tests/test_ingest_worker.py` | Worker 成功、失败、重复投递、中断恢复与优雅停机 |
@@ -191,6 +193,7 @@
 | `alembic/versions/0008_documents_user_id_default.py` | 为旧 `user_id` 设置默认 0 |
 | `alembic/versions/0009_create_ingest_jobs.py` | 创建持久化异步入库任务表 |
 | `alembic/versions/0010_expand_model_config_ciphertext.py` | 扩展加密模型配置字段并增加 Embedding 指纹 |
+| `alembic/versions/0011_durable_ingest_payload.py` | 任务投递 payload 与状态扫描索引，支持可靠补投 |
 
 ## `evaluation/` — Retrieval 基线
 

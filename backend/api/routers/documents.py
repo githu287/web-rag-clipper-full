@@ -217,7 +217,7 @@ def create_document(
         3) 构造 DocumentResponse 返回。
 
     Args:
-        request: DocumentCreateRequest（filename / file_path 必填；
+        request: DocumentCreateRequest（filename 必填，file_path 只能省略或为空；
             plugin_id 已从 Schema 移除，归属 = current_plugin.plugin_id）。
         current_plugin: 当前插件工作空间（X-Plugin-ID + X-Plugin-Secret
             → PluginWorkspace；Phase 3.5 Step 2-D）。

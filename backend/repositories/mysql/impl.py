@@ -49,6 +49,7 @@ from ...core.exceptions import (
 )
 from ...models.document import Document, DocumentSourceType, DocumentStatus
 from ...models.ingest_job import IngestJob, IngestJobStatus
+from .workspace_lock import check_embedding_space, lock_workspace
 from .protocol import DocumentRepository, _UNSET
 
 
@@ -96,6 +97,8 @@ class DocumentRepositoryImpl(DocumentRepository):
         title: str | None = None,
         url: str | None = None,
         source_type: str | None = None,
+        *,
+        embedding_fingerprint: str | None = None,
     ) -> Document:
         """
         插入一条 Document 记录，返回 detached ORM 对象。
@@ -129,6 +132,7 @@ class DocumentRepositoryImpl(DocumentRepository):
             document.source_type = source_type
         try:
             with self._session_factory() as session:
+                check_embedding_space(lock_workspace(session, plugin_id), embedding_fingerprint)
                 session.add(document)
                 session.commit()
                 session.refresh(document)
@@ -311,11 +315,26 @@ class DocumentRepositoryImpl(DocumentRepository):
 
     def transition_status(
         self, document_id: int, plugin_id: str, expected: set[str], status: str,
+        *, embedding_fingerprint: str | None = None,
     ) -> Document:
         if status not in DocumentStatus.ALL or not expected or not expected <= DocumentStatus.ALL:
             raise ValueError("invalid document transition")
         try:
             with self._session_factory() as session:
+                if embedding_fingerprint is not None:
+                    check_embedding_space(lock_workspace(session, plugin_id), embedding_fingerprint)
+                if status == DocumentStatus.DELETING:
+                    # Preserve legacy files with ambiguous ownership, even when
+                    # old metadata rows predate the public path restriction.
+                    target = session.scalar(select(Document).where(
+                        Document.id == document_id, Document.plugin_id == plugin_id,
+                    ).with_for_update())
+                    if target is None:
+                        raise DocumentNotFoundError("document not found")
+                    if target.file_path and session.scalar(select(Document.id).where(
+                        Document.file_path == target.file_path, Document.id != document_id,
+                    ).limit(1)) is not None:
+                        raise DocumentOperationError("file has multiple document references; deletion refused")
                 result = session.execute(
                     update(Document).where(
                         Document.id == document_id, Document.plugin_id == plugin_id,
@@ -338,6 +357,13 @@ class DocumentRepositoryImpl(DocumentRepository):
                 return session.get(Document, document_id)
         except (OperationalError, IntegrityError, DBAPIError) as exc:
             raise DocumentOperationError("document transition failed") from exc
+
+    def validate_embedding_space(self, plugin_id: str, embedding_fingerprint: str) -> None:
+        try:
+            with self._session_factory() as session:
+                check_embedding_space(lock_workspace(session, plugin_id), embedding_fingerprint)
+        except DBAPIError as exc:
+            raise DocumentOperationError("validate embedding configuration failed") from exc
 
     # ----------------------------------------------------------- update_status
     def update_status(

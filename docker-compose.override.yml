@@ -1,0 +1,9 @@
+# Local development: upstream minio/minio images are no longer publicly available.
+# Use the locally verified PGSTY MinIO fork, pinned by release and digest.
+# Source: https://github.com/pgsty/silo
+services:
+  minio:
+    image: pgsty/minio:RELEASE.2026-03-25T00-00-00Z@sha256:a72bf37c235a83a73890d2a46c5b36801fed61c335175e0396070bf84a8bbb98
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin

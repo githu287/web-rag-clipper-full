@@ -129,7 +129,7 @@ class DocumentDeleteService:
         # webpage 剪藏不落盘（file_path=""），跳过 FileStorage，但仍删除
         # Milvus chunks 与 MySQL document 行（DELETE 保持 204 幂等）。
         try:
-            if document.source_type == DocumentSourceType.UPLOAD:
+            if document.source_type == DocumentSourceType.UPLOAD and document.file_path:
                 self._file_storage.delete(document.file_path)
         except Exception:
             # MySQL document 行必须保留，不允许直接删除 MySQL document

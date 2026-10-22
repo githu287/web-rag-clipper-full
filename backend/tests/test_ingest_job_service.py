@@ -44,21 +44,21 @@ class IngestJobServiceTest(unittest.TestCase):
         result = self.service.create_web_clip_job("plugin-a", request)
 
         self.assertIs(result, job)
-        payload = self.queue.enqueue.call_args.args[1]
+        payload = self.queue.ensure_enqueued.call_args.args[1]
+        self.assertEqual(self.repository.create_job.call_args.kwargs["payload"], payload)
         self.assertNotIn("api_key", payload)
         self.assertEqual(payload["raw_text"], "body")
         self.assertEqual(payload["plugin_id"], "plugin-a")
 
-    def test_enqueue_failure_marks_job_failed(self) -> None:
+    def test_enqueue_failure_leaves_durable_job_queued_for_reconciliation(self) -> None:
         job = make_job()
         self.repository.create_job.return_value = job
-        self.queue.enqueue.side_effect = IngestJobOperationError("redis down")
-        with self.assertRaises(IngestJobOperationError):
-            self.service.create_web_clip_job(
-                "plugin-a",
-                WebClipRequest(url="https://example.com/", raw_text="body"),
-            )
-        self.repository.mark_failed.assert_called_once_with(job.id, "redis down")
+        self.repository.get_job.return_value = job
+        self.queue.ensure_enqueued.side_effect = IngestJobOperationError("redis down")
+        self.assertIs(self.service.create_web_clip_job(
+            "plugin-a", WebClipRequest(url="https://example.com/", raw_text="body"),
+        ), job)
+        self.repository.mark_failed.assert_not_called()
 
     def test_create_file_upload_stores_only_document_reference(self) -> None:
         job = make_job()
@@ -74,8 +74,9 @@ class IngestJobServiceTest(unittest.TestCase):
             "plugin-a",
             IngestJobType.FILE_UPLOAD,
             document_id=73,
+            payload={"job_type": IngestJobType.FILE_UPLOAD, "plugin_id": "plugin-a", "document_id": 73},
         )
-        payload = self.queue.enqueue.call_args.args[1]
+        payload = self.queue.ensure_enqueued.call_args.args[1]
         self.assertEqual(
             payload,
             {
@@ -85,17 +86,15 @@ class IngestJobServiceTest(unittest.TestCase):
             },
         )
 
-    def test_file_upload_enqueue_failure_marks_job_failed(self) -> None:
+    def test_file_upload_enqueue_failure_preserves_prepared_document(self) -> None:
         job = make_job()
         job.job_type = IngestJobType.FILE_UPLOAD
         job.document_id = 73
         self.repository.create_job.return_value = job
-        self.queue.enqueue.side_effect = IngestJobOperationError("redis down")
-
-        with self.assertRaises(IngestJobOperationError):
-            self.service.create_file_upload_job("plugin-a", 73)
-
-        self.repository.mark_failed.assert_called_once_with(job.id, "redis down")
+        self.repository.get_job.return_value = job
+        self.queue.ensure_enqueued.side_effect = IngestJobOperationError("redis down")
+        self.assertIs(self.service.create_file_upload_job("plugin-a", 73), job)
+        self.repository.mark_failed.assert_not_called()
 
     def test_retry_enforces_state_and_limit(self) -> None:
         running = make_job(IngestJobStatus.RUNNING, attempts=1)

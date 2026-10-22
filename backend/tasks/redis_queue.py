@@ -21,6 +21,15 @@ class RedisIngestQueue:
     return 1
     """
 
+    _ENSURE_ENQUEUED = """
+    redis.call('SETEX', KEYS[1], ARGV[2], ARGV[3])
+    if redis.call('LPOS', KEYS[2], ARGV[1]) or redis.call('LPOS', KEYS[3], ARGV[1]) then
+        return 0
+    end
+    redis.call('LPUSH', KEYS[2], ARGV[1])
+    return 1
+    """
+
     def __init__(self, settings: Settings) -> None:
         self._queue_name = settings.ingest_queue_name
         self._processing_name = f"{settings.ingest_queue_name}:processing"
@@ -65,6 +74,18 @@ class RedisIngestQueue:
             raise
         except RedisError as exc:
             raise IngestJobOperationError("requeue ingest job failed") from exc
+
+    def ensure_enqueued(self, job_id: str, payload: dict[str, Any]) -> bool:
+        """Repair delivery atomically without duplicating pending/processing entries."""
+        try:
+            encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+            return bool(self._client.eval(
+                self._ENSURE_ENQUEUED, 3, self._payload_key(job_id),
+                self._queue_name, self._processing_name,
+                job_id, self._payload_ttl, encoded,
+            ))
+        except (RedisError, TypeError, ValueError) as exc:
+            raise IngestJobOperationError("deliver durable ingest job failed") from exc
 
     def dequeue(self, timeout_seconds: int = 5) -> str | None:
         try:

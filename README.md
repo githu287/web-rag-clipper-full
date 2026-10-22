@@ -54,7 +54,7 @@ FastAPI
 | 浏览器端 | Chrome Extension Manifest V3、Side Panel、原生 JavaScript |
 | 测试与评测 | pytest、150 条 Retrieval/隔离评测样本 |
 
-Redis 用于异步入库队列和临时 payload；MySQL `ingest_jobs` 是任务状态的权威来源。
+Redis 用于异步入库队列和临时 payload；MySQL `ingest_jobs` 同时保存任务状态与可重建投递的 payload。Redis 暂时不可用时，已提交任务仍返回 `202` 并保持排队，Worker 定期幂等补投；成功后清除正文 payload，失败时保留以供重试。payload 不含模型凭证。
 
 ### 支持的模型服务
 
@@ -92,6 +92,8 @@ docker compose ps
 
 Compose 会启动 MySQL、Redis、etcd、MinIO 和 Milvus。默认宿主端口如下：
 
+Compose 会自动合并 `docker-compose.override.yml`：原 `minio/minio` 镜像已无法公开拉取，本地开发改用固定版本和摘要的 PGSTY MinIO 分支镜像。当前机器的配置与验证结果见 [LOCAL_DEVELOPMENT.md](LOCAL_DEVELOPMENT.md)。
+
 | 服务 | 端口 |
 |---|---:|
 | MySQL | `33066` |
@@ -125,15 +127,15 @@ python -m pip install -r requirements-dev.txt
 alembic upgrade head
 ```
 
-当前 Alembic head 为 `0010`。该迁移会扩展加密配置字段，并为已有百炼配置补写 Embedding 指纹。
+当前 Alembic head 为 `0011`，新增持久化任务 payload 与排队扫描索引。升级时先停止 API/Worker，迁移后再启动；旧网页任务若只存在 Redis 中且正文已经丢失，无法由新字段凭空恢复，应在升级前处理完在途任务。
 
 ### 5. 启动 API
 
 ```powershell
-python -m uvicorn backend.main:app --host 0.0.0.0 --port 18000
+python -m uvicorn backend.main:app --host 127.0.0.1 --port 18001
 ```
 
-启动阶段会幂等初始化并加载 Milvus `page_chunks` Collection。打开 <http://localhost:18000/docs> 可查看和调用完整 API。
+启动阶段会幂等初始化并加载 Milvus `page_chunks` Collection。打开 <http://localhost:18001/docs> 可查看和调用完整 API。
 
 ### 6. 启动异步 Worker
 
@@ -143,7 +145,7 @@ python -m uvicorn backend.main:app --host 0.0.0.0 --port 18000
 python -m backend.workers.ingest_worker
 ```
 
-Worker 会初始化 Milvus，恢复上次意外中断且未确认的任务，然后阻塞等待 Redis 队列。当前按单 Worker 模式设计。
+Worker 会初始化 Milvus，恢复上次意外中断且未确认的任务，并每约 5 秒扫描 MySQL 排队任务、幂等补投 Redis。任务执行期间该扫描等待本次任务结束。当前按单 Worker 模式设计。
 
 停机方式有区别：`SIGTERM`（`systemctl stop`、`docker stop`、`kill <pid>`）会等当前任务收尾后再退出，正在入库的文档不会被拦腰截断；Ctrl+C（`SIGINT`）仍是立即中断。任何一种方式留下的未确认任务，都由下次启动时的恢复流程重新入队。
 
@@ -167,7 +169,7 @@ Worker 会初始化 Milvus，恢复上次意外中断且未确认的任务，然
 4. 选择仓库中的 `extension/` 目录。
 5. 点击扩展图标打开 Side Panel，创建 Workspace，在“模型配置”中分别选择 Embedding 与问答服务后即可剪藏和问答。
 
-若后端不在 `http://localhost:18000`，同时修改 `extension/config.js` 的 `API_BASE_URL` 与 `extension/manifest.json` 的 `host_permissions`。
+若后端不在 `http://localhost:18001`，同时修改 `extension/config.js` 的 `API_BASE_URL` 与 `extension/manifest.json` 的 `host_permissions`。
 
 ## 使用流程
 
@@ -195,7 +197,7 @@ Worker 会初始化 Milvus，恢复上次意外中断且未确认的任务，然
 | DELETE | `/plugins/me/api-key` | 清除模型配置 |
 | DELETE | `/plugins/me` | 双重确认后级联删除 Workspace 资源 |
 | GET | `/documents` | 分页列出文档；支持 keyword/status/source_type |
-| POST | `/documents` | 创建 `PENDING` 文档元数据 |
+| POST | `/documents` | 创建 `PENDING` 虚拟文档元数据；`file_path` 省略或为空，不接受本地路径 |
 | POST | `/documents/upload` | 上传并同步完成解析、切块与入库 |
 | POST | `/documents/upload/async` | 安全落盘文件、创建入库任务并返回 `202` |
 | GET | `/documents/{document_id}` | 获取当前 Workspace 的文档详情 |
@@ -314,7 +316,7 @@ python -c "import secrets; print(secrets.token_hex(16))"
 
 - 扩展的网页剪藏和文件上传已使用 Redis Worker 异步入库；旧 `/clips` 与 `/documents/upload` 兼容接口仍是同步。
 - Workspace 文档数配额（`MAX_DOCUMENTS_PER_WORKSPACE`）在提交入口校验：剪藏（同步与异步）和上传（同步与异步）达到上限时都直接返回 429，不再排入注定失败的任务；同一 URL 重新剪藏不占新额度。计数与创建之间没有事务串联，并发提交最多让该 Workspace 略超上限几篇；`/clips/async` 的提交预检只是准入提示，Worker 执行 `clip()` 时的那次检查才是创建 Document 前的权威闸口。
-- 当前 Worker 是单进程模式；启动时会恢复 Redis processing 列表中未确认的任务。
+- 当前 Worker 是单进程模式；启动时恢复 Redis processing 列表，并在任务边界定期补投 MySQL 中可恢复的排队任务。
 - 仅解析 UTF-8 文本和 Markdown；PDF、DOCX、OCR 尚未接入。
 - 扩展正文提取采用 DOM 候选评分和启发式清理；复杂 SPA、Shadow DOM、跨域 iframe、分页和登录墙仍可能提取不完整。
 - 会话历史保存在浏览器 `chrome.storage.local`，后端没有会话表。
@@ -327,7 +329,7 @@ python -c "import secrets; print(secrets.token_hex(16))"
 ```text
 backend/       FastAPI、业务服务、Repository、模型与测试
 extension/     Chrome/Edge Manifest V3 扩展
-alembic/       MySQL Schema 迁移（0001 → 0010）
+alembic/       MySQL Schema 迁移（0001 → 0011）
 evaluation/    Retrieval/隔离评测数据与工具
 uploads/       本地运行时上传目录（Git 忽略）
 ```

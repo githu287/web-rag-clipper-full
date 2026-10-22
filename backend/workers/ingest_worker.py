@@ -20,6 +20,7 @@ from ..core.exceptions import IngestJobNotFoundError, IngestJobOperationError
 from ..models.document_api_schema import WebClipRequest
 from ..models.ingest_job import IngestJobStatus, IngestJobType
 from ..models.plugin import PluginStatus
+from ..models.model_provider import embedding_claim_options
 from ..repositories.mysql.ingest_job_protocol import IngestJobRepository
 from ..repositories.mysql.plugin_protocol import PluginRepository
 from ..services.plugin_service import PluginService
@@ -63,7 +64,8 @@ class IngestWorker:
             self._acknowledge(job_id)
             return True
         try:
-            payload = self._queue.get_payload(job_id)
+            durable_payload = getattr(job, "payload", None)
+            payload = durable_payload if isinstance(durable_payload, dict) else self._queue.get_payload(job_id)
             if payload is None:
                 raise RuntimeError("ingest job payload is missing or expired")
             job_type = payload.get("job_type")
@@ -89,7 +91,7 @@ class IngestWorker:
                         raw_text=request.raw_text,
                         plugin_id=job.plugin_id,
                         api_key=api_key,
-                        claim_document=lambda document_id: self._repository.begin_document(job_id, document_id),
+                        claim_document=lambda document_id: self._repository.begin_document(job_id, document_id, **embedding_claim_options(api_key)),
                     )
                 )
             else:
@@ -105,7 +107,7 @@ class IngestWorker:
                         document_id=document_id,
                         plugin_id=job.plugin_id,
                         api_key=api_key,
-                        claim_document=lambda document_id: self._repository.begin_document(job_id, document_id),
+                        claim_document=lambda document_id: self._repository.begin_document(job_id, document_id, **embedding_claim_options(api_key)),
                     )
                 )
             self._repository.mark_succeeded(job_id, document.id)
@@ -130,6 +132,21 @@ class IngestWorker:
             logger.exception("failed to record ingest job failure: job_id=%s", job.id)
             return False
         return True
+
+    def dispatch_queued(self) -> int:
+        """Reconcile committed QUEUED jobs with Redis, including API crash gaps."""
+        delivered = 0
+        for job in self._repository.list_queued_jobs():
+            payload = job.payload
+            if not isinstance(payload, dict):
+                # Legacy file jobs can be rebuilt without their old Redis payload.
+                if job.job_type == IngestJobType.FILE_UPLOAD and job.document_id is not None:
+                    payload = {"job_type": job.job_type, "plugin_id": job.plugin_id,
+                               "document_id": job.document_id}
+                else:
+                    continue
+            delivered += self._queue.ensure_enqueued(job.id, payload)
+        return delivered
 
     def _acknowledge(self, job_id: str) -> None:
         try:
@@ -203,9 +220,13 @@ def main(stop: threading.Event) -> None:
     if recovered:
         logger.warning("recovered %s interrupted ingest jobs", recovered)
     logger.info("ingest worker started")
+    next_dispatch = 0.0
     try:
         while not stop.is_set():
             try:
+                if time.monotonic() >= next_dispatch:
+                    worker.dispatch_queued()
+                    next_dispatch = time.monotonic() + 5
                 worker.run_once(timeout_seconds=5)
             except Exception:
                 # 无论是 Redis / MySQL 短暂不可用，还是单个任务引发的意外异常，

@@ -235,6 +235,13 @@ def credentials_from_payload(payload: dict[str, object]) -> WorkspaceModelCreden
     return WorkspaceModelCredentials(parse("embedding"), parse("llm"))
 
 
+def embedding_claim_options(api_key: str | None) -> dict[str, str]:
+    """Carry the decrypted credential snapshot through document acquisition."""
+    if isinstance(api_key, WorkspaceModelCredentials):
+        return {"embedding_fingerprint": embedding_config_fingerprint(api_key.embedding)}
+    return {}
+
+
 def provider_catalog() -> dict[str, list[dict[str, object]]]:
     def serialize(preset: ProviderPreset) -> dict[str, object]:
         return {

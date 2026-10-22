@@ -16,7 +16,7 @@
 
 - API、MySQL 和 Milvus 已启动，目标文档均为 `SUCCESS`。
 - 两个评测 Workspace 使用相同的 Embedding 配置；切换模型后必须重新入库并重新对齐。
-- API 当前运行在 `http://localhost:18000`。`run_baseline.py` 的历史默认值仍是 8000，因此下面命令显式传入 `--base-url`。
+- API 当前运行在 `http://localhost:18001`。`run_baseline.py` 的历史默认值仍是 8000，因此下面命令显式传入 `--base-url`。
 - `evaluation/private/`、`aligned*/` 和 `reports/` 已被 `.gitignore` 排除。
 
 ## 1. 校验原始数据
@@ -93,7 +93,7 @@ python -m evaluation.validate_runtime_alignment `
 
 ```powershell
 python -m evaluation.run_baseline `
-  --base-url http://localhost:18000 `
+  --base-url http://localhost:18001 `
   --credentials evaluation/private/credentials.json `
   --dataset evaluation/aligned/rag_eval.jsonl `
   --dataset evaluation/aligned/negative_eval.jsonl `

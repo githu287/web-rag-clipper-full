@@ -62,6 +62,7 @@ from ..core.exceptions import (
     DocumentUnsupportedExtensionError,
 )
 from ..models.document import Document, DocumentSourceType, DocumentStatus
+from ..models.model_provider import embedding_claim_options
 from ..parsers import DocumentParser
 from ..repositories.mysql import DocumentRepository
 from ..storage import FileStorage
@@ -253,6 +254,7 @@ class DocumentUploadService:
                 document.id, plugin_id,
                 {DocumentStatus.PENDING, DocumentStatus.SUCCESS, DocumentStatus.FAILED},
                 DocumentStatus.PROCESSING,
+                **embedding_claim_options(api_key),
             )
         try:
             text = self._parser.parse(

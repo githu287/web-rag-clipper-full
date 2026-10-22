@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Final
 
-from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, Text, func, text
+from sqlalchemy import JSON, DateTime, ForeignKey, Index, Integer, String, Text, func, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .base import Base
@@ -30,6 +30,7 @@ class IngestJob(Base):
     __table_args__ = (
         Index("ix_ingest_jobs_plugin_status", "plugin_id", "status"),
         Index("ix_ingest_jobs_document_id", "document_id"),
+        Index("ix_ingest_jobs_status_created", "status", "created_at", "id"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
@@ -52,6 +53,8 @@ class IngestJob(Base):
         nullable=True,
     )
     job_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    # Durable delivery data; contains source content/references, never model credentials.
+    payload: Mapped[dict | None] = mapped_column(JSON(none_as_null=True), nullable=True)
     status: Mapped[str] = mapped_column(
         String(16),
         nullable=False,

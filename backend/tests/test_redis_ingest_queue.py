@@ -46,6 +46,19 @@ class RedisIngestQueueTest(unittest.TestCase):
             "test:ingest:processing", 1, "job-1"
         )
 
+    def test_durable_delivery_uses_one_atomic_deduplication_script(self) -> None:
+        self.client.eval.return_value = 1
+        self.assertTrue(self.queue.ensure_enqueued("job-1", {"plugin_id": "plugin-a"}))
+        args = self.client.eval.call_args.args
+        self.assertEqual(args[1:5], (3, "test:ingest:payload:job-1", "test:ingest", "test:ingest:processing"))
+        self.client.eval.return_value = 0
+        self.assertFalse(self.queue.ensure_enqueued("job-1", {"plugin_id": "plugin-a"}))
+
+    def test_durable_delivery_wraps_redis_failure(self) -> None:
+        self.client.eval.side_effect = RedisError("unavailable")
+        with self.assertRaises(IngestJobOperationError):
+            self.queue.ensure_enqueued("job-1", {"plugin_id": "plugin-a"})
+
     def test_enqueue_existing_requeues_atomically_when_payload_exists(self) -> None:
         self.client.eval.return_value = 1
 

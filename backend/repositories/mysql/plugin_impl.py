@@ -43,8 +43,11 @@ from sqlalchemy.orm import Session, sessionmaker
 from ...core.exceptions import (
     PluginNotFoundError,
     PluginOperationError,
+    ApiKeyValidationError,
 )
 from ...models.plugin import PluginStatus, PluginWorkspace
+from ...models.document import Document
+from .workspace_lock import lock_workspace
 from .plugin_protocol import PluginRepository
 
 
@@ -249,7 +252,16 @@ class PluginRepositoryImpl(PluginRepository):
         """
         try:
             with self._session_factory() as session:
-                plugin = self._get_by_plugin_id_in_session(session, plugin_id)
+                plugin = lock_workspace(session, plugin_id)
+                if plugin is None:
+                    raise PluginNotFoundError("plugin workspace not found")
+                if (
+                    embedding_config_fingerprint is not None
+                    and plugin.embedding_config_fingerprint is not None
+                    and plugin.embedding_config_fingerprint != embedding_config_fingerprint
+                    and session.scalar(select(Document.id).where(Document.plugin_id == plugin_id).limit(1)) is not None
+                ):
+                    raise ApiKeyValidationError("当前 Workspace 已有文档，不能直接更换 Embedding 配置；请先删除已有文档。")
                 plugin.api_key_ciphertext = api_key_ciphertext
                 plugin.api_key_nonce = api_key_nonce
                 if embedding_config_fingerprint is not None:
