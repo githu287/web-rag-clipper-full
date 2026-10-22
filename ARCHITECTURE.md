@@ -51,9 +51,9 @@
 - 提取器在 DOM 副本中移除脚本、导航、页脚、侧栏、推荐、分享、广告等噪声，并把标题、列表、引用、代码块、表格和图片替代文本序列化为结构化纯文本。
 - `content.js` 是消息入口和 SPA URL 监听层。Side Panel 在提交前展示标题、正文、字符数及提取诊断；用户可编辑、取消或重新提取。预览期间如果 Tab 或 URL 变化，草稿会失效，防止正文与来源错绑。
 - `url-utils.js` 为扩展的“已剪藏”检测提供 URL 规范化；最终写入与查重仍以后端 `normalize_web_url()` 为权威。
-- `api-client.js` 集中添加 Plugin Header、解析错误和处理 401。
+- `api-client.js` 集中添加 Plugin Header、解析错误和处理 401；计时覆盖响应头及正文，上传同样使用 AbortController。问答/检索/模型验证的预算从公开服务商目录读取，普通请求 30 秒、上传 120 秒；不自动重试，客户端超时不保证取消服务端处理。晚到的旧凭证 401 不会清除新的身份。
 - `session-store.js` 把会话、当前会话和 Tab 上下文存入 `chrome.storage.local`。
-- `sidepanel.js` 承担 Workspace 初始化、剪藏、知识库管理、问答和设置交互。
+- `sidepanel.js` 承担 Workspace 初始化、剪藏、知识库管理、问答和设置交互。问答固定保存到发起时的会话和页面快照，只有该会话仍在显示时才更新聊天区；身份清理后旧结果失效。
 - `popup.js` 提供轻量入口，并可引导用户打开 Side Panel。
 
 Plugin Secret 会保存在扩展本地存储以便认证，但不会写入聊天 Session、URL 或页面 DOM。会话仅存在浏览器端，服务端不保存对话历史。

@@ -7,6 +7,7 @@
 
 const API_BASE_URL = WEB_RAG_CLIPPER_CONFIG.API_BASE_URL;
 const API_REQUEST_TIMEOUT_MS = 30000;
+const API_UPLOAD_TIMEOUT_MS = 120000;
 // STORAGE_KEYS 已在 config.js 全局声明，禁止重复声明（避免页面解析失败）。
 
 class ApiRequestError extends Error {
@@ -48,6 +49,46 @@ const webRagApiClient = (() => {
   let pluginName = null;
   let apiKeyConfigured = false; // 以 GET /plugins/me 返回为准，不持久化
   let unauthenticatedHandler = null;
+  // Fallback for older servers; current servers advertise budgets from SDK settings.
+  const modelTimeouts = { search: 240000, ask: 540000, api_key: 240000, model_config: 540000 };
+  let budgetLoadedAt = 0;
+  let budgetLoading = null;
+
+  function rememberBudgets(data) {
+    const values = data && data.request_timeouts_ms;
+    if (!values) return;
+    for (const key of Object.keys(modelTimeouts)) {
+      if (Number.isInteger(values[key]) && values[key] >= API_REQUEST_TIMEOUT_MS && values[key] <= 2147483647) {
+        modelTimeouts[key] = values[key];
+      }
+    }
+    budgetLoadedAt = Date.now();
+  }
+
+  async function modelTimeout(kind) {
+    if (Date.now() - budgetLoadedAt > 60000) {
+      if (!budgetLoading) {
+        budgetLoading = request("/plugins/model-providers", { auth: false })
+          .then(result => rememberBudgets(result.data))
+          .catch(() => {}) // Older/offline servers retain the conservative fallback.
+          .finally(() => { budgetLoading = null; });
+      }
+      await budgetLoading;
+    }
+    return modelTimeouts[kind];
+  }
+
+  async function modelRequest(path, options, kind) {
+    const identity = { pluginId, pluginSecret };
+    // Validate before fetching the public policy, then prevent identity changes
+    // during that await from sending the old question/config into another workspace.
+    applyAuth({});
+    const timeoutMs = await modelTimeout(kind);
+    if (identity.pluginId !== pluginId || identity.pluginSecret !== pluginSecret) {
+      throw new ApiRequestError(401, "UNAUTHENTICATED", "插件身份已变更，请重新操作");
+    }
+    return request(path, Object.assign({}, options, { timeoutMs }));
+  }
 
   // 读取 webRagPlugin（唯一身份来源）。
   async function loadPlugin() {
@@ -120,7 +161,10 @@ const webRagApiClient = (() => {
   }
 
   // 401：凭证失效 → 清除本地插件身份，回到 Welcome。
-  async function invalidatePlugin() {
+  async function invalidatePlugin(identity) {
+    if (identity && (identity.pluginId !== pluginId || identity.pluginSecret !== pluginSecret)) {
+      throw new ApiRequestError(401, "UNAUTHENTICATED", "请求使用的插件凭证已失效");
+    }
     const currentPluginId = pluginId;
     await clearPlugin();
     if (unauthenticatedHandler) {
@@ -147,10 +191,12 @@ const webRagApiClient = (() => {
     try {
       data = await response.json();
     } catch (_err) {
+      if (_err && _err.name === "AbortError") throw _err;
       data = null;
     }
+    if (opts.signal && opts.signal.aborted) throw new ApiRequestError(0, "TIMEOUT", "请求等待超时，服务端可能仍在处理；请先检查结果再重试");
     if (opts.auth !== false && response.status === 401) {
-      await invalidatePlugin();
+      await invalidatePlugin(opts.identity);
     }
     if (response.status === 403) {
       if (data && data.type === "PluginDisabledError") {
@@ -210,25 +256,36 @@ const webRagApiClient = (() => {
     if (opts.auth !== false) {
       applyAuth(headers);
     }
-    let response;
+    return fetchWithDeadline(path, { method: method, headers: headers, body: body },
+      { auth: opts.auth, identity: { pluginId, pluginSecret } }, opts.timeoutMs || API_REQUEST_TIMEOUT_MS);
+  }
+
+  // Covers headers AND body. No automatic retry: writes may already have committed.
+  async function fetchWithDeadline(path, init, classifyOptions, timeoutMs) {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), API_REQUEST_TIMEOUT_MS);
+    let timeoutId;
+    const timeoutError = () => new ApiRequestError(0, "TIMEOUT", "请求等待超时，服务端可能仍在处理；请先检查结果再重试");
+    const deadline = new Promise((_resolve, reject) => {
+      timeoutId = setTimeout(() => {
+        controller.abort();
+        reject(timeoutError());
+      }, timeoutMs);
+    });
     try {
-      response = await fetch(API_BASE_URL + path, {
-        method: method,
-        headers: headers,
-        body: body,
-        signal: controller.signal,
-      });
+      return await Promise.race([deadline, (async () => {
+        const response = await fetch(API_BASE_URL + path, Object.assign({}, init, { signal: controller.signal }));
+        if (controller.signal.aborted) throw timeoutError();
+        return classifyResponse(response, Object.assign({}, classifyOptions, { signal: controller.signal }));
+      })()]);
     } catch (err) {
+      if (err instanceof ApiRequestError) throw err;
       if (err && err.name === "AbortError") {
-        throw new ApiRequestError(0, "TIMEOUT", "请求超时，请稍后重试");
+        throw timeoutError();
       }
       throw new ApiRequestError(0, "NETWORK", "网络连接失败，请重试");
     } finally {
       clearTimeout(timeoutId);
     }
-    return classifyResponse(response, { auth: opts.auth });
   }
 
   // multipart/form-data 上传（POST /documents/upload）。
@@ -236,13 +293,8 @@ const webRagApiClient = (() => {
   // 认证与错误分类复用 applyAuth / classifyResponse，仅额外声明 413 / 415。
   async function uploadRequest(path, formData) {
     const headers = applyAuth({});
-    let response;
-    try {
-      response = await fetch(API_BASE_URL + path, { method: "POST", headers: headers, body: formData });
-    } catch (_err) {
-      throw new ApiRequestError(0, "NETWORK", "网络连接失败，请重试");
-    }
-    return classifyResponse(response, { failureLabel: "上传", statusErrors: UPLOAD_STATUS_ERRORS });
+    return fetchWithDeadline(path, { method: "POST", headers: headers, body: formData },
+      { failureLabel: "上传", statusErrors: UPLOAD_STATUS_ERRORS, identity: { pluginId, pluginSecret } }, API_UPLOAD_TIMEOUT_MS);
   }
 
   return {
@@ -276,11 +328,12 @@ const webRagApiClient = (() => {
       },
       // 旧版兼容端点：保存并校验单个阿里云百炼 API Key
       async updateApiKey(apiKey) {
-        const result = await request("/plugins/me/api-key", { method: "PUT", body: { api_key: apiKey } });
+        const result = await modelRequest("/plugins/me/api-key", { method: "PUT", body: { api_key: apiKey } }, "api_key");
         return result.data;
       },
       async modelProviders() {
         const result = await request("/plugins/model-providers", { method: "GET", auth: false });
+        rememberBudgets(result.data);
         return result.data;
       },
       async modelConfig() {
@@ -288,7 +341,7 @@ const webRagApiClient = (() => {
         return result.data;
       },
       async updateModelConfig(payload) {
-        const result = await request("/plugins/me/model-config", { method: "PUT", body: payload });
+        const result = await modelRequest("/plugins/me/model-config", { method: "PUT", body: payload }, "model_config");
         return result.data;
       },
       // DELETE /plugins/me/api-key：移除 API Key
@@ -335,14 +388,14 @@ const webRagApiClient = (() => {
       async ask(queryObj) {
         const body = { query: queryObj.query };
         if (queryObj.document_id != null) body.document_id = queryObj.document_id;
-        const result = await request("/rag/ask", { method: "POST", body: body });
+        const result = await modelRequest("/rag/ask", { method: "POST", body: body }, "ask");
         return result.data;
       },
       async search(queryObj) {
         const body = { query: queryObj.query };
         if (queryObj.limit != null) body.limit = queryObj.limit;
         if (queryObj.document_id != null) body.document_id = queryObj.document_id;
-        const result = await request("/rag/search", { method: "POST", body: body });
+        const result = await modelRequest("/rag/search", { method: "POST", body: body }, "search");
         return result.data;
       },
     },

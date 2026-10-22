@@ -37,6 +37,7 @@
 |---|---|
 | `backend/core/__init__.py` | Core 包标记 |
 | `backend/core/config.py` | Pydantic Settings 单一配置源与参数交叉校验 |
+| `backend/core/request_budget.py` | 根据模型超时及重试配置计算公开客户端等待预算 |
 | `backend/core/db.py` | SQLAlchemy Engine、Session 工厂和 MySQL URL |
 | `backend/core/di.py` | Repository、Client、Service 和存储组件的 DI 工厂 |
 | `backend/core/exceptions.py` | Document、Plugin、Security、Milvus 等领域异常 |
@@ -122,6 +123,7 @@
 | `backend/tests/test_embedding_client.py` | 批处理、维度、异常、Key 隔离与缓存淘汰 |
 | `backend/tests/test_llm_client.py` | LLM 参数、响应、异常包装与缓存淘汰 |
 | `backend/tests/test_model_provider.py` | 服务商预设、端点安全、配置加密兼容与向量空间切换保护 |
+| `backend/tests/test_request_budget.py` | 等待预算、SDK 重试预留、浏览器计时上限与公开字段隔离 |
 | `backend/tests/test_security.py` | AES-GCM、哈希、随机凭证与篡改检测 |
 | `backend/tests/test_url_normalization.py` | URL 规范化、跟踪参数、哈希路由 fragment 策略（与 `url-utils.test.js` 共享向量）和非法 URL 边界 |
 | `backend/tests/test_milvus_repository.py` | Milvus 搜索 limit/ef 参数在连接前校验 |
@@ -174,8 +176,9 @@
 | `extension/tests/extractor.test.js` | 正文候选评分、噪声识别和文本规范化回归测试 |
 | `extension/tests/url-utils.test.js` | 扩展 URL 规范化的 Node.js 回归测试 |
 | `extension/tests/session-store.test.js` | 上传任务持久化与 Session 并发保存合并回归测试 |
-| `extension/tests/api-client.test.js` | JSON 与上传两条通道共用错误分类的回归测试 |
+| `extension/tests/api-client.test.js` | JSON/上传错误分类、响应正文超时、模型等待预算与身份切换回归 |
 | `extension/tests/clip-detect.test.js` | 剪藏探测缓存 TTL、跨上下文保底与失败不缓存的回归测试 |
+| `extension/tests/chat-request.test.js` | 会话切换、页面快照、错误归属与旧请求清理交错回归 |
 
 ## `alembic/` — 数据库迁移
 

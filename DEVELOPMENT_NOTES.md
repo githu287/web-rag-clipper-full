@@ -3,7 +3,7 @@
 核对日期：2026-10-22（Asia/Shanghai）。代码基线：`394c85d`，分支 `main`。
 本文记录本次代码阅读和本地验证结果；后续实现变化时需更新，以实际代码为准。
 
-后续修复进展：审查报告前三项高优先级问题已处理，当前迁移 head 为 `0011`，测试为 671 passed / 115 subtests passed。任务 payload 改为与 Job 同事务写入 MySQL，Worker 定期补投 Redis；模型切换与入库共享数据库协调；元数据 API 禁止本地文件路径。详见 `PROJECT_REVIEW.md` 顶部。
+后续修复进展：审查报告第 1—5 项已处理，当前迁移 head 为 `0011`，最新测试为 675 passed / 115 subtests passed，扩展 6 组通过。任务 payload 与 Job 同事务写入 MySQL，Worker 定期补投 Redis；模型切换与入库共享数据库协调；元数据 API 禁止本地文件路径。聊天请求绑定原会话与页面快照，前端等待期限按后端模型配置分配并覆盖响应正文和上传。详见 `PROJECT_REVIEW.md` 顶部。
 
 ## 产品与实现边界
 
@@ -84,6 +84,7 @@ Worker 通过 Repository 在同一事务内领取文档并绑定任务；提交�
 | `node extension/tests/session-store.test.js` | 通过 |
 | `node extension/tests/api-client.test.js` | 通过 |
 | `node extension/tests/clip-detect.test.js` | 通过 |
+| `node extension/tests/chat-request.test.js` | 通过（后续新增：8 个会话交错场景） |
 | `python -m evaluation.validate_datasets evaluation/datasets/rag_eval.jsonl evaluation/datasets/negative_eval.jsonl evaluation/datasets/isolation_eval.jsonl --allow-placeholders` | 150 条通过 |
 
 这些单元测试使用 SQLite 与外部服务替身，本身不证明真实服务或浏览器全链路可用。

@@ -276,6 +276,7 @@ node extension/tests/url-utils.test.js
 node extension/tests/session-store.test.js
 node extension/tests/api-client.test.js
 node extension/tests/clip-detect.test.js
+node extension/tests/chat-request.test.js
 ```
 
 ## Retrieval 评测

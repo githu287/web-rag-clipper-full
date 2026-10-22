@@ -11,7 +11,7 @@ const vm = require("node:vm");
 
 const extensionDir = path.resolve(__dirname, "..");
 
-function loadApiClient(fetchImpl) {
+function loadApiClient(fetchImpl, timers) {
   const stored = {};
   const chrome = {
     storage: {
@@ -34,8 +34,8 @@ function loadApiClient(fetchImpl) {
     console,
     fetch: fetchImpl,
     AbortController,
-    setTimeout,
-    clearTimeout,
+    setTimeout: timers ? timers.setTimeout : setTimeout,
+    clearTimeout: timers ? timers.clearTimeout : clearTimeout,
     // 上传通道内部会 new FormData()，沙箱需要提供可记录的替身。
     FormData: function RecordingFormData() {
       this.entries = [];
@@ -79,6 +79,31 @@ function respondingWith(response) {
 function uploadVia(api) {
   return api.documents.uploadFile({ name: "notes.txt" });
 }
+
+function fakeClock() {
+  let time = 0;
+  let nextId = 0;
+  const pending = new Map();
+  const scheduled = [];
+  return {
+    scheduled,
+    pending,
+    setTimeout(fn, delay) {
+      scheduled.push(delay);
+      pending.set(++nextId, { fn, at: time + delay });
+      return nextId;
+    },
+    clearTimeout(id) { pending.delete(id); },
+    advance(ms) {
+      time += ms;
+      for (const [id, timer] of pending) {
+        if (timer.at <= time) { pending.delete(id); timer.fn(); }
+      }
+    },
+  };
+}
+
+const settle = () => new Promise(resolve => setImmediate(resolve));
 
 async function expectApiError(promise, status, code, messagePattern) {
   let caught = null;
@@ -279,7 +304,94 @@ async function expectApiError(promise, status, code, messagePattern) {
     await expectApiError(uploadVia(offline), 0, "NETWORK");
   }
 
-  console.log("api-client error classification tests passed");
+  // Real deadline path with stalled headers AND stalled response bodies.
+  for (const upload of [false, true]) {
+    for (const bodyStalls of [false, true]) {
+      const clock = fakeClock();
+      let calls = 0;
+      let signal;
+      const api = loadApiClient(async (_url, init) => {
+        calls++;
+        signal = init.signal;
+        if (!bodyStalls) return new Promise(() => {});
+        return { status: 200, ok: true, json: () => new Promise(() => {}) };
+      }, clock);
+      api.setPluginDetails({ pluginId: "plugin-a", pluginSecret: "secret-a" });
+      const checked = expectApiError(upload ? api.documents.uploadFileAsync({}) : api.request("/clips/async"), 0, "TIMEOUT", /服务端可能仍在处理/);
+      await settle();
+      clock.advance(upload ? 120000 : 30000);
+      await checked;
+      assert.equal(signal.aborted, true);
+      assert.equal(calls, 1, "timed out writes must never retry automatically");
+      assert.equal(clock.pending.size, 0);
+    }
+  }
+
+  // Public server policy drives each model operation; 30s no longer aborts it.
+  for (const [kind, invoke] of [
+    ["ask", api => api.rag.ask({ query: "question", document_id: 101 })],
+    ["search", api => api.rag.search({ query: "question" })],
+    ["model_config", api => api.plugins.updateModelConfig({})],
+    ["api_key", api => api.plugins.updateApiKey("test-key")],
+  ]) {
+    const clock = fakeClock();
+    const policy = { ask: 660000, search: 270000, model_config: 660000, api_key: 270000 };
+    let finish;
+    const calls = [];
+    const api = loadApiClient(async (url, init) => {
+      calls.push({ url, init });
+      if (url.endsWith("/model-providers")) return makeResponse(200, { request_timeouts_ms: policy });
+      return new Promise(resolve => { finish = resolve; });
+    }, clock);
+    api.setPluginDetails({ pluginId: "plugin-a", pluginSecret: "secret-a" });
+    const result = invoke(api);
+    await settle();
+    assert.equal(clock.scheduled.at(-1), policy[kind]);
+    clock.advance(30001);
+    assert.equal(calls[1].init.signal.aborted, false);
+    finish(makeResponse(200, { answer: "done" }));
+    await result;
+    assert.equal(clock.pending.size, 0);
+    assert.equal(calls.length, 2);
+    assert.equal(calls[0].init.headers["X-Plugin-ID"], undefined);
+  }
+
+  // Old servers retain a safe fallback; malformed timer values are ignored.
+  for (const data of [{}, { request_timeouts_ms: { ask: 1, search: -1, api_key: "99999", model_config: 2147483648 } }]) {
+    const clock = fakeClock();
+    const api = loadApiClient(async url => url.endsWith("/model-providers") ? makeResponse(200, data) : makeResponse(200, {}), clock);
+    api.setPluginDetails({ pluginId: "plugin-a", pluginSecret: "secret-a" });
+    await api.rag.ask({ query: "q" });
+    assert.equal(clock.scheduled.at(-1), 540000);
+    assert.equal(clock.pending.size, 0);
+  }
+
+  // A workspace switch during policy lookup must not send the previous question.
+  {
+    let finish;
+    let calls = 0;
+    const api = loadApiClient(async () => { calls++; return new Promise(resolve => { finish = resolve; }); });
+    api.setPluginDetails({ pluginId: "plugin-a", pluginSecret: "secret-a" });
+    const checked = expectApiError(api.rag.ask({ query: "private-a" }), 401, "UNAUTHENTICATED");
+    api.setPluginDetails({ pluginId: "plugin-b", pluginSecret: "secret-b" });
+    finish(makeResponse(200, {}));
+    await checked;
+    assert.equal(calls, 1);
+    assert.equal(api.getPlugin().pluginId, "plugin-b");
+  }
+  // Nor may a late 401 clear the new workspace identity.
+  {
+    let finish;
+    const api = loadApiClient(async () => new Promise(resolve => { finish = resolve; }));
+    api.setPluginDetails({ pluginId: "plugin-a", pluginSecret: "secret-a" });
+    const checked = expectApiError(api.request("/plugins/me"), 401, "UNAUTHENTICATED");
+    api.setPluginDetails({ pluginId: "plugin-b", pluginSecret: "secret-b" });
+    finish(makeResponse(401, {}));
+    await checked;
+    assert.equal(api.getPlugin().pluginId, "plugin-b");
+  }
+
+  console.log("api-client error classification and deadline tests passed");
 })().catch(function (error) {
   console.error(error);
   process.exitCode = 1;
