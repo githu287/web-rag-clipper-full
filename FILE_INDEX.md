@@ -124,6 +124,7 @@
 | `backend/tests/test_llm_client.py` | LLM 参数、响应、异常包装与缓存淘汰 |
 | `backend/tests/test_model_provider.py` | 服务商预设、端点安全、配置加密兼容与向量空间切换保护 |
 | `backend/tests/test_request_budget.py` | 等待预算、SDK 重试预留、浏览器计时上限与公开字段隔离 |
+| `backend/tests/test_ingest_recovery_fixes.py` | 统一配额、满额重新剪藏、任务查找隔离、上传竞争补偿与切块边界 |
 | `backend/tests/test_security.py` | AES-GCM、哈希、随机凭证与篡改检测 |
 | `backend/tests/test_url_normalization.py` | URL 规范化、跟踪参数、哈希路由 fragment 策略（与 `url-utils.test.js` 共享向量）和非法 URL 边界 |
 | `backend/tests/test_milvus_repository.py` | Milvus 搜索 limit/ef 参数在连接前校验 |
@@ -179,6 +180,7 @@
 | `extension/tests/api-client.test.js` | JSON/上传错误分类、响应正文超时、模型等待预算与身份切换回归 |
 | `extension/tests/clip-detect.test.js` | 剪藏探测缓存 TTL、跨上下文保底与失败不缓存的回归测试 |
 | `extension/tests/chat-request.test.js` | 会话切换、页面快照、错误归属与旧请求清理交错回归 |
+| `extension/tests/library-retry.test.js` | 服务端任务恢复、来源提示、进行中任务轮询与本地存储失败回归 |
 
 ## `alembic/` — 数据库迁移
 

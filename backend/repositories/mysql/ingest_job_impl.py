@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from uuid import uuid4
 
-from sqlalchemy import Engine, func, or_, select, update
+from sqlalchemy import Engine, case, func, or_, select, update
 from sqlalchemy.exc import DBAPIError, IntegrityError, OperationalError
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -79,6 +79,31 @@ class IngestJobRepositoryImpl(IngestJobRepository):
             raise
         except (OperationalError, DBAPIError) as exc:
             raise IngestJobOperationError("get ingest job failed") from exc
+
+    def get_document_job(self, document_id: int, plugin_id: str) -> IngestJob:
+        """Prefer active work, otherwise the latest job; scope BOTH rows to owner.
+
+        Do not select only FAILED jobs: an older failure must not be retried while
+        another job is queued/running or has already succeeded.
+        """
+        try:
+            with self._session_factory() as session:
+                job = session.scalar(select(IngestJob).join(
+                    Document, Document.id == IngestJob.document_id,
+                ).where(
+                    IngestJob.document_id == document_id,
+                    IngestJob.plugin_id == plugin_id,
+                    Document.plugin_id == plugin_id,
+                ).order_by(
+                    case((IngestJob.status.in_([IngestJobStatus.QUEUED, IngestJobStatus.RUNNING]), 0), else_=1),
+                    IngestJob.created_at.desc(), IngestJob.updated_at.desc(), IngestJob.id.desc(),
+                ).limit(1))
+                if job is None:
+                    raise IngestJobNotFoundError("document ingest job not found")
+                session.expunge(job)
+                return job
+        except DBAPIError as exc:
+            raise IngestJobOperationError("get document ingest job failed") from exc
 
     def claim_job(self, job_id: str) -> IngestJob | None:
         """Atomically transition QUEUED to RUNNING; duplicate deliveries return None."""

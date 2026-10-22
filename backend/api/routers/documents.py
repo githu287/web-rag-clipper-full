@@ -191,6 +191,15 @@ def list_documents(
     )
 
 
+@router.get("/{document_id}/job", response_model=IngestJobResponse, summary="查询文档的入库任务")
+def get_document_job(
+    document_id: int,
+    current_plugin: PluginWorkspace = Depends(get_current_plugin),
+    service: IngestJobService = Depends(get_ingest_job_service),
+) -> IngestJobResponse:
+    return build_job_response(service.get_document_job(document_id, current_plugin.plugin_id))
+
+
 @router.post(
     "",
     response_model=DocumentResponse,

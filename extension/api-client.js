@@ -400,6 +400,11 @@ const webRagApiClient = (() => {
       },
     },
     documents: {
+      // Server-owned task reference works even when local upload/tab records are gone.
+      async job(documentId) {
+        const result = await request("/documents/" + encodeURIComponent(String(documentId)) + "/job");
+        return result.data;
+      },
       // GET /documents：分页列出当前 Plugin 的知识库（「我的知识库」）
       // 归属唯一来自后端 current_plugin.plugin_id；禁止前端传 plugin_id / user_id。
       async list(params) {

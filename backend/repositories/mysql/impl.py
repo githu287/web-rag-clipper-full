@@ -46,6 +46,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from ...core.exceptions import (
     DocumentNotFoundError,
     DocumentOperationError,
+    DocumentQuotaExceededError,
 )
 from ...models.document import Document, DocumentSourceType, DocumentStatus
 from ...models.ingest_job import IngestJob, IngestJobStatus
@@ -68,7 +69,7 @@ def _db_error_brief(e: BaseException) -> str:
 class DocumentRepositoryImpl(DocumentRepository):
     """DocumentRepository 的 SQLAlchemy 实现。"""
 
-    def __init__(self, engine: Engine) -> None:
+    def __init__(self, engine: Engine, max_documents_per_workspace: int = 188) -> None:
         """
         注入 Engine，内部构造 sessionmaker。
 
@@ -77,6 +78,9 @@ class DocumentRepositoryImpl(DocumentRepository):
                     测试环境可传 SQLite engine，如 StaticPool in-memory）。
         """
         self._engine = engine
+        if max_documents_per_workspace < 1:
+            raise ValueError("max_documents_per_workspace must be positive")
+        self._max_documents_per_workspace = max_documents_per_workspace
         # expire_on_commit=False：commit 后不自动 expire，detached ORM 属性仍可读。
         # TODO(后续 Phase): 当前 Document 无 relationship，detached 安全。
         #   未来增加 Document↔Page/Chunk relationship 后，需 DTO 转换或 eager
@@ -133,6 +137,15 @@ class DocumentRepositoryImpl(DocumentRepository):
         try:
             with self._session_factory() as session:
                 check_embedding_space(lock_workspace(session, plugin_id), embedding_fingerprint)
+                # Every writer holds the same workspace lock through commit.
+                # A preflight count in a service cannot enforce a concurrent limit.
+                count = session.scalar(select(func.count()).select_from(Document).where(
+                    Document.plugin_id == plugin_id,
+                ))
+                if count >= self._max_documents_per_workspace:
+                    raise DocumentQuotaExceededError(
+                        f"知识库文档数已达上限（{self._max_documents_per_workspace} 篇），请先删除部分文档"
+                    )
                 session.add(document)
                 session.commit()
                 session.refresh(document)

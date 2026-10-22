@@ -80,14 +80,13 @@ def create_clip_async(
 
     提交前的两道只读检查刻意放在入队之前：
         1) decrypt_api_key：Workspace 未配置 Key → 409（不写 Redis payload）；
-        2) ensure_capacity：Workspace 文档数已达 max_documents_per_workspace
-           → 429（#24c），避免排入一个注定失败的任务。
+        2) ensure_capacity：已有规范化 URL 可复用；新增 URL 满额 → 429。
     预检与 Worker 实际创建之间没有事务串联，因此 WebClipService.clip() 在
-    create_document 前还会再查一次，那一次才是权威闸口。
+    Repository 创建事务持有 Workspace 行锁并再次计数，作为权威闸口。
     """
     # 提交时就检查 Workspace 已配置 Key；明文 Key 不写入 Redis payload。
     plugin_service.decrypt_api_key(current_plugin)
-    web_clip_service.ensure_capacity(current_plugin.plugin_id)
+    web_clip_service.ensure_capacity(current_plugin.plugin_id, url=request.url)
     job = job_service.create_web_clip_job(current_plugin.plugin_id, request)
     return build_job_response(job)
 

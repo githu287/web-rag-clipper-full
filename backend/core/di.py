@@ -327,7 +327,7 @@ def get_document_repository() -> DocumentRepository:
         但 Service 不感知具体类型）。
     """
     engine = get_engine()
-    return DocumentRepositoryImpl(engine)
+    return DocumentRepositoryImpl(engine, max_documents_per_workspace=get_settings().max_documents_per_workspace)
 
 
 @lru_cache(maxsize=1)

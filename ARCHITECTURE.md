@@ -245,6 +245,10 @@ POST /rag/ask
 
 Embedding 配置保存和 Document 创建使用同一 Workspace 行锁。配置保存时在锁内重新检查文档；解密后的模型快照在创建/领取文档和执行查询前校验指纹，拒绝因并发模型切换而过期的凭证。旧百炼明文密钥解密后也包装为带模型端点的快照。
 
+文档配额同样在持有该锁的创建事务中检查，覆盖元数据、网页和上传的全部新建入口，按所有状态计数；DI 将同一 Settings 上限注入 Repository 与预检服务。异步剪藏准入按规范化 URL 识别可复用文档，满额仍可重新剪藏。预检不预留名额；上传在落盘后的原子检查失败时补偿删除新文件。
+
+`GET /documents/{document_id}/job` 同时在 SQL 中校验 Job 与 Document 归属，优先返回排队/执行中任务，否则按创建时间、更新时间、ID 倒序选择最近记录。扩展据此重试或恢复轮询，浏览器映射只用于关闭侧栏后的轮询提示；无任务时按网页/上传来源提示重新提交。响应不暴露 payload。
+
 ### 8.1 文档删除
 
 删除流程按 Milvus chunks → 本地文件 → MySQL Document 的顺序执行。接口对不存在的文档幂等返回 204；网页文档跳过文件删除。入库和删除用带归属、预期状态及活动任务条件的原子 UPDATE 领取文档，避免先检查再更新的竞争。异步任务尚未提交终态时，其文档也不可被其他操作领取。
@@ -257,7 +261,7 @@ Workspace 删除要求 `confirm=true` 且提交名称与当前名称完全一致
 
 ## 9. API 与异常边界
 
-当前共有 23 个操作：Plugin 9、Document 7、Clip 2、Job 2、Ingest 1、RAG 2。其中 `POST /plugins/register` 与 `GET /plugins/model-providers` 不要求 Plugin Header。
+当前共有 24 个操作：Plugin 9、Document 8、Clip 2、Job 2、Ingest 1、RAG 2。其中 `POST /plugins/register` 与 `GET /plugins/model-providers` 不要求 Plugin Header。
 
 | 状态码 | 典型场景 |
 |---:|---|

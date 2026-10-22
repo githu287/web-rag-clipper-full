@@ -67,6 +67,9 @@ class IngestJobService:
     def get_job(self, job_id: str, plugin_id: str) -> IngestJob:
         return self._repository.get_job(job_id, plugin_id)
 
+    def get_document_job(self, document_id: int, plugin_id: str) -> IngestJob:
+        return self._repository.get_document_job(document_id, plugin_id)
+
     def retry_job(self, job_id: str, plugin_id: str) -> IngestJob:
         job = self._repository.get_job(job_id, plugin_id)
         if job.status != IngestJobStatus.FAILED:

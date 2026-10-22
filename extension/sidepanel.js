@@ -557,28 +557,53 @@ function openDocumentUrl(url) {
   chrome.tabs.create({ url: url });
 }
 
-// 异步上传会保留原文件与 Job 引用，可由知识库直接重试。
-// 历史同步失败文档没有 Job 记录，仍需用户重新上传原文件。
+// 从服务端恢复网页/上传任务，不依赖浏览器上传映射或仍存活的 Tab。
 async function retryDocument(doc) {
   const plugin = webRagApiClient.getPlugin();
-  const record = await sessionStore.getUploadJob(plugin.pluginId, doc.id);
-  if (!record || Number(record.documentId) !== Number(doc.id)) {
-    setStatus(els.librarySummary, "该文档没有可恢复的异步任务，请重新上传原文件。", "warn");
-    return;
-  }
-  if (uploadBusy) return;
+  if (!plugin.pluginId || uploadBusy) return;
   uploadBusy = true;
   els.libraryUploadBtn.disabled = true;
-  setUploadStatus("正在重新提交任务…", "loading");
+  setUploadStatus("正在查询可恢复的任务…", "loading");
+  let monitoring = false;
+  const fallback = doc.source_type === "webpage"
+    ? "请打开原网页重新剪藏。" : "请重新上传原文件。";
   try {
-    const job = await webRagApiClient.jobs.retry(record.jobId);
-    activeUploadJob = job;
+    let job = await webRagApiClient.documents.job(doc.id);
+    if (webRagApiClient.getPlugin().pluginId !== plugin.pluginId) return;
+    if (job.status === "FAILED") {
+      job = await webRagApiClient.jobs.retry(job.id);
+    } else if (job.status !== "QUEUED" && job.status !== "RUNNING") {
+      setUploadStatus("该文档没有可重试的异步任务，" + fallback, "warn");
+      return;
+    }
+    if (webRagApiClient.getPlugin().pluginId !== plugin.pluginId) return;
+    const record = {
+      jobId: job.id, documentId: Number(doc.id),
+      pluginId: plugin.pluginId,
+      filename: doc.title || doc.filename || "文档",
+      sourceType: doc.source_type,
+    };
+    // Keep a polling hint for panel reopen; the server remains authoritative.
+    try { await sessionStore.setUploadJob(plugin.pluginId, record); } catch (_err) {
+      // Poll the accepted server job even when local persistence is unavailable.
+    }
+    if (webRagApiClient.getPlugin().pluginId !== plugin.pluginId) return;
+    monitoring = true;
     startUploadJobMonitor(record, job);
     await loadLibrary();
   } catch (err) {
-    uploadBusy = false;
-    els.libraryUploadBtn.disabled = false;
-    setUploadStatus("重试失败：" + errorText(err), "err");
+    if (webRagApiClient.getPlugin().pluginId !== plugin.pluginId) return;
+    if (err instanceof webRagApiClient.ApiRequestError && err.code === "UNAUTHENTICATED") return;
+    if (err instanceof webRagApiClient.ApiRequestError && err.status === 404) {
+      setUploadStatus("该文档没有可恢复的异步任务，" + fallback, "warn");
+    } else {
+      setUploadStatus("重试失败：" + errorText(err), "err");
+    }
+  } finally {
+    if (!monitoring && webRagApiClient.getPlugin().pluginId === plugin.pluginId) {
+      uploadBusy = false;
+      els.libraryUploadBtn.disabled = false;
+    }
   }
 }
 
@@ -641,6 +666,7 @@ async function handleFileUpload(file) {
     }
     var record = {
       jobId: job.id,
+      pluginId: plugin.pluginId,
       documentId: Number(job.document_id),
       filename: file.name,
     };
@@ -687,20 +713,30 @@ function startUploadJobMonitor(record, initialJob) {
   monitorUploadJob(record, token);
 }
 
+function stopUploadJobMonitor() {
+  uploadJobPollToken += 1;
+  activeUploadJob = null;
+  uploadBusy = false;
+  els.libraryUploadBtn.disabled = false;
+}
+
 async function monitorUploadJob(record, token) {
+  const owner = record.pluginId || webRagApiClient.getPlugin().pluginId;
+  const stillCurrent = () => token === uploadJobPollToken && webRagApiClient.getPlugin().pluginId === owner;
   while (token === uploadJobPollToken) {
+    if (!stillCurrent()) return;
     try {
       const job = await webRagApiClient.jobs.get(record.jobId);
-      if (token !== uploadJobPollToken) return;
+      if (!stillCurrent()) return;
       activeUploadJob = job;
       const progress = Math.max(0, Math.min(100, Number(job.progress) || 0));
       if (job.status === "SUCCEEDED") {
-        const plugin = webRagApiClient.getPlugin();
-        await sessionStore.clearUploadJob(plugin.pluginId, record.documentId);
+        try { await sessionStore.clearUploadJob(owner, record.documentId); } catch (_err) {}
+        if (!stillCurrent()) return;
         activeUploadJob = null;
         uploadBusy = false;
         els.libraryUploadBtn.disabled = false;
-        setUploadStatus("上传成功：" + record.filename + "（100%）", "ok");
+        setUploadStatus("入库成功：" + record.filename + "（100%）", "ok");
         libraryState.page = 1;
         await loadLibrary();
         return;
@@ -718,7 +754,7 @@ async function monitorUploadJob(record, token) {
       const stage = job.status === "QUEUED" ? "等待 Worker" : "正在解析、切块并向量化";
       setUploadStatus(stage + "：" + record.filename + "（" + progress + "%）", "loading");
     } catch (err) {
-      if (token !== uploadJobPollToken) return;
+      if (!stillCurrent()) return;
       activeUploadJob = null;
       uploadBusy = false;
       els.libraryUploadBtn.disabled = false;
@@ -843,6 +879,7 @@ async function confirmDeletePlugin() {
     currentTabId = null;
     isSending = false;
     activeChatRequest = null;
+    stopUploadJobMonitor();
     clipBusy = false;
     closeDeleteModal();
     renderWelcomeView();
@@ -2459,6 +2496,7 @@ async function init() {
     currentTabId = null;
     isSending = false;
     activeChatRequest = null;
+    stopUploadJobMonitor();
     clipBusy = false;
     renderWelcomeView();
     setStatus(els.welcomeStatus, "插件凭证已失效，请重新创建插件", "err");

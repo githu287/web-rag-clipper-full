@@ -98,19 +98,20 @@ class WebClipService:
         self._document_ingest_service = document_ingest_service
         self._max_documents_per_workspace = max_documents_per_workspace
 
-    def ensure_capacity(self, plugin_id: str) -> None:
+    def ensure_capacity(self, plugin_id: str, *, url: str | None = None) -> None:
         """
         新建 Document 前的只读配额预检（优化 #24b 写入侧配额 / #24c 提交时预检）。
 
-        count_documents 含**全部状态**（PENDING / FAILED 等同样占额度）。预检与
-        真正创建之间没有事务串联，并发提交最多让 Workspace 略超上限几篇，不会无界
-        增长；因此本方法只是「准入提示」，clip() 在 create_document 前调的同一检查
-        才是权威闸口（异步任务在 Worker 里执行时会再查一次）。
+        同 Workspace 的已有 URL 不新增 Document，因此满额也允许重新剪藏。
+        count_documents 含全部状态；本方法只是准入提示，真正的配额限制由
+        Repository 在持有 Workspace 行锁的创建事务内执行。
 
         Raises:
             DocumentQuotaExceededError: 文档数已达 max_documents_per_workspace
                 （API 层映射 429；不建 Document、不入库任务）。
         """
+        if url is not None and self._find_existing_document(plugin_id, url) is not None:
+            return
         document_count = self._document_repository.count_documents(plugin_id)
         if document_count >= self._max_documents_per_workspace:
             raise DocumentQuotaExceededError(
@@ -168,16 +169,7 @@ class WebClipService:
         # ------------------------------------------------------------------
         # 1) 创建 Document(status=PENDING)；WebClip 不落盘
         # ------------------------------------------------------------------
-        document = self._document_repository.get_webpage_by_url(
-            plugin_id,
-            normalized_url,
-        )
-        if document is None and url.strip() != normalized_url:
-            document = self._find_legacy_url_match(
-                plugin_id=plugin_id,
-                original_url=url.strip(),
-                normalized_url=normalized_url,
-            )
+        document = self._find_existing_document(plugin_id, url)
         existing_document = document is not None
         if document is None:
             # 配额检查只针对新建文档：放在复用判断之后，同 URL 重新剪藏不占新额度。
@@ -249,6 +241,15 @@ class WebClipService:
         # 5) 返回终态（SUCCESS，error_message=None）
         # ------------------------------------------------------------------
         return self._document_repository.get_document(document.id, plugin_id)
+
+    def _find_existing_document(self, plugin_id: str, url: str) -> Document | None:
+        normalized_url = normalize_web_url(url)
+        document = self._document_repository.get_webpage_by_url(plugin_id, normalized_url)
+        if document is None and url.strip() != normalized_url:
+            document = self._find_legacy_url_match(
+                plugin_id=plugin_id, original_url=url.strip(), normalized_url=normalized_url,
+            )
+        return document
 
     def _find_legacy_url_match(
         self,

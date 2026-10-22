@@ -141,8 +141,8 @@ class DocumentUploadService:
             )
 
         # 配额校验必须在 save() 之前：满额 Workspace 既不落盘也不建 Document 行。
-        # count_documents 含全部状态（PENDING / FAILED 等也占额度），因此并发剪藏
-        # 与上传之间没有事务串联时最多让 Workspace 略超上限几篇，不会无界增长。
+        # 此处只是提前避免落盘；Repository 持有 Workspace 行锁并原子计数。
+        # 若落盘后才被并发请求占满额度，下方异常路径会清理新文件。
         document_count = self._document_repository.count_documents(plugin_id)
         if document_count >= self._max_documents_per_workspace:
             raise DocumentQuotaExceededError(

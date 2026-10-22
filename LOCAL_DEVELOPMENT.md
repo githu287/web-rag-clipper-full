@@ -69,9 +69,9 @@ docker compose up -d --wait --wait-timeout 180
 
 ## 验证与日志
 
-- 后端测试：675 passed、115 subtests passed；扩展 6 组 Node.js 回归通过。
+- 后端测试：692 passed、115 subtests passed；扩展 7 组 Node.js 回归通过。
 - 真实 MySQL 连接与 `0011` 版本通过；Redis 返回 PONG。并发模型切换锁、文件引用保护与 Redis 补投/去重均已实测。
-- API 的文档页、23 个业务操作、Workspace 注册、认证、文档列表与测试 Workspace 清理通过。
+- API 的文档页、24 个业务操作、Workspace 注册、认证、文档列表与测试 Workspace 清理通过；新增文档任务查询验证同空间可读、跨空间 404、匿名 401。
 - Milvus `page_chunks` 已创建，向量维度为 1024；临时 Collection 的 insert、flush、search、delete 通过，临时资源已清理。
 - Worker 启动日志确认已进入任务消费循环；真实模型入库与问答仍需填写 Key 后验证。
 
@@ -81,6 +81,8 @@ docker compose up -d --wait --wait-timeout 180
 本轮高优先级修复说明见 `PROJECT_REVIEW.md` 顶部。`POST /documents` 不再接受非空本地路径；上传文件仍使用上传接口。升级其他环境时需先停止 API/Worker、迁移至 `0011` 再启动。真实 MySQL/Redis 专项验证脚本为 `.venv/runtime/verify_priority_live.py`。
 
 会话与超时修复无需新增迁移：更新后重启 API，并在浏览器扩展管理页点击重新加载，再重新打开 Side Panel。`GET /plugins/model-providers` 返回公开等待预算，随 `BAILIAN_EMBEDDING_TIMEOUT_SECONDS`、`BAILIAN_LLM_TIMEOUT_SECONDS`、`BAILIAN_MAX_RETRIES` 计算；修改这些环境变量需重启 API，扩展的预算缓存有效期为 1 分钟。默认问答和双模型验证最长等待 540 秒，检索和单 Key 验证 240 秒；普通 JSON 请求 30 秒、上传 120 秒。客户端超时不会自动重试，也不保证取消服务端处理；模型配置等待超时后，先重新读取设置确认结果再决定是否重提。
+
+配额/任务恢复/切块修复同样无需新增迁移，本机 API 与单 Worker 已重启。真实 MySQL 验证剩余 1 名额时 8 个并发创建仅 1 个成功，其余 7 个返回配额异常；测试 Workspace 已清理。专项脚本为被忽略的 `.venv/runtime/verify_ingest_recovery_live.py`。升级扩展后，文档重试不再依赖本地上传映射；旧版本没有保留正文的网页任务仍需重新剪藏。
 
 常用检查：
 

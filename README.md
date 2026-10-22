@@ -183,7 +183,7 @@ Worker 会初始化 Milvus，恢复上次意外中断且未确认的任务，并
 
 ## API 概览
 
-仓库当前注册 23 个操作。`POST /plugins/register` 和 `GET /plugins/model-providers` 无需认证；其余操作都要求 `X-Plugin-ID` 和 `X-Plugin-Secret`。
+仓库当前注册 24 个操作。`POST /plugins/register` 和 `GET /plugins/model-providers` 无需认证；其余操作都要求 `X-Plugin-ID` 和 `X-Plugin-Secret`。
 
 | 方法 | 路径 | 用途 |
 |---|---|---|
@@ -201,6 +201,7 @@ Worker 会初始化 Milvus，恢复上次意外中断且未确认的任务，并
 | POST | `/documents/upload` | 上传并同步完成解析、切块与入库 |
 | POST | `/documents/upload/async` | 安全落盘文件、创建入库任务并返回 `202` |
 | GET | `/documents/{document_id}` | 获取当前 Workspace 的文档详情 |
+| GET | `/documents/{document_id}/job` | 查找文档的进行中或最近入库任务；不依赖浏览器本地映射 |
 | POST | `/documents/{document_id}/ingest` | 对已有文档执行或重试 ingest |
 | DELETE | `/documents/{document_id}` | 幂等删除文档及关联资源 |
 | POST | `/clips` | 剪藏网页正文；同 Workspace 同规范化 URL 可原位重试/更新 |
@@ -277,6 +278,7 @@ node extension/tests/session-store.test.js
 node extension/tests/api-client.test.js
 node extension/tests/clip-detect.test.js
 node extension/tests/chat-request.test.js
+node extension/tests/library-retry.test.js
 ```
 
 ## Retrieval 评测
@@ -316,7 +318,8 @@ python -c "import secrets; print(secrets.token_hex(16))"
 ## 已知限制
 
 - 扩展的网页剪藏和文件上传已使用 Redis Worker 异步入库；旧 `/clips` 与 `/documents/upload` 兼容接口仍是同步。
-- Workspace 文档数配额（`MAX_DOCUMENTS_PER_WORKSPACE`）在提交入口校验：剪藏（同步与异步）和上传（同步与异步）达到上限时都直接返回 429，不再排入注定失败的任务；同一 URL 重新剪藏不占新额度。计数与创建之间没有事务串联，并发提交最多让该 Workspace 略超上限几篇；`/clips/async` 的提交预检只是准入提示，Worker 执行 `clip()` 时的那次检查才是创建 Document 前的权威闸口。
+- Workspace 文档数配额（`MAX_DOCUMENTS_PER_WORKSPACE`）包含所有状态。剪藏与上传先做只读预检；所有新建入口（包括 `POST /documents`）在 Repository 持有 Workspace 行锁的创建事务内再次计数，超限返回 429。预检不预留名额，并发任务最终以创建事务的判断为准；同 Workspace 的已有规范化 URL 可复用，满额也允许重新剪藏。上传在原子检查失败时清理新文件。
+- 知识库重试从服务端查询文档任务，支持网页与上传、本地记录丢失及关闭原 Tab 的情况；进行中任务直接恢复状态查询。历史同步文档或已丢失正文的任务仍需重新剪藏/上传，且任务重试次数上限保持生效。
 - 当前 Worker 是单进程模式；启动时恢复 Redis processing 列表，并在任务边界定期补投 MySQL 中可恢复的排队任务。
 - 仅解析 UTF-8 文本和 Markdown；PDF、DOCX、OCR 尚未接入。
 - 扩展正文提取采用 DOM 候选评分和启发式清理；复杂 SPA、Shadow DOM、跨域 iframe、分页和登录墙仍可能提取不完整。

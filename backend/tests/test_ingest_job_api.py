@@ -69,7 +69,7 @@ class IngestJobApiTest(unittest.TestCase):
         self.assertEqual(response.json()["id"], job.id)
         self.assertEqual(response.json()["status"], "QUEUED")
         self.plugin_service.decrypt_api_key.assert_called_once_with(self.plugin)
-        self.web_clip_service.ensure_capacity.assert_called_once_with("plugin-a")
+        self.web_clip_service.ensure_capacity.assert_called_once_with("plugin-a", url="https://example.com/")
         self.job_service.create_web_clip_job.assert_called_once()
 
     def test_submit_async_clip_rejected_at_quota_429_without_job(self) -> None:

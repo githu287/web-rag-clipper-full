@@ -3,7 +3,7 @@
 核对日期：2026-10-22（Asia/Shanghai）。代码基线：`394c85d`，分支 `main`。
 本文记录本次代码阅读和本地验证结果；后续实现变化时需更新，以实际代码为准。
 
-后续修复进展：审查报告第 1—5 项已处理，当前迁移 head 为 `0011`，最新测试为 675 passed / 115 subtests passed，扩展 6 组通过。任务 payload 与 Job 同事务写入 MySQL，Worker 定期补投 Redis；模型切换与入库共享数据库协调；元数据 API 禁止本地文件路径。聊天请求绑定原会话与页面快照，前端等待期限按后端模型配置分配并覆盖响应正文和上传。详见 `PROJECT_REVIEW.md` 顶部。
+后续修复进展：审查报告第 1—9 项已处理，当前迁移 head 为 `0011`，最新测试为 692 passed / 115 subtests passed，扩展 7 组通过。任务持久化投递、模型互斥、文件归属、会话归属和超时已修复；配额统一到创建事务，满额可复用 URL；知识库从服务端恢复任务重试；切块重叠纳入长度预算。真实 MySQL 8 请求竞争 1 名额与 API 任务隔离验证通过。详见 `PROJECT_REVIEW.md` 顶部。
 
 ## 产品与实现边界
 
@@ -85,6 +85,7 @@ Worker 通过 Repository 在同一事务内领取文档并绑定任务；提交�
 | `node extension/tests/api-client.test.js` | 通过 |
 | `node extension/tests/clip-detect.test.js` | 通过 |
 | `node extension/tests/chat-request.test.js` | 通过（后续新增：8 个会话交错场景） |
+| `node extension/tests/library-retry.test.js` | 通过（后续新增：15 个任务恢复场景） |
 | `python -m evaluation.validate_datasets evaluation/datasets/rag_eval.jsonl evaluation/datasets/negative_eval.jsonl evaluation/datasets/isolation_eval.jsonl --allow-placeholders` | 150 条通过 |
 
 这些单元测试使用 SQLite 与外部服务替身，本身不证明真实服务或浏览器全链路可用。
@@ -93,7 +94,7 @@ Worker 通过 Repository 在同一事务内领取文档并绑定任务；提交�
 ## 当前发现与后续事项
 
 1. **依赖可复现性**：按原依赖文件全新安装时，解析得到的 `setuptools 84.2.1` 不提供 `pkg_resources`，导致 `pymilvus 2.4.15` 导入失败，pytest 出现 22 个收集错误。环境配置时已在 `backend/requirements.txt` 固定 `setuptools==80.9.0`，全套测试通过。其他依赖仍使用较宽版本范围，也没有锁文件；本机安装快照在被忽略的 `.venv/installed-requirements.txt`。测试仍有 pkg_resources 弃用和 Starlette TestClient 弃用两条警告。
-2. **满额重新剪藏行为待修复**：`WebClipService.clip()` 对已有 URL 不检查新增配额，但 `POST /clips/async` 在查重前无条件调用 `ensure_capacity()`。因此扩展采用的异步入口在满额时也会拒绝已有 URL，与 README 描述有差异；现有测试分别覆盖 Service 的重新剪藏与入口的满额拒绝，未覆盖两者组合。本次仅静态确认调用顺序，未做真实服务复现。
+2. **满额重新剪藏已修复**：异步预检和 Worker 共用 URL 查重规则；已有 URL 可复用。Repository 在 Workspace 行锁内计数并创建，覆盖元数据 API 与并发创建；真实 MySQL 限额竞争已验证。
 3. **联调环境已配置**：`.env`、Docker 基础服务、数据库迁移 `0011`、API 和单 Worker 已启动。真实 MySQL、Redis、API 注册/认证和 Milvus 写入/落盘/检索/删除已验证；真实模型 Key 尚待扩展内配置。详情见 `LOCAL_DEVELOPMENT.md`。
 4. **启动配置**：Compose 宿主端口为 MySQL `33066`、Redis `16379`，本机 `.env` 已对齐。`18000` 被另一个项目占用，因此 API、扩展和启动文档已统一使用 `localhost:18001`。Docker Desktop 改为使用 Windows 系统代理，解决镜像直连超时；MinIO 使用 Compose 覆盖文件中的固定 PGSTY 镜像，实际与 Milvus 2.4.4 读写联调通过。
 5. **维护集中点**：`sidepanel.js` 当前 2446 行，多个 UI 流程集中在一个文件；后续扩展交互时可按具体需求逐步拆分。部分代码注释仍描述历史 Phase，应核对实际实现。
