@@ -7,6 +7,8 @@
 | 文件 | 说明 |
 |---|---|
 | `README.md` | 项目定位、快速启动、模型配置、使用流程、测试与排障 |
+| `.github/workflows/ci.yml` | push/PR/手动触发的 Linux/Windows 后端、扩展与数据格式回归 |
+| `scripts/check.py` | 本地与 CI 统一离线检查入口，自动发现 Node 测试并传播失败 |
 | `ARCHITECTURE.md` | 当前实现的分层、数据流、隔离与一致性设计 |
 | `FILE_INDEX.md` | 本文件 |
 | `.env.example` | 环境变量模板；部分字段是尚未消费的预留配置 |

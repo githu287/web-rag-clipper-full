@@ -284,6 +284,8 @@ Workspace 删除要求 `confirm=true` 且提交名称与当前名称完全一致
 
 主测试集覆盖 Router、Service、Repository、DTO、安全工具、URL 规范化、异步队列/Worker、Workspace 隔离和评测计算。具体数量以当前 pytest 输出为准。根目录 conftest.py 禁止测试加载个人 `.env`；可靠性回归使用真实 SQLite Repository 与外部服务替身。扩展另有 Node.js 回归测试。
 
+`scripts/check.py all` 是本地与 GitHub Actions 的统一入口；可分别选择 backend/extension/datasets。CI 在 push、PR、手动触发时以 Python 3.11、Node.js 24 运行 Linux/Windows 矩阵，只授予 contents:read，不需要业务 Secrets 或外部服务。扩展脚本先做语法检查，再自动发现全部 `*.test.js`；数据检查只验证公开占位数据格式，不执行真实评测。真实服务故障恢复与浏览器端到端尚未接入 CI。
+
 日志记录操作类型、Document ID 和候选数量等诊断信息；安全代码避免记录 Plugin Secret 与 API Key 明文。项目目前没有统一 metrics/tracing、结构化审计日志或请求 ID 中间件。
 
 当前工作区没有旧 User/Bearer 路由和服务；历史 User 相关数据库迁移仍保留。`deps.py` 只提供 Plugin 身份。

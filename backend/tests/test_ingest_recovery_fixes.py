@@ -3,7 +3,7 @@ import asyncio
 from datetime import datetime, timedelta
 from random import Random
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -25,6 +25,14 @@ from backend.repositories.mysql.plugin_impl import PluginRepositoryImpl
 from backend.services.document_upload import DocumentUploadService
 from backend.services.ingest_job import IngestJobService
 from backend.services.web_clip import WebClipService
+
+
+@pytest.fixture(autouse=True)
+def isolated_startup():
+    # Context-managed TestClient runs lifespan; these API tests exercise SQLite
+    # repositories, so Milvus startup must be isolated just like model calls.
+    with patch("backend.main.get_milvus_initializer") as factory:
+        yield factory.return_value
 
 
 @pytest.fixture

@@ -259,6 +259,16 @@ MySQL 是文档状态和归属的权威来源；Milvus 只保存向量检索所�
 
 ## 测试
 
+在已安装 `requirements-dev.txt` 的 Python 3.11 环境与 Node.js 24 下，可用统一入口运行全部离线检查：
+
+```powershell
+.venv\Scripts\python.exe scripts/check.py all
+```
+
+也可选择 `backend`、`extension`、`datasets` 中一项或多项。扩展检查包含脚本语法检查，并自动发现 `extension/tests/*.test.js`；任一步失败都会返回非零退出码。
+
+`.github/workflows/ci.yml` 在 push、PR 和手动触发时，在 Linux/Windows 上运行后端及扩展检查；Python 使用 3.11、Node 使用 24，Python 依赖按两份 requirements 缓存。工作流只读仓库，不需要 Secrets，不启动 MySQL/Redis/Milvus，不执行收费模型请求。评测步骤允许公开数据中的运行时 ID 占位符，仅校验 150 条数据格式，不代表检索质量评测。真实服务故障恢复与浏览器端到端验证仍需单独执行。
+
 当前已接入的主测试集：
 
 ```powershell
