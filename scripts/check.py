@@ -7,6 +7,8 @@ Dataset validation permits the public runtime-ID placeholders, not real evaluati
 from __future__ import annotations
 
 import argparse
+from collections import deque
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -19,7 +21,22 @@ GROUPS = ("backend", "extension", "datasets")
 
 def run(*args: str) -> None:
     print("+ " + " ".join(args), flush=True)
-    subprocess.run(args, cwd=ROOT, check=True)
+    # Keep live logs and a short failure tail visible in Actions annotations, even
+    # when downloading full logs requires repository authentication.
+    tail: deque[str] = deque(maxlen=80)
+    with subprocess.Popen(args, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                          text=True, encoding="utf-8", errors="replace",
+                          env={**os.environ, "PYTHONUTF8": "1"}) as process:
+        assert process.stdout is not None
+        for line in process.stdout:
+            print(line, end="", flush=True)
+            tail.append(line)
+        code = process.wait()
+    if code:
+        if os.environ.get("GITHUB_ACTIONS") == "true":
+            message = "".join(tail)[-8000:].replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+            print("::error title=Regression check failed::" + message, flush=True)
+        raise subprocess.CalledProcessError(code, args)
 
 
 def check_backend() -> None:
