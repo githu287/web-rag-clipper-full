@@ -204,10 +204,15 @@ class LocalFileStorageTest(unittest.TestCase):
 
     def test_resolve_rejects_separator_traversal(self) -> None:
         """resolve 拒绝含 `/` 或 `\\` 的越界路径。"""
-        for bad in ("../evil.txt", "..\\evil.txt", "sub/../../evil.txt"):
+        for bad in ("../evil.txt", "..\\evil.txt", "sub/../../evil.txt", "sub\\..\\..\\evil.txt", "sub/..\\..\\evil.txt"):
             with self.subTest(path=bad):
                 with self.assertRaises(DocumentStoragePathTraversalError):
                     self.storage.resolve(bad)
+
+    def test_resolve_accepts_both_separator_styles_inside_root(self) -> None:
+        expected = os.path.realpath(os.path.join(self.upload_dir, "sub", "safe.txt"))
+        self.assertEqual(self.storage.resolve("sub/safe.txt"), expected)
+        self.assertEqual(self.storage.resolve("sub\\safe.txt"), expected)
 
 
 if __name__ == "__main__":

@@ -73,6 +73,8 @@ Worker 通过 Repository 在同一事务内领取文档并绑定任务；提交�
 
 ## 本机验证基线
 
+首次 Linux CI 揭示 `_resolve()` 在 POSIX 上未将反斜杠视为分隔符。已统一解析两种分隔符，仍通过 realpath/commonpath 校验根目录边界；增加混合分隔符穿越和合法子目录回归。最新本地结果为 693 passed / 117 subtests passed，扩展 7 组与 150 条数据格式校验通过。检查入口还修复 Windows GBK 日志编码，并将失败摘要写入 GitHub 检查注释以便定位。
+
 2026-10-23 补充：新增 `.github/workflows/ci.yml` 与跨平台 `scripts/check.py`。统一命令 `python scripts/check.py all` 在本机外部服务未运行时通过：692 passed / 115 subtests passed、7 组扩展、150 条公开评测格式校验。修正 `test_ingest_recovery_fixes.py` 在 TestClient lifespan 中意外初始化真实 Milvus 的问题；只隔离该测试模块的初始化依赖，保留 SQLite Repository 及 API 路由行为。CI 配置 Linux/Windows 双平台、Python 3.11 与 Node.js 24，不需要凭证。Actionlint 1.7.12 静态验证通过；托管运行结果以 GitHub Actions 为准。
 
 本次创建了被 Git 忽略的 `.venv/`，使用本机已有 Python `3.11.15`，安装 `requirements-dev.txt`。

@@ -69,6 +69,11 @@ def check_datasets() -> None:
 
 
 def main() -> int:
+    # Windows redirected consoles may default to GBK; Node's test reporter emits
+    # Unicode symbols, so keep the parent log stream UTF-8 as well as children.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("groups", choices=(*GROUPS, "all"), nargs="+", help="Checks to run; 'all' runs every group")
     args = parser.parse_args()
