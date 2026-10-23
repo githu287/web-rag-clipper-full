@@ -148,9 +148,10 @@ class LocalFileStorageTest(unittest.TestCase):
         self.assertTrue(os.path.isabs(physical))
         self.assertEqual(
             physical,
-            os.path.abspath(os.path.join(self.upload_dir, rel_path)),
+            os.path.realpath(os.path.join(self.upload_dir, rel_path)),
         )
-        self.assertTrue(physical.startswith(os.path.abspath(self.upload_dir)))
+        base = os.path.realpath(self.upload_dir)
+        self.assertEqual(os.path.commonpath([physical, base]), base)
 
     def test_resolve_path_is_openable(self) -> None:
         """resolve 返回的路径可直接 open() 读取真实内容。"""
@@ -166,7 +167,8 @@ class LocalFileStorageTest(unittest.TestCase):
         physical = self.storage.resolve(rel_path)
         saved = os.path.join(self.upload_dir, rel_path)
 
-        self.assertEqual(physical, os.path.abspath(saved))
+        # Windows runner temp roots can use an 8.3 alias (RUNNER~1).
+        self.assertTrue(os.path.samefile(physical, saved))
         self.assertTrue(os.path.isfile(physical))
 
     def test_resolve_rejects_parent_traversal(self) -> None:
