@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+import json
 from unittest.mock import MagicMock, patch
 
 from redis.exceptions import RedisError
@@ -27,13 +28,13 @@ class RedisIngestQueueTest(unittest.TestCase):
         kwargs = self.redis_constructor.call_args.kwargs
         self.assertGreater(kwargs["socket_timeout"], 5)
 
-    def test_enqueue_writes_payload_and_queue_atomically(self) -> None:
-        pipeline = MagicMock()
-        self.client.pipeline.return_value.__enter__.return_value = pipeline
+    def test_enqueue_uses_one_atomic_deduplicated_publication(self) -> None:
         self.queue.enqueue("job-1", {"plugin_id": "plugin-a", "raw_text": "正文"})
-        pipeline.setex.assert_called_once()
-        pipeline.lpush.assert_called_once_with("test:ingest", "job-1")
-        pipeline.execute.assert_called_once_with()
+        self.client.eval.assert_called_once()
+        args = self.client.eval.call_args.args
+        self.assertEqual(args[1:6], (3, "test:ingest:payload:job-1", "test:ingest", "test:ingest:processing", "job-1"))
+        self.assertEqual(json.loads(args[6]), {"plugin_id": "plugin-a", "raw_text": "正文"})
+        self.assertEqual(args[7], 600)
 
     def test_dequeue_uses_processing_list_and_acknowledges(self) -> None:
         self.client.brpoplpush.return_value = "job-1"

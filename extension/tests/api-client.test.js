@@ -11,7 +11,7 @@ const vm = require("node:vm");
 
 const extensionDir = path.resolve(__dirname, "..");
 
-function loadApiClient(fetchImpl) {
+function loadApiClient(fetchImpl, timers) {
   const stored = {};
   const chrome = {
     storage: {
@@ -34,8 +34,8 @@ function loadApiClient(fetchImpl) {
     console,
     fetch: fetchImpl,
     AbortController,
-    setTimeout,
-    clearTimeout,
+    setTimeout: timers ? timers.setTimeout : setTimeout,
+    clearTimeout: timers ? timers.clearTimeout : clearTimeout,
     // 上传通道内部会 new FormData()，沙箱需要提供可记录的替身。
     FormData: function RecordingFormData() {
       this.entries = [];
@@ -279,7 +279,51 @@ async function expectApiError(promise, status, code, messagePattern) {
     await expectApiError(uploadVia(offline), 0, "NETWORK");
   }
 
-  console.log("api-client error classification tests passed");
+  // Virtual deadlines: exercise fetch and delayed body reads without waiting in real time.
+  for (const channel of ["json-headers", "json-body", "upload-headers", "upload-body"]) {
+    let fireTimeout;
+    let timerCleared = false;
+    let calls = 0;
+    const api = loadApiClient(async function (_url, init) {
+      calls += 1;
+      const pending = () => new Promise(function (_resolve, reject) {
+        init.signal.addEventListener("abort", function () {
+          const error = new Error("aborted");
+          error.name = "AbortError";
+          reject(error);
+        });
+      });
+      if (channel.endsWith("headers")) return pending();
+      return { status: 200, ok: true, json: pending };
+    }, {
+      setTimeout(fn) { fireTimeout = fn; return 1; },
+      clearTimeout() { timerCleared = true; },
+    });
+    api.setPluginDetails({ pluginId: "plugin-a", pluginSecret: "secret-a" });
+    const promise = channel.startsWith("upload") ? uploadVia(api) : api.request("/plugins/me");
+    const checked = expectApiError(promise, 0, "TIMEOUT", /超时/);
+    // Allow fetch to settle so a body reader can start before aborting it.
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(timerCleared, false, "deadline must cover response body");
+    fireTimeout();
+    await checked;
+    assert.equal(timerCleared, true);
+    assert.equal(calls, 1, "timeouts must never automatically repeat submissions");
+  }
+  {
+    const durations = [];
+    const api = loadApiClient(async () => makeResponse(200, {}), {
+      setTimeout(_fn, duration) { durations.push(duration); return 1; },
+      clearTimeout() {},
+    });
+    api.setPluginDetails({ pluginId: "plugin-a", pluginSecret: "secret-a" });
+    await api.jobs.get("job-1");
+    await api.rag.ask({ query: "question" });
+    await api.rag.search({ query: "question" });
+    await api.plugins.updateModelConfig({});
+    assert.deepEqual(durations, [30000, 300000, 300000, 300000]);
+  }
+  console.log("api-client error classification and deadline tests passed");
 })().catch(function (error) {
   console.error(error);
   process.exitCode = 1;

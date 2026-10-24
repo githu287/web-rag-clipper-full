@@ -19,6 +19,7 @@ from backend.core.exceptions import (
 )
 from backend.main import create_app
 from backend.models.ingest_job import IngestJobStatus, IngestJobType
+from backend.services.web_clip import WebClipService
 
 
 def make_job(status: str = IngestJobStatus.QUEUED) -> Mock:
@@ -69,7 +70,7 @@ class IngestJobApiTest(unittest.TestCase):
         self.assertEqual(response.json()["id"], job.id)
         self.assertEqual(response.json()["status"], "QUEUED")
         self.plugin_service.decrypt_api_key.assert_called_once_with(self.plugin)
-        self.web_clip_service.ensure_capacity.assert_called_once_with("plugin-a")
+        self.web_clip_service.ensure_capacity.assert_called_once_with("plugin-a", url="https://example.com/")
         self.job_service.create_web_clip_job.assert_called_once()
 
     def test_submit_async_clip_rejected_at_quota_429_without_job(self) -> None:
@@ -90,6 +91,28 @@ class IngestJobApiTest(unittest.TestCase):
         self.assertEqual(body["type"], "DocumentQuotaExceededError")
         self.assertIn("请先删除部分文档", body["detail"])
         self.job_service.create_web_clip_job.assert_not_called()
+
+    def test_async_clip_at_full_quota_allows_existing_url_but_rejects_new_route(self) -> None:
+        repository = Mock()
+        repository.count_documents.return_value = 188
+        repository.get_webpage_by_url.return_value = Mock(id=7)
+        service = WebClipService(repository, Mock(), Mock(), max_documents_per_workspace=188)
+        self.app.dependency_overrides[get_web_clip_service] = lambda: service
+        self.job_service.create_web_clip_job.return_value = make_job()
+
+        response = self.client.post("/clips/async", json={
+            "url": "https://example.com/?utm_source=test#/one", "raw_text": "updated body",
+        })
+        self.assertEqual(response.status_code, 202)
+        repository.get_webpage_by_url.assert_called_once_with("plugin-a", "https://example.com/#/one")
+        repository.count_documents.assert_not_called()
+
+        repository.get_webpage_by_url.return_value = None
+        response = self.client.post("/clips/async", json={
+            "url": "https://example.com/#/two", "raw_text": "new body",
+        })
+        self.assertEqual(response.status_code, 429)
+        self.job_service.create_web_clip_job.assert_called_once()
 
     def test_get_and_retry_are_workspace_scoped(self) -> None:
         job = make_job(IngestJobStatus.FAILED)

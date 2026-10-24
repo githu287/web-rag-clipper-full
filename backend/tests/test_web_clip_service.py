@@ -860,6 +860,26 @@ class WebClipServiceTest(unittest.TestCase):
         self.assertIsNone(self.service.ensure_capacity("plugin-a"))
         self.document_repo.create_document.assert_not_called()
 
+    def test_capacity_precheck_reuses_normalized_url_at_full_quota(self) -> None:
+        self.document_repo.count_documents.return_value = 50
+        self.document_repo.get_webpage_by_url.return_value = self._make_document()
+        self.service.ensure_capacity(
+            "plugin-a", url="https://example.com/a?utm_source=test#/one",
+        )
+        self.document_repo.get_webpage_by_url.assert_called_once_with(
+            "plugin-a", "https://example.com/a#/one",
+        )
+        self.document_repo.count_documents.assert_not_called()
+        self.document_repo.create_document.assert_not_called()
+
+    def test_capacity_precheck_rejects_new_hash_route_at_full_quota(self) -> None:
+        self.document_repo.count_documents.return_value = 50
+        self.document_repo.get_webpage_by_url.return_value = None
+        with self.assertRaises(DocumentQuotaExceededError):
+            self.service.ensure_capacity("plugin-a", url="https://example.com/#/two")
+        self.document_repo.count_documents.assert_called_once_with("plugin-a")
+        self.document_repo.create_document.assert_not_called()
+
     # ----------------------------------------------------- 附加：Protocol 注入
     def test_protocol_injection(self) -> None:
         """附加：依赖以 Mock(spec=...) 注入，未声明方法访问抛 AttributeError。"""

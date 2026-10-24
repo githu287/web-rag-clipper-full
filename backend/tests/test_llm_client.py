@@ -54,6 +54,11 @@ def _make_client_response(content: object | None) -> Mock:
     return completion
 
 
+def cached_client(owner, *args):
+    with owner._get_client(*args) as client:
+        return client
+
+
 class BailianLLMClientTest(unittest.TestCase):
     """BailianLLMClient.generate() 单元测试。"""
 
@@ -339,20 +344,20 @@ class BailianLLMClientUserKeyTest(unittest.TestCase):
         self.client.generate("s", "u", api_key="sk-user-a")
         self.client.generate("s", "u", api_key="sk-user-b")
         self.assertEqual(self.mock_openai_cls.call_count, 2)
-        self.assertEqual(len(self.client._clients), 2)  # noqa: SLF001
+        self.assertEqual(len(self.client._client_cache), 2)  # noqa: SLF001
 
     def test_same_key_shared_client(self) -> None:
         """F6-E：相同 Key → 共享同一 OpenAI client（不重复构造）。"""
         self.client.generate("s", "u", api_key="sk-user-a")
         self.client.generate("s", "u", api_key="sk-user-a")
         self.assertEqual(self.mock_openai_cls.call_count, 1)
-        self.assertEqual(len(self.client._clients), 1)  # noqa: SLF001
+        self.assertEqual(len(self.client._client_cache), 1)  # noqa: SLF001
 
     def test_client_cache_is_bounded(self) -> None:
         for index in range(33):
             self.client.generate("s", "u", api_key=f"sk-user-{index}")
 
-        self.assertEqual(len(self.client._clients), 32)  # noqa: SLF001
+        self.assertEqual(len(self.client._client_cache), 32)  # noqa: SLF001
 
     # ----------------------------------------------------- #26 淘汰语义
     def _use_distinct_clients(self) -> list[Mock]:
@@ -371,9 +376,9 @@ class BailianLLMClientUserKeyTest(unittest.TestCase):
         """淘汰必须 close()：httpx 连接池不能等 GC 才释放。"""
         created = self._use_distinct_clients()
         for index in range(33):
-            self.client._get_client(f"sk-user-{index}")
+            cached_client(self.client, f"sk-user-{index}")
 
-        self.assertEqual(len(self.client._clients), 32)  # noqa: SLF001
+        self.assertEqual(len(self.client._client_cache), 32)  # noqa: SLF001
         created[0].close.assert_called_once_with()
         created[1].close.assert_not_called()
 
@@ -381,30 +386,30 @@ class BailianLLMClientUserKeyTest(unittest.TestCase):
         """命中要刷新使用顺序：先丢最久未使用的 Key，而不是最早创建的 Key。"""
         created = self._use_distinct_clients()
         for index in range(32):
-            self.client._get_client(f"sk-user-{index}")
+            cached_client(self.client, f"sk-user-{index}")
         # 重新触碰 Key 0（命中不重复构造），它变成最新使用，Key 1 退回队首
-        self.assertIs(self.client._get_client("sk-user-0"), created[0])  # noqa: SLF001
+        self.assertIs(cached_client(self.client, "sk-user-0"), created[0])  # noqa: SLF001
         self.assertEqual(self.mock_openai_cls.call_count, 32)
 
-        self.client._get_client("sk-user-32")
+        cached_client(self.client, "sk-user-32")
 
         created[1].close.assert_called_once_with()
         created[0].close.assert_not_called()
-        self.assertEqual(len(self.client._clients), 32)  # noqa: SLF001
+        self.assertEqual(len(self.client._client_cache), 32)  # noqa: SLF001
 
     def test_close_failure_during_eviction_keeps_returned_client(self) -> None:
         """close 失败只该记日志，不能把已经建好的 client 换成一次请求失败。"""
         created = self._use_distinct_clients()
         for index in range(32):
-            self.client._get_client(f"sk-user-{index}")
+            cached_client(self.client, f"sk-user-{index}")
         # 队首 = 最久未使用，会在下一次淘汰时被 close：让它抛错
         created[0].close.side_effect = RuntimeError("close failed")
 
         with self.assertLogs("backend.clients.llm", level="WARNING") as logs:
-            client = self.client._get_client("sk-user-32")
+            client = cached_client(self.client, "sk-user-32")
 
         self.assertIs(client, created[32])
-        self.assertEqual(len(self.client._clients), 32)  # noqa: SLF001
+        self.assertEqual(len(self.client._client_cache), 32)  # noqa: SLF001
         self.assertIn("close failed", " ".join(logs.output))
 
     def test_workspace_config_uses_llm_endpoint(self) -> None:

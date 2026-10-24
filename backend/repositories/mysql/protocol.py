@@ -223,6 +223,13 @@ class DocumentRepository(Protocol):
         """Atomically claim a document; reject a stale state or foreign owner."""
         ...
 
+    def fail_pending_upload(self, document_id: int, plugin_id: str, error_message: str) -> bool:
+        """Fail only an owned PENDING upload with no QUEUED/RUNNING job.
+
+        Return False without changes if missing, reserved or already advanced.
+        """
+        ...
+
     # ----------------------------------------------------------- update_status
     def update_status(
         self,

@@ -64,6 +64,8 @@ Plugin Secret 会保存在扩展本地存储以便认证，但不会写入聊天
 
 lifespan 启动阶段调用 `MilvusInitializer.initialize()`：连接 Milvus；Collection 不存在时创建 Schema 和索引；已存在时校验/复用；最后加载 Collection。它不会自动删除并重建已有 Collection。
 
+API lifespan 和 Worker 的退出路径（包括启动/恢复失败）会清理已初始化的模型客户端缓存；清理过程不创建未使用的依赖。API 通过线程执行关闭操作，避免阻塞事件循环。
+
 已知领域异常由 `main.py` 统一映射为 HTTP 响应，未知异常交给 FastAPI 默认 500。
 
 ### 3.3 基础设施
@@ -74,6 +76,10 @@ lifespan 启动阶段调用 `MilvusInitializer.initialize()`：连接 Milvus；C
 - Redis：保存待处理队列、processing 确认列表与限时 payload；不作为任务状态权威库。
 - 本地文件系统：仅上传文件落入 `uploads/`；网页剪藏不创建物理文件。
 - 模型服务：Embedding 和 Chat Completion 均通过 OpenAI 兼容接口访问。Workspace 可分别配置两个服务；内置百炼、OpenAI、Gemini、DeepSeek、硅基流动和 OpenRouter 预设，也支持自定义 HTTPS 兼容端点。
+
+Embedding 和 LLM 分别持有最多 32 个缓存客户端，按 Base URL、模型和 Key 的摘要隔离，并通过 `clients/client_cache.py` 统一管理。首次构造在锁内完成，防止同 Key 并发漏建连接池；实际 SDK 网络请求与连接关闭在锁外执行。每次请求持有客户端租用记录，LRU 淘汰或退出清理只移除缓存资格，仍在使用的客户端延迟到最后一个请求释放时关闭。因此“缓存上限 32”不包括暂时保留的在途客户端，实际连接资源还取决于并发请求数。
+
+缓存清理可重复执行，清理后的包装对象也可再次惰性创建新连接；旧租用释放不会关闭新建的同 Key 客户端。关闭失败只记告警，不替换业务请求的结果或原始异常。
 
 ## 4. 身份、凭证与隔离
 
@@ -151,7 +157,7 @@ Workspace 隔离不只依赖一个过滤点：
 
 ### 5.4 `ingest_jobs`
 
-`ingest_jobs` 持久化 `QUEUED → RUNNING → SUCCEEDED | FAILED` 状态机，包含 `stage`、`progress`、`attempt_count`、可选 `document_id`、错误摘要和开始/完成时间。Workspace 删除时通过外键级联清理任务；Document 删除时任务历史保留但 `document_id` 置空。
+`ingest_jobs` 持久化 `QUEUED → RUNNING → SUCCEEDED | FAILED` 状态机，包含 `stage`、`progress`、`attempt_count`、可选 `document_id`、错误摘要和开始/完成时间。迁移 `0011` 增加网页任务的 `payload` JSON 和 `payload_expires_at`（UTC），与任务在同一事务中创建；上传任务复用已有 `document_id`，不重复保存文件内容。Workspace 删除时通过外键级联清理任务和正文；Document 删除时任务历史保留但 `document_id` 置空。任务状态 API 明确排除正文，轮询查询也不加载该列。
 
 ## 6. 写入链路
 
@@ -175,13 +181,17 @@ Side Panel 选择文件 → POST /documents/upload/async
 
 失败后 Document 和 Job 都进入 `FAILED` 并记录错误摘要。文件在 Document 创建成功后的处理失败场景中会保留以支持重试；若 Document 创建本身失败，会清理刚落盘的孤儿文件。Redis payload 只包含 Workspace 和 Document 引用，不包含文件字节或 API Key。旧 `POST /documents/upload` 保留为同步兼容接口。
 
+两个上传入口都在 FastAPI 线程池中执行。异步任务入口在同一个同步受理调用中完成文档准备、任务创建及必要的失败补偿；调用方停止等待不会在这些步骤之间取消执行。同步兼容入口在线程池的局部事件循环中调用现有 async UploadService，与 Worker 的调用方式一致，解析、Embedding 和 Milvus 的同步调用不会阻塞 API 事件循环；该入口仍等待完整入库后才返回。
+
+`api/upload.py` 统一限制路由从 multipart 临时文件复制的字节数：已知大小超限时直接拒绝，否则每次最多读取 64 KiB，累计最多读取 `MAX_PAGE_CONTENT_BYTES + 1` 字节以判断超限，并处理未知大小和短读取。大小按字节判断，恰好达到上限的文件不截断；超限返回原有 413，发生在业务文件保存和文档创建之前。该限制作用于框架完成 multipart 解析后的路由读取，并非 HTTP 接收流量或框架临时文件的全局上限。
+
 ### 6.2 网页剪藏
 
 ```text
 Side Panel 注入 extractor.js + content.js
   → 候选正文评分 → DOM 副本清噪 → 结构化文本序列化
   → 预览/编辑 + 提取诊断 → 用户确认
-  → POST /clips/async → MySQL Job(QUEUED) + Redis payload/queue → 202
+  → POST /clips/async → MySQL Job(QUEUED + 正文 + 有效期) → 尽力发布 Redis → 202
   → Worker: processing list → Job(RUNNING)
   → 规范化 URL（移除页内锚点 / 跟踪参数 / 默认端口，保留哈希路由 `#/...`）
   → 按 (plugin_id, normalized_url) 查询既有网页
@@ -193,9 +203,25 @@ Side Panel 注入 extractor.js + content.js
 
 网页文档固定使用 `filename=webclip.txt`，不写本地文件。后端会在查重前移除 URL 页内锚点、默认端口和 `utm_*` / `fbclid` / `gclid` 等跟踪参数；唯一的例外是路由型 fragment（`#/...`，旧写法 `#!/...` 会先归一）——哈希路由站点的不同页面只体现在这里，一并剥掉会把 `#/users/1` 与 `#/users/2` 折叠成同一篇文档，后一次剪藏原位覆盖上一篇的分块与向量。同一 Workspace、同一规范化 URL 的失败文档可原位重试；不同 Workspace 的相同 URL 相互独立。
 
-Worker 使用 Redis 待处理列表和 processing 列表实现确认语义。执行正文解析前，在一个 MySQL 事务内领取文档、绑定 `job.document_id` 并设置 `stage=PROCESSING_DOCUMENT`。恢复中断任务时，同一事务释放该任务占用的 `PROCESSING` 文档为 `FAILED`，并把 Job 置回 `QUEUED`，之后才搬运 Redis 队列。失败任务同样只释放自己领取的文档，不影响竞争中的其他操作。任务写入终态后才确认队列。Redis payload 不包含用户 API Key，Worker 执行时才解密当前 Key。
+Worker 使用 Redis 待处理列表和 processing 列表实现确认语义。执行正文解析前，在一个 MySQL 事务内领取文档、绑定 `job.document_id` 并设置 `stage=PROCESSING_DOCUMENT`。每轮任务之间同时检查 processing 与数据库中的 `RUNNING` 任务：即使 Redis 丢失 processing，仍可恢复数据库状态。MySQL 在同一事务内读取 Job 和所占文档，完成状态修复后才允许搬运 Redis 队列。数据库写入失败时保留 processing，后续轮次继续恢复。初次恢复也位于主循环重试边界内，Redis 暂时不可用不会让进程在恢复阶段直接退出。
+
+恢复不依赖 Redis payload 判断尝试次数。若该 Job 所占文档已经 `SUCCESS`，直接补齐 Job 的 `SUCCEEDED`，不重复执行 Embedding；否则释放所占文档，未达 `INGEST_MAX_RETRIES` 的任务置回 `QUEUED`，达到总尝试次数上限则 Job 与文档原子进入失败状态。成功终态写入发生异常时同样保留 processing，避免错误地将已完成工作标为失败。失败任务只释放自己领取的文档，不影响竞争中的其他操作。
+
+任务写入 MySQL 终态后才确认 Redis 队列，确认失败下一轮再次收敛。成功终态与数据库正文清除同事务提交；成功后的 Redis payload 清理是尽力而为，未清理的 payload 仍按 TTL 到期。数据库与 Redis payload 均不包含用户 API Key，Worker 执行时才解密当前 Key。
 
 恢复策略仍要求只运行一个 Worker。旧版本未记录文档绑定的网页任务不具备这一恢复保证，更新代码前应先完成在途任务。
+
+新任务在数据库提交成功后即受理，返回创建时的 Job 快照与 202；Redis 入队失败只延迟发布，不将持久化任务标为失败，也不增加提交后的数据库回查。Worker 每轮按 `created_at, id` 分批扫描最早 20 条 `QUEUED`：新网页任务从数据库恢复正文，上传任务由文档引用重建消息。Redis Lua 在同一次操作中补齐缺失正文、检查 pending / processing 中是否已有 ID，再决定是否入队，重复对账不重复追加或刷新现有正文 TTL。过期或已删除文档的任务明确失败，避免永久停留在排队状态。
+
+正文有效期沿用 `INGEST_PAYLOAD_TTL_SECONDS`（默认 7 天），以创建时的数据库截止时间为准，重试和补发不延长网页正文有效期。Worker 每轮最多清理 20 条过期正文，覆盖无人重试的失败任务；停止期间不执行数据库清理。过期记录保留截止时间，防止被当成旧任务从 Redis 复活。升级前的网页任务仍依赖 Redis 副本，缺失时标记失败并要求重新剪藏；该兼容路径的失败补偿仍在锁定 Job 后检查 `QUEUED` 和执行次数。上传入口只补偿当前 Workspace 中没有 `QUEUED` / `RUNNING` 任务的 `PENDING` 上传文档。
+
+这是基于数据库输入与单 Worker 对账的可恢复发布，不是 MySQL/Redis 分布式事务。任务 ID 的条件领取阻止同一任务重复执行；客户端丢失 HTTP 提交响应后再次提交，仍可能创建另一条任务。MySQL/Redis 的真实故障联调尚需部署环境验证；回归使用开启外键的 SQLite 与 Redis 边界替身，迁移另验证 MySQL 离线 SQL。
+
+异步剪藏提交预检和实际执行共用网页 URL 身份判断：已有文档即使在配额满额时也可提交更新；新 URL（包括不同哈希路由）在满额时返回 429。预检不预留额度，Worker 创建新文档前仍再次检查。
+
+扩展只对任务状态 GET 的网络错误、超时、429 和 5xx 自动退避重试（最多 5 次），不重发剪藏、上传、问答或重试任务 POST。普通/上传请求等待期限为 30 秒，模型相关请求为 300 秒，覆盖响应正文消费；客户端超时不代表后台操作取消。上传任务按 Workspace 持久化，失败记录不遮蔽其他待处理任务。
+
+剪藏提交与完成时均通过 sessionStore 的更新函数读取最新绑定，并核对 Workspace、任务 ID 和规范化 URL；页面或哈希路由变化时不恢复旧文档绑定。轮询取消标记防止已经切换标签页或 Workspace 的旧请求更新当前界面。现有存储串行化仍只覆盖单个 JavaScript 上下文，不是跨多个侧栏窗口的全局事务。
 
 ### 6.3 Milvus re-ingest
 
@@ -243,11 +269,15 @@ POST /rag/ask
 
 删除流程按 Milvus chunks → 本地文件 → MySQL Document 的顺序执行。接口对不存在的文档幂等返回 204；网页文档跳过文件删除。入库和删除用带归属、预期状态及活动任务条件的原子 UPDATE 领取文档，避免先检查再更新的竞争。异步任务尚未提交终态时，其文档也不可被其他操作领取。
 
+Document 的同步清理整体在线程池中顺序执行；Workspace 删除的身份读取、分批查询和最终数据库删除也移出事件循环，避免慢数据库、Milvus 或磁盘操作阻塞其他 API 请求。
+
 这不是分布式事务。若中途失败，文档保持 `DELETING`，避免部分向量已删除却恢复 `SUCCESS`；Side Panel 提供“继续删除”。保留的 MySQL 权威记录使重试可以继续收敛；错误由 API 映射为可观察的 5xx。
 
 ### 8.2 Workspace 删除
 
 Workspace 删除要求 `confirm=true` 且提交名称与当前名称完全一致。服务按每批 100 条、始终读取第一页的方式删除所有 Document，再删除 Workspace 行，避免 offset 分页漏项。
+
+最终删除事务先锁定 Workspace，再通过锁定读取确认没有剩余 Document。若最后一次列表查询后有新文档提交，返回 `PluginOperationError`（503）并保留 Workspace 和文档，重试可继续清理资源；MySQL 的 Document 外键仍是最终约束。删除期间没有冻结整个 Workspace 的新请求，正在入库的文档仍按文档状态锁拒绝删除。SQLite 回归覆盖剩余文档检查和重试收敛，MySQL 锁竞争尚需真实服务联调验证。
 
 ## 9. API 与异常边界
 

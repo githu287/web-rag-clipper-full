@@ -6,7 +6,8 @@
 "use strict";
 
 const API_BASE_URL = WEB_RAG_CLIPPER_CONFIG.API_BASE_URL;
-const API_REQUEST_TIMEOUT_MS = 30000;
+const API_REQUEST_TIMEOUT_MS = WEB_RAG_CLIPPER_CONFIG.TIMEOUTS.REQUEST_MS;
+const MODEL_REQUEST_TIMEOUT_MS = WEB_RAG_CLIPPER_CONFIG.TIMEOUTS.MODEL_MS;
 // STORAGE_KEYS 已在 config.js 全局声明，禁止重复声明（避免页面解析失败）。
 
 class ApiRequestError extends Error {
@@ -147,6 +148,7 @@ const webRagApiClient = (() => {
     try {
       data = await response.json();
     } catch (_err) {
+      if (_err && _err.name === "AbortError") throw _err;
       data = null;
     }
     if (opts.auth !== false && response.status === 401) {
@@ -210,25 +212,28 @@ const webRagApiClient = (() => {
     if (opts.auth !== false) {
       applyAuth(headers);
     }
-    let response;
+    return fetchAndClassify(path, { method: method, headers: headers, body: body }, opts);
+  }
+
+  // The deadline includes reading the body, not only waiting for headers.
+  async function fetchAndClassify(path, init, options) {
+    const opts = options || {};
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), API_REQUEST_TIMEOUT_MS);
+    const timeoutId = setTimeout(() => controller.abort(), opts.timeoutMs || API_REQUEST_TIMEOUT_MS);
     try {
-      response = await fetch(API_BASE_URL + path, {
-        method: method,
-        headers: headers,
-        body: body,
+      const response = await fetch(API_BASE_URL + path, Object.assign({}, init, {
         signal: controller.signal,
-      });
+      }));
+      return await classifyResponse(response, opts);
     } catch (err) {
+      if (err instanceof ApiRequestError) throw err;
       if (err && err.name === "AbortError") {
-        throw new ApiRequestError(0, "TIMEOUT", "请求超时，请稍后重试");
+        throw new ApiRequestError(0, "TIMEOUT", "等待响应超时，后台可能仍在处理；请先查看任务或知识库状态，避免重复提交");
       }
       throw new ApiRequestError(0, "NETWORK", "网络连接失败，请重试");
     } finally {
       clearTimeout(timeoutId);
     }
-    return classifyResponse(response, { auth: opts.auth });
   }
 
   // multipart/form-data 上传（POST /documents/upload）。
@@ -236,13 +241,8 @@ const webRagApiClient = (() => {
   // 认证与错误分类复用 applyAuth / classifyResponse，仅额外声明 413 / 415。
   async function uploadRequest(path, formData) {
     const headers = applyAuth({});
-    let response;
-    try {
-      response = await fetch(API_BASE_URL + path, { method: "POST", headers: headers, body: formData });
-    } catch (_err) {
-      throw new ApiRequestError(0, "NETWORK", "网络连接失败，请重试");
-    }
-    return classifyResponse(response, { failureLabel: "上传", statusErrors: UPLOAD_STATUS_ERRORS });
+    return fetchAndClassify(path, { method: "POST", headers: headers, body: formData },
+      { failureLabel: "上传", statusErrors: UPLOAD_STATUS_ERRORS });
   }
 
   return {
@@ -276,7 +276,7 @@ const webRagApiClient = (() => {
       },
       // 旧版兼容端点：保存并校验单个阿里云百炼 API Key
       async updateApiKey(apiKey) {
-        const result = await request("/plugins/me/api-key", { method: "PUT", body: { api_key: apiKey } });
+        const result = await request("/plugins/me/api-key", { method: "PUT", body: { api_key: apiKey }, timeoutMs: MODEL_REQUEST_TIMEOUT_MS });
         return result.data;
       },
       async modelProviders() {
@@ -288,7 +288,7 @@ const webRagApiClient = (() => {
         return result.data;
       },
       async updateModelConfig(payload) {
-        const result = await request("/plugins/me/model-config", { method: "PUT", body: payload });
+        const result = await request("/plugins/me/model-config", { method: "PUT", body: payload, timeoutMs: MODEL_REQUEST_TIMEOUT_MS });
         return result.data;
       },
       // DELETE /plugins/me/api-key：移除 API Key
@@ -335,14 +335,14 @@ const webRagApiClient = (() => {
       async ask(queryObj) {
         const body = { query: queryObj.query };
         if (queryObj.document_id != null) body.document_id = queryObj.document_id;
-        const result = await request("/rag/ask", { method: "POST", body: body });
+        const result = await request("/rag/ask", { method: "POST", body: body, timeoutMs: MODEL_REQUEST_TIMEOUT_MS });
         return result.data;
       },
       async search(queryObj) {
         const body = { query: queryObj.query };
         if (queryObj.limit != null) body.limit = queryObj.limit;
         if (queryObj.document_id != null) body.document_id = queryObj.document_id;
-        const result = await request("/rag/search", { method: "POST", body: body });
+        const result = await request("/rag/search", { method: "POST", body: body, timeoutMs: MODEL_REQUEST_TIMEOUT_MS });
         return result.data;
       },
     },

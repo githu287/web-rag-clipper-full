@@ -339,6 +339,25 @@ class DocumentRepositoryImpl(DocumentRepository):
         except (OperationalError, IntegrityError, DBAPIError) as exc:
             raise DocumentOperationError("document transition failed") from exc
 
+    def fail_pending_upload(self, document_id: int, plugin_id: str, error_message: str) -> bool:
+        """Fail an unreserved prepared upload without overwriting worker state."""
+        try:
+            with self._session_factory() as session:
+                result = session.execute(update(Document).where(
+                    Document.id == document_id,
+                    Document.plugin_id == plugin_id,
+                    Document.source_type == DocumentSourceType.UPLOAD,
+                    Document.status == DocumentStatus.PENDING,
+                    ~select(IngestJob.id).where(
+                        IngestJob.document_id == Document.id,
+                        IngestJob.status.in_([IngestJobStatus.QUEUED, IngestJobStatus.RUNNING]),
+                    ).exists(),
+                ).values(status=DocumentStatus.FAILED, error_message=error_message[:2048]))
+                session.commit()
+                return result.rowcount == 1
+        except (OperationalError, IntegrityError, DBAPIError) as exc:
+            raise DocumentOperationError("fail prepared upload failed") from exc
+
     # ----------------------------------------------------------- update_status
     def update_status(
         self,

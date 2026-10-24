@@ -25,6 +25,7 @@ FastAPI 应用入口（Phase 2.7 Step 2）。
 from __future__ import annotations
 
 import logging
+import asyncio
 from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator
 
@@ -39,7 +40,7 @@ from .api.routers import plugins as plugins_router_module
 from .api.routers import rag as rag_router_module
 from .clients.embedding import EmbeddingClientError
 from .clients.llm import LLMClientError
-from .core.di import get_milvus_initializer
+from .core.di import close_model_clients, get_milvus_initializer
 from .core.exceptions import (
     ApiKeyNotConfiguredError,
     ApiKeyValidationError,
@@ -90,18 +91,21 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         - 失败则记录日志并向上抛出（应用启动失败，由 uvicorn / 容器编排决定重试策略）。
 
     关闭阶段（yield 之后）：
-        当前无需清理资源（MilvusClient 由 Repository Impl 每次方法调用时 with 上下文自动释放；
-        OpenAI Client 由 EmbeddingClient 持有，进程退出时由 OS 回收）。
+        显式清理已初始化的模型连接池；正在使用的客户端等请求释放后关闭。
+        启动失败同样执行清理，不为清理而创建未使用的依赖。
 
     Args:
         app: FastAPI 应用实例（lifespan 协议要求；本实现未直接使用）。
     """
-    logger.info("FastAPI lifespan startup: 开始初始化 Milvus Collection...")
-    initializer = get_milvus_initializer()
-    initializer.initialize()  # 幂等：Collection 已存在则跳过
-    logger.info("FastAPI lifespan startup: Milvus Collection 初始化完成")
-    yield
-    logger.info("FastAPI lifespan shutdown: 无需清理资源")
+    try:
+        logger.info("FastAPI lifespan startup: 开始初始化 Milvus Collection...")
+        initializer = get_milvus_initializer()
+        initializer.initialize()  # 幂等：Collection 已存在则跳过
+        logger.info("FastAPI lifespan startup: Milvus Collection 初始化完成")
+        yield
+    finally:
+        await asyncio.to_thread(close_model_clients)
+        logger.info("FastAPI lifespan shutdown: 模型连接池已清理")
 
 
 # ---------------------------------------------------------------------------

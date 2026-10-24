@@ -171,7 +171,11 @@ class DocumentUploadApiTest(unittest.TestCase):
         )
 
         self.assertEqual(response.status_code, 503)
-        self.fake_upload_service.fail_prepared_upload.assert_called_once()
+        self.fake_upload_service.fail_prepared_upload.assert_called_once_with(
+            document.id,
+            self.fake_job_service.create_file_upload_job.side_effect,
+            plugin_id="plugin-42",
+        )
 
     # ------------------------------------------------------- 1. 201 成功
     def test_upload_success_201(self) -> None:

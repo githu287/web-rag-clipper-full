@@ -180,9 +180,13 @@ class DocumentUploadService:
         document = self._document_repository.get_document(document_id, plugin_id)
         return await self._process_document(document, plugin_id, api_key, claim_document)
 
-    def fail_prepared_upload(self, document_id: int, exc: Exception) -> None:
-        """Persist a terminal failure when a prepared upload cannot be queued."""
-        self._mark_failed(document_id, exc)
+    def fail_prepared_upload(self, document_id: int, exc: Exception, *, plugin_id: str) -> None:
+        """Best-effort compensation; accepted or advanced uploads remain intact."""
+        summary = str(exc)[:_MAX_ERROR_MESSAGE_LENGTH] or exc.__class__.__name__
+        try:
+            self._document_repository.fail_pending_upload(document_id, plugin_id, summary)
+        except Exception:
+            logger.exception("failed to compensate prepared upload: document_id=%s", document_id)
 
     async def upload(
         self,

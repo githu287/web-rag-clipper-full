@@ -46,6 +46,7 @@ Document Router：Document 生命周期 HTTP 接口（Phase 2.9 Step 3；Phase 2
 
 from __future__ import annotations
 
+import asyncio
 import math
 
 from fastapi import APIRouter, Depends, File, Query, UploadFile, status
@@ -57,7 +58,9 @@ from ...core.di import (
     get_document_upload_service,
     get_ingest_job_service,
     get_plugin_service,
+    get_settings,
 )
+from ...core.config import Settings
 from ...core.exceptions import IngestJobOperationError
 from ...models import PluginWorkspace
 from ...models.document_api_schema import (
@@ -80,6 +83,7 @@ from ...services.document_upload import DocumentUploadService
 from ...services.ingest_job import IngestJobService
 from ...services.plugin_service import PluginService
 from ..deps import get_current_plugin
+from ..upload import read_upload_content
 from .jobs import build_job_response
 
 # 创建 Router（prefix + tags 与既有 ingest/rag Router 风格一致）
@@ -325,16 +329,20 @@ async def ingest_document(
     status_code=status.HTTP_202_ACCEPTED,
     summary="异步上传并入库文档",
 )
-async def upload_document_async(
+def upload_document_async(
     file: UploadFile = File(...),
     current_plugin: PluginWorkspace = Depends(get_current_plugin),
     upload_service: DocumentUploadService = Depends(get_document_upload_service),
     job_service: IngestJobService = Depends(get_ingest_job_service),
     plugin_service: PluginService = Depends(get_plugin_service),
+    settings: Settings = Depends(get_settings),
 ) -> IngestJobResponse:
+    # The job is asynchronous; admission uses synchronous storage/queue clients.
+    # A sync endpoint keeps prepare -> submit -> compensation on one worker
+    # thread, including if the caller stops waiting for the response.
     # 提交时即拒绝未配置 Key 的 Workspace；明文 Key 不写入 Redis。
     plugin_service.decrypt_api_key(current_plugin)
-    content = await file.read()
+    content = read_upload_content(file, settings.max_page_content_bytes)
     document = upload_service.prepare_upload(
         filename=file.filename or "",
         content=content,
@@ -347,7 +355,7 @@ async def upload_document_async(
             document.id,
         )
     except IngestJobOperationError as exc:
-        upload_service.fail_prepared_upload(document.id, exc)
+        upload_service.fail_prepared_upload(document.id, exc, plugin_id=current_plugin.plugin_id)
         raise
     return build_job_response(job)
 
@@ -364,18 +372,19 @@ async def upload_document_async(
         "支持 .txt / .md / .markdown；文件超限 / 空文件 / 不支持扩展名分别返回 413 / 400 / 415。"
     ),
 )
-async def upload_document(
+def upload_document(
     file: UploadFile = File(...),
     current_plugin: PluginWorkspace = Depends(get_current_plugin),
     upload_service: DocumentUploadService = Depends(get_document_upload_service),
     plugin_service: PluginService = Depends(get_plugin_service),
+    settings: Settings = Depends(get_settings),
 ) -> DocumentUploadResponse:
     """
     POST /documents/upload
 
     业务流程：
         1) current_plugin 由 X-Plugin-ID + X-Plugin-Secret 解析（凭证缺失 → 401）；
-        2) 读取 multipart 文件完整字节（content）与元信息（filename / content_type）；
+        2) 按大小上限读取 multipart 临时文件，超限时在落盘与建文档前拒绝；
         3) upload_service.upload(filename, content, plugin_id=current_plugin.plugin_id,
            mime_type, api_key=decrypt_api_key(current_plugin)) 执行完整上传链路
            （见 services/document_upload.py docstring；Phase 3.5 Step 2-E：
@@ -402,14 +411,18 @@ async def upload_document(
         DocumentParserError / DocumentChunkingError / DocumentRepositoryError /
         MilvusRepositoryError / EmbeddingClientError: 链路失败（500 / 503 / 502）。
     """
-    content = await file.read()
-    document = await upload_service.upload(
+    api_key = plugin_service.decrypt_api_key(current_plugin)
+    content = read_upload_content(file, settings.max_page_content_bytes)
+    # FastAPI runs this compatibility endpoint in its thread pool. Like the
+    # worker, bridge to the async service on a local loop; synchronous parser,
+    # embedding and vector-store calls never occupy the API event loop.
+    document = asyncio.run(upload_service.upload(
         filename=file.filename or "",
         content=content,
         plugin_id=current_plugin.plugin_id,
         mime_type=file.content_type,
-        api_key=plugin_service.decrypt_api_key(current_plugin),
-    )
+        api_key=api_key,
+    ))
     return DocumentUploadResponse(
         id=document.id,
         filename=document.filename,

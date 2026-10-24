@@ -125,7 +125,7 @@ python -m pip install -r requirements-dev.txt
 alembic upgrade head
 ```
 
-当前 Alembic head 为 `0010`。该迁移会扩展加密配置字段，并为已有百炼配置补写 Embedding 指纹。
+当前 Alembic head 为 `0011`。新增迁移为任务表增加网页正文 JSON、有效期及恢复扫描索引。升级已有实例时，先停止 API 和 Worker，运行 `alembic upgrade head`，再用同一版本重启两个进程；本次代码更新不会自动迁移正在使用的数据库。
 
 ### 5. 启动 API
 
@@ -143,9 +143,9 @@ python -m uvicorn backend.main:app --host 0.0.0.0 --port 18000
 python -m backend.workers.ingest_worker
 ```
 
-Worker 会初始化 Milvus，恢复上次意外中断且未确认的任务，然后阻塞等待 Redis 队列。当前按单 Worker 模式设计。
+Worker 会初始化 Milvus，在启动和每轮任务开始前恢复 Redis processing 中未确认的记录，然后阻塞等待 Redis 队列。终态写入或确认短暂失败后无需重启即可继续恢复。当前按单 Worker 模式设计。
 
-停机方式有区别：`SIGTERM`（`systemctl stop`、`docker stop`、`kill <pid>`）会等当前任务收尾后再退出，正在入库的文档不会被拦腰截断；Ctrl+C（`SIGINT`）仍是立即中断。任何一种方式留下的未确认任务，都由下次启动时的恢复流程重新入队。
+停机方式有区别：`SIGTERM`（`systemctl stop`、`docker stop`、`kill <pid>`）会等当前任务收尾后再退出；Ctrl+C（`SIGINT`）仍是立即中断。未确认任务由恢复流程处理：已持久化成功的文档直接补齐任务成功状态，其余任务在总尝试次数未达上限时重新入队，达到上限则原子写入失败终态。
 
 ### 7. 初始化 Workspace
 
@@ -176,6 +176,8 @@ Worker 会初始化 Milvus，恢复上次意外中断且未确认的任务，然
 3. 确认剪藏后，API 创建任务，Worker 完成切块、Embedding 和 Milvus 入库。
 4. 在“当前网页”模式只检索这篇文档，或切换“全部知识库”跨文档提问。
 5. 在“我的知识库”查看状态、重试失败任务或删除文档。
+
+文件上传按 `MAX_PAGE_CONTENT_BYTES` 限制字节数。两个上传入口都在业务落盘前限读并拒绝超限文件（413），恰好达到上限的文件正常处理；受理、解析和同步存储调用在线程池运行，避免阻塞其他 API 请求。multipart 临时文件仍由框架先行解析，这不是整个 HTTP 请求体的全局大小限制。
 
 适合剪藏文章、技术文档、博客和语义结构清晰的 SPA 页面。浏览器内部页、扩展商店页、登录墙、跨域 iframe，以及主要内容位于 Shadow DOM 的页面可能无法完整提取。
 
@@ -222,6 +224,8 @@ MySQL 是文档状态和归属的权威来源；Milvus 只保存向量检索所�
 - 映射规则：`documents.id == page_chunks.page_id`，chunk 主键为 `{page_id}_{chunk_index}`。
 - 生命周期：`PENDING → PROCESSING → SUCCESS | FAILED`；删除期间使用 `DELETING` 互斥。
 
+文档和 Workspace 删除中的同步存储操作在线程池执行，避免拖住其他 API 请求。Workspace 删除会先清理文档，再在最终事务中检查是否仍有文档；若最终检查发现新提交的文档，会保留 Workspace 并返回错误，可重试删除继续清理。
+
 检索会先按 Workspace 的成功文档 ID 构造 Milvus 表达式，返回后再回查 MySQL 并做一次归属和 `SUCCESS` 过滤。
 
 ## 配置
@@ -249,7 +253,7 @@ MySQL 是文档状态和归属的权威来源；Milvus 只保存向量检索所�
 | `MAX_DOCUMENTS_PER_WORKSPACE` | `188` | 单个工作空间文档数上限（计数含全部状态）：达到上限后新的剪藏/上传被拒（429，同 URL 重新剪藏不占新额度）；全库检索仅取最新 N 篇 SUCCESS 文档参与（被排除的旧文档记 WARNING），同时给 Milvus 过滤表达式长度封顶 |
 | `REDIS_HOST` / `REDIS_PORT` / `REDIS_DB` | `localhost` / `6379` / `0` | 异步队列 Redis |
 | `INGEST_QUEUE_NAME` | `web-rag:ingest` | 待处理任务队列名 |
-| `INGEST_PAYLOAD_TTL_SECONDS` | `604800` | Redis 任务 payload 保留时间 |
+| `INGEST_PAYLOAD_TTL_SECONDS` | `604800` | 网页任务原始正文有效期（数据库与 Redis，默认 7 天） |
 | `INGEST_MAX_RETRIES` | `3` | 失败任务最大尝试次数 |
 
 `.env.example` 与 `Settings` 字段一一对应；`CORS_ORIGINS` 为唯一预留项，后端目前尚未注册 CORS 中间件消费它。
@@ -266,6 +270,8 @@ MySQL 是文档状态和归属的权威来源；Milvus 只保存向量检索所�
 
 `requirements-dev.txt` 包含运行依赖和 pytest；仅部署运行环境时可安装 `backend/requirements.txt`。
 
+`backend/tests/test_client_cache.py` 覆盖同 Key 并发创建、请求执行中被淘汰、API/Worker 退出清理和关闭失败。模型客户端按 LRU 缓存，淘汰时会等待正在使用的请求结束后关闭连接；API 与 Worker 退出时显式清理缓存。
+
 扩展侧的纯 JavaScript 回归测试无需启动后端：
 
 ```powershell
@@ -274,7 +280,12 @@ node extension/tests/url-utils.test.js
 node extension/tests/session-store.test.js
 node extension/tests/api-client.test.js
 node extension/tests/clip-detect.test.js
+node extension/tests/sidepanel-jobs.test.js
 ```
+
+扩展普通请求和文件上传的等待期限为 30 秒，问答、语义检索与模型配置验证为 5 分钟，由 `extension/config.js` 管理。期限覆盖响应头和正文读取；超时只结束客户端等待，后台任务可能继续，提交操作不会自动重发。自定义后端超时或 SDK 重试次数较大时，后台总耗时仍可能超过客户端期限。
+
+网页/上传任务的状态查询遇到网络错误、超时、429 或 5xx 时，最多自动重试 5 次，按指数间隔退避；认证错误等不自动重试。侧栏重新打开后继续使用已保存的任务引用。上传失败记录保留给文档卡片手动重试，不阻挡其他待处理任务的恢复。
 
 ## Retrieval 评测
 
@@ -314,7 +325,9 @@ python -c "import secrets; print(secrets.token_hex(16))"
 
 - 扩展的网页剪藏和文件上传已使用 Redis Worker 异步入库；旧 `/clips` 与 `/documents/upload` 兼容接口仍是同步。
 - Workspace 文档数配额（`MAX_DOCUMENTS_PER_WORKSPACE`）在提交入口校验：剪藏（同步与异步）和上传（同步与异步）达到上限时都直接返回 429，不再排入注定失败的任务；同一 URL 重新剪藏不占新额度。计数与创建之间没有事务串联，并发提交最多让该 Workspace 略超上限几篇；`/clips/async` 的提交预检只是准入提示，Worker 执行 `clip()` 时的那次检查才是创建 Document 前的权威闸口。
-- 当前 Worker 是单进程模式；启动时会恢复 Redis processing 列表中未确认的任务。
+- 当前 Worker 是单进程模式；启动及每轮任务之间恢复 Redis processing 未确认记录。多 Worker 需要另外设计任务租约，不能直接增加进程数。
+- 新任务先持久化必要输入，再尽力发布 Redis。数据库提交成功即返回 202 和任务 ID；Redis 暂时不可用时保持排队，由单 Worker 每轮分批对账补发。网页正文在成功时清除，或到期后由 Worker 分批清理；Worker 停止期间数据库不会自动执行清理。上传文件仍按原文档生命周期保留。
+- 升级前的网页任务没有数据库正文副本：Redis 中的正文若已丢失或过期，只能重新剪藏。新任务在正文有效期内可恢复 Redis 丢失的队列记录；客户端未收到提交响应后重新提交，仍可能创建另一条任务。
 - 仅解析 UTF-8 文本和 Markdown；PDF、DOCX、OCR 尚未接入。
 - 扩展正文提取采用 DOM 候选评分和启发式清理；复杂 SPA、Shadow DOM、跨域 iframe、分页和登录墙仍可能提取不完整。
 - 会话历史保存在浏览器 `chrome.storage.local`，后端没有会话表。
@@ -327,7 +340,7 @@ python -c "import secrets; print(secrets.token_hex(16))"
 ```text
 backend/       FastAPI、业务服务、Repository、模型与测试
 extension/     Chrome/Edge Manifest V3 扩展
-alembic/       MySQL Schema 迁移（0001 → 0010）
+alembic/       MySQL Schema 迁移（0001 → 0011）
 evaluation/    Retrieval/隔离评测数据与工具
 uploads/       本地运行时上传目录（Git 忽略）
 ```

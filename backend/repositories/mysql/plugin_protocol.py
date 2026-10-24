@@ -265,9 +265,9 @@ class PluginRepository(Protocol):
         """
         删除一个 Plugin Workspace（本阶段只删除 MySQL plugin_workspaces 行）。
 
-        跨系统清理（Milvus 数据 / documents 级联 / 凭证轮换等）编排属
-        PluginService 职责，Repository 不实现。删除前如需校验不残留 documents，
-        属 Service 编排，本方法不承担。
+        跨系统清理（Milvus / 文件 / Document）由 WorkspaceDeleteService 编排。
+        本方法须在删除事务内锁定 Workspace 并检查无剩余 Document；若有文档
+        则拒绝删除，保留身份和文档供上层重试。数据库外键作为最终约束。
 
         Args:
             plugin_id: 目标 Workspace 标识。
@@ -277,5 +277,5 @@ class PluginRepository(Protocol):
 
         Raises:
             PluginNotFoundError : plugin_id 不存在。
-            PluginOperationError: SQLAlchemy 执行异常。
+            PluginOperationError: 仍有 Document，或 SQLAlchemy 执行异常。
         """

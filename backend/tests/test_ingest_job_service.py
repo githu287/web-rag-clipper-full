@@ -21,6 +21,8 @@ def make_job(status: str = IngestJobStatus.QUEUED, attempts: int = 0) -> Mock:
     job.status = status
     job.attempt_count = attempts
     job.created_at = datetime.now()
+    job.payload = None
+    job.payload_expires_at = None
     return job
 
 
@@ -49,16 +51,18 @@ class IngestJobServiceTest(unittest.TestCase):
         self.assertEqual(payload["raw_text"], "body")
         self.assertEqual(payload["plugin_id"], "plugin-a")
 
-    def test_enqueue_failure_marks_job_failed(self) -> None:
+    def test_enqueue_failure_retains_durable_job_for_worker_publication(self) -> None:
         job = make_job()
         self.repository.create_job.return_value = job
         self.queue.enqueue.side_effect = IngestJobOperationError("redis down")
-        with self.assertRaises(IngestJobOperationError):
-            self.service.create_web_clip_job(
-                "plugin-a",
-                WebClipRequest(url="https://example.com/", raw_text="body"),
-            )
-        self.repository.mark_failed.assert_called_once_with(job.id, "redis down")
+        result = self.service.create_web_clip_job(
+            "plugin-a", WebClipRequest(url="https://example.com/", raw_text="body"),
+        )
+        self.assertIs(result, job)
+        self.repository.mark_failed.assert_not_called()
+        stored = self.repository.create_job.call_args.kwargs
+        self.assertEqual(stored["payload"]["raw_text"], "body")
+        self.assertEqual(stored["payload_ttl_seconds"], self.settings.ingest_payload_ttl_seconds)
 
     def test_create_file_upload_stores_only_document_reference(self) -> None:
         job = make_job()
@@ -85,17 +89,15 @@ class IngestJobServiceTest(unittest.TestCase):
             },
         )
 
-    def test_file_upload_enqueue_failure_marks_job_failed(self) -> None:
+    def test_file_upload_enqueue_failure_is_accepted_for_reconciliation(self) -> None:
         job = make_job()
         job.job_type = IngestJobType.FILE_UPLOAD
         job.document_id = 73
         self.repository.create_job.return_value = job
         self.queue.enqueue.side_effect = IngestJobOperationError("redis down")
 
-        with self.assertRaises(IngestJobOperationError):
-            self.service.create_file_upload_job("plugin-a", 73)
-
-        self.repository.mark_failed.assert_called_once_with(job.id, "redis down")
+        self.assertIs(self.service.create_file_upload_job("plugin-a", 73), job)
+        self.repository.mark_failed.assert_not_called()
 
     def test_retry_enforces_state_and_limit(self) -> None:
         running = make_job(IngestJobStatus.RUNNING, attempts=1)

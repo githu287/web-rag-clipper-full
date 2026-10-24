@@ -17,6 +17,20 @@ class RedisIngestQueue:
     if redis.call('EXISTS', KEYS[1]) == 0 then
         return 0
     end
+    if redis.call('LPOS', KEYS[2], ARGV[1]) or redis.call('LPOS', KEYS[3], ARGV[1]) then
+        return 1
+    end
+    redis.call('LPUSH', KEYS[2], ARGV[1])
+    return 1
+    """
+
+    _ENSURE_ENQUEUED = """
+    if redis.call('EXISTS', KEYS[1]) == 0 then
+        redis.call('SETEX', KEYS[1], ARGV[3], ARGV[2])
+    end
+    if redis.call('LPOS', KEYS[2], ARGV[1]) or redis.call('LPOS', KEYS[3], ARGV[1]) then
+        return 0
+    end
     redis.call('LPUSH', KEYS[2], ARGV[1])
     return 1
     """
@@ -40,13 +54,19 @@ class RedisIngestQueue:
     def _payload_key(self, job_id: str) -> str:
         return f"{self._queue_name}:payload:{job_id}"
 
-    def enqueue(self, job_id: str, payload: dict[str, Any]) -> None:
+    def enqueue(
+        self, job_id: str, payload: dict[str, Any], *, ttl_seconds: int | None = None,
+    ) -> None:
+        """Restore missing input and delivery atomically; never extend a live TTL."""
         try:
             encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
-            with self._client.pipeline(transaction=True) as pipeline:
-                pipeline.setex(self._payload_key(job_id), self._payload_ttl, encoded)
-                pipeline.lpush(self._queue_name, job_id)
-                pipeline.execute()
+            ttl = self._payload_ttl if ttl_seconds is None else ttl_seconds
+            if ttl < 1:
+                raise ValueError("payload TTL must be positive")
+            self._client.eval(
+                self._ENSURE_ENQUEUED, 3, self._payload_key(job_id),
+                self._queue_name, self._processing_name, job_id, encoded, ttl,
+            )
         except (RedisError, TypeError, ValueError) as exc:
             raise IngestJobOperationError("enqueue ingest job failed") from exc
 
@@ -54,9 +74,10 @@ class RedisIngestQueue:
         try:
             requeued = self._client.eval(
                 self._REQUEUE_IF_PAYLOAD_EXISTS,
-                2,
+                3,
                 self._payload_key(job_id),
                 self._queue_name,
+                self._processing_name,
                 job_id,
             )
             if requeued == 0:

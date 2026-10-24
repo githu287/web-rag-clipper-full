@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Final
+from typing import Any, Final
 
-from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, Text, func, text
+from sqlalchemy import JSON, DateTime, ForeignKey, Index, Integer, String, Text, func, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .base import Base
@@ -30,6 +30,8 @@ class IngestJob(Base):
     __table_args__ = (
         Index("ix_ingest_jobs_plugin_status", "plugin_id", "status"),
         Index("ix_ingest_jobs_document_id", "document_id"),
+        Index("ix_ingest_jobs_status_created", "status", "created_at", "id"),
+        Index("ix_ingest_jobs_payload_expires", "payload_expires_at"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
@@ -77,6 +79,10 @@ class IngestJob(Base):
         server_default="0",
     )
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Web bodies are durable until success or the original payload deadline.
+    # Uploads already have a durable document reference; credentials never go here.
+    payload: Mapped[dict[str, Any] | None] = mapped_column(JSON(none_as_null=True), nullable=True)
+    payload_expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, server_default=func.now()
     )

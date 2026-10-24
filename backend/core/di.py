@@ -56,6 +56,7 @@ DI 层允许装配：
 from __future__ import annotations
 
 from functools import lru_cache
+import logging
 
 from ..chunkers import Chunker, RecursiveCharacterChunker
 from ..clients.embedding import EmbeddingClient
@@ -88,6 +89,16 @@ from ..storage import FileStorage, LocalFileStorage
 from ..tasks import RedisIngestQueue
 from .config import Settings, get_default_settings
 from .db import get_engine
+
+
+def close_model_clients() -> None:
+    """Drain only existing model clients; never initialize services to clean up."""
+    for factory in (get_embedding_client, get_llm_client):
+        if factory.cache_info().currsize:
+            try:
+                factory().close()
+            except Exception:
+                logging.getLogger(__name__).exception("Model client shutdown cleanup failed")
 
 
 def get_settings() -> Settings:

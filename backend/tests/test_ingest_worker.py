@@ -21,7 +21,10 @@ from backend.workers.ingest_worker import IngestWorker
 class IngestWorkerTest(unittest.TestCase):
     def setUp(self) -> None:
         self.repository = Mock(spec=IngestJobRepository)
+        self.repository.list_running_ids.return_value = []
+        self.repository.list_queued.return_value = []
         self.queue = Mock(spec=RedisIngestQueue)
+        self.queue.list_processing.return_value = []
         self.plugin_repository = Mock(spec=PluginRepository)
         self.plugin_service = Mock(spec=PluginService)
         self.web_clip_service = Mock(spec=WebClipService)
@@ -164,30 +167,14 @@ class IngestWorkerTest(unittest.TestCase):
 
         self.queue.recover_processing.assert_not_called()
 
-    def test_recovery_gives_up_when_retry_limit_reached(self) -> None:
-        job = Mock(
-            id="job-9",
-            plugin_id="plugin-a",
-            status=IngestJobStatus.RUNNING,
-            attempt_count=3,
-            job_type=IngestJobType.FILE_UPLOAD,
-            document_id=73,
-        )
+    def test_recovery_delegates_attempt_limit_to_database(self) -> None:
         self.queue.list_processing.return_value = ["job-9"]
-        self.queue.get_payload.return_value = {
-            "job_type": IngestJobType.FILE_UPLOAD,
-            "plugin_id": "plugin-a",
-            "document_id": 73,
-        }
-        self.repository.get_job.return_value = job
-
+        self.repository.recover_interrupted.return_value = False
         self.assertEqual(self.worker.recover_interrupted(), 0)
-
-        self.repository.recover_interrupted.assert_not_called()
-        self.repository.mark_failed.assert_called_once_with(
-            "job-9", "worker interrupted; retry limit reached"
-        )
-        self.document_upload_service.fail_prepared_upload.assert_not_called()
+        self.repository.recover_interrupted.assert_called_once_with("job-9", max_attempts=3)
+        self.queue.get_payload.assert_not_called()
+        self.repository.mark_failed.assert_not_called()
+        self.queue.recover_processing.assert_called_once_with()
 
     def test_recovery_requeues_job_below_retry_limit(self) -> None:
         job = Mock(
@@ -208,13 +195,13 @@ class IngestWorkerTest(unittest.TestCase):
 
         self.assertEqual(self.worker.recover_interrupted(), 1)
 
-        self.repository.recover_interrupted.assert_called_once_with("job-9")
+        self.repository.recover_interrupted.assert_called_once_with("job-9", max_attempts=3)
         self.repository.mark_failed.assert_not_called()
         self.document_upload_service.fail_prepared_upload.assert_not_called()
         self.queue.recover_processing.assert_called_once_with()
 
-    def test_recovery_without_payload_falls_back_to_plain_recover(self) -> None:
-        """payload 过期时无法判定归属与次数，维持原有的直接恢复。"""
+    def test_recovery_uses_database_without_reading_payload(self) -> None:
+        """Recovery gets state and attempt counts from MySQL, not Redis payload."""
         self.queue.list_processing.return_value = ["job-9"]
         self.queue.get_payload.return_value = None
         self.repository.recover_interrupted.return_value = True
@@ -222,6 +209,7 @@ class IngestWorkerTest(unittest.TestCase):
         self.assertEqual(self.worker.recover_interrupted(), 1)
 
         self.repository.get_job.assert_not_called()
+        self.queue.get_payload.assert_not_called()
         self.repository.mark_failed.assert_not_called()
 
     def test_terminal_write_conflict_leaves_job_unacknowledged(self) -> None:
@@ -272,28 +260,13 @@ class IngestWorkerTest(unittest.TestCase):
         self.repository.mark_failed.assert_called_once_with("job-4", "boom")
         self.queue.acknowledge.assert_called_once_with("job-4")
 
-    def test_recovery_ignores_terminal_write_conflict(self) -> None:
-        job = Mock(
-            id="job-9",
-            plugin_id="plugin-a",
-            status=IngestJobStatus.RUNNING,
-            attempt_count=5,
-            job_type=IngestJobType.WEB_CLIP,
-            document_id=None,
-        )
+    def test_recovery_failure_does_not_move_or_acknowledge_processing(self) -> None:
         self.queue.list_processing.return_value = ["job-9"]
-        self.queue.get_payload.return_value = {
-            "job_type": IngestJobType.WEB_CLIP,
-            "plugin_id": "plugin-a",
-        }
-        self.repository.get_job.return_value = job
-        self.repository.mark_failed.side_effect = IngestJobConflictError(
-            "only RUNNING jobs can finish"
-        )
-
-        self.assertEqual(self.worker.recover_interrupted(), 0)
-
-        self.queue.recover_processing.assert_called_once_with()
+        self.repository.recover_interrupted.side_effect = IngestJobOperationError("DB unavailable")
+        with self.assertRaises(IngestJobOperationError):
+            self.worker.recover_interrupted()
+        self.queue.recover_processing.assert_not_called()
+        self.queue.acknowledge.assert_not_called()
 
     def test_main_loop_survives_sibling_error_and_exits_only_on_interrupt(self) -> None:
         """主循环必须吞掉任务级异常继续跑，只有中断信号才让进程退出。"""
@@ -312,6 +285,28 @@ class IngestWorkerTest(unittest.TestCase):
 
         self.assertEqual(worker.run_once.call_count, 2)
         sleep.assert_called_once_with(2)
+
+    def test_startup_redis_outage_retries_inside_main_loop(self) -> None:
+        stop = threading.Event()
+        worker = Mock(spec=IngestWorker)
+        worker.recover_interrupted.side_effect = IngestJobOperationError("Redis unavailable")
+        attempts = []
+
+        def run_once(timeout_seconds):
+            attempts.append(timeout_seconds)
+            if len(attempts) == 1:
+                raise IngestJobOperationError("Redis unavailable")
+            stop.set()
+            return False
+
+        worker.run_once.side_effect = run_once
+        with (
+            patch("backend.workers.ingest_worker.get_milvus_initializer"),
+            patch("backend.workers.ingest_worker.IngestWorker", return_value=worker),
+            patch("backend.workers.ingest_worker.time.sleep"),
+        ):
+            ingest_worker.main(stop)
+        self.assertEqual(attempts, [5, 5])
 
     def test_shutdown_flag_takes_effect_only_at_job_boundary(self) -> None:
         """任务执行期间收到停止信号：当前任务仍要跑完，之后不得再 dequeue。"""

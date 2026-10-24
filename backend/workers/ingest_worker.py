@@ -7,6 +7,7 @@ import threading
 import time
 
 from ..core.di import (
+    close_model_clients,
     get_ingest_job_repository,
     get_milvus_initializer,
     get_document_upload_service,
@@ -16,9 +17,10 @@ from ..core.di import (
     get_settings,
     get_web_clip_service,
 )
-from ..core.exceptions import IngestJobNotFoundError, IngestJobOperationError
 from ..models.document_api_schema import WebClipRequest
-from ..models.ingest_job import IngestJobStatus, IngestJobType
+from ..models.ingest_job import IngestJobType
+from ..core.exceptions import IngestJobConflictError, IngestJobOperationError
+from ..tasks.payload import durable_payload, payload_ttl
 from ..models.plugin import PluginStatus
 from ..repositories.mysql.ingest_job_protocol import IngestJobRepository
 from ..repositories.mysql.plugin_protocol import PluginRepository
@@ -55,6 +57,10 @@ class IngestWorker:
         )
 
     def run_once(self, timeout_seconds: int = 5) -> bool:
+        # Single-worker mode: only leftovers exist at a task boundary.
+        self.recover_interrupted()
+        self._repository.purge_expired_payloads()
+        self.recover_queued()
         job_id = self._queue.dequeue(timeout_seconds)
         if job_id is None:
             return False
@@ -63,7 +69,9 @@ class IngestWorker:
             self._acknowledge(job_id)
             return True
         try:
-            payload = self._queue.get_payload(job_id)
+            payload = durable_payload(job)
+            if payload is None:
+                payload = self._queue.get_payload(job_id)
             if payload is None:
                 raise RuntimeError("ingest job payload is missing or expired")
             job_type = payload.get("job_type")
@@ -108,16 +116,23 @@ class IngestWorker:
                         claim_document=lambda document_id: self._repository.begin_document(job_id, document_id),
                     )
                 )
-            self._repository.mark_succeeded(job_id, document.id)
-            try:
-                self._queue.delete_payload(job_id)
-            except Exception:  # cleanup failure must not turn a successful ingest into FAILED
-                logger.exception("failed to delete completed ingest payload: job_id=%s", job_id)
-            self._acknowledge(job_id)
         except Exception as exc:  # worker boundary: persist failure and continue
             logger.exception("ingest job failed: job_id=%s", job_id)
             if self._record_failure(job, exc):
                 self._acknowledge(job_id)
+            return True
+        try:
+            self._repository.mark_succeeded(job_id, document.id)
+        except Exception:
+            # The document may already be SUCCESS. Leave processing intact so
+            # recovery can finish job metadata without embedding the body again.
+            logger.exception("failed to persist ingest success: job_id=%s", job_id)
+            return True
+        try:
+            self._queue.delete_payload(job_id)
+        except Exception:
+            logger.exception("failed to delete completed ingest payload: job_id=%s", job_id)
+        self._acknowledge(job_id)
         return True
 
     def _record_failure(self, job, exc: Exception) -> bool:
@@ -136,49 +151,57 @@ class IngestWorker:
             self._queue.acknowledge(job_id)
         except Exception:
             # DB 终态已经是权威结果；ack 失败时保留 processing
-            # 记录，重启恢复后 claim 会因非 QUEUED 跳过并再次 ack。
+            # 记录，下一轮恢复后 claim 会因非 QUEUED 跳过并再次 ack。
             logger.exception("failed to acknowledge ingest job: job_id=%s", job_id)
 
     def recover_interrupted(self) -> int:
-        """复位 MySQL 后才搬运队列，避免半途失败导致任务被静默丢弃。"""
+        """Finish all DB repairs before moving any unacknowledged queue item."""
         job_ids = self._queue.list_processing()
+        running_ids = self._repository.list_running_ids()
+        if not job_ids and not running_ids:
+            return 0
         recovered = 0
-        for job_id in job_ids:
-            if self._exhausted_retries(job_id):
-                continue
-            if self._repository.recover_interrupted(job_id):
+        for job_id in dict.fromkeys([*job_ids, *running_ids]):
+            if self._repository.recover_interrupted(job_id, max_attempts=self._max_retries):
                 recovered += 1
-        # 上面的库侧写入全部就位才搬运；若中途抛 IngestJobOperationError，
-        # processing 保持原样，下一轮恢复会重新处理同一批 job。
-        self._queue.recover_processing()
+        # A DB error above leaves processing untouched for the next attempt.
+        if job_ids:
+            self._queue.recover_processing()
         return recovered
 
-    def _exhausted_retries(self, job_id: str) -> bool:
-        """崩溃恢复不经过 retry_job，这里补上同一个重试上限，避免毒任务无限重入队列。"""
-        try:
-            payload = self._queue.get_payload(job_id)
-        except IngestJobOperationError:
-            return False
-        if not isinstance(payload, dict):
-            # payload 已过期或不可读时无法判定归属，维持原有的直接恢复
-            return False
-        plugin_id = payload.get("plugin_id")
-        if not isinstance(plugin_id, str):
-            return False
-        try:
-            job = self._repository.get_job(job_id, plugin_id)
-        except (IngestJobNotFoundError, IngestJobOperationError):
-            return False
-        if job.status != IngestJobStatus.RUNNING or job.attempt_count < self._max_retries:
-            return False
-        give_up = "worker interrupted; retry limit reached"
-        logger.error(
-            "ingest job exceeded retry limit during recovery: job_id=%s attempts=%s",
-            job_id,
-            job.attempt_count,
-        )
-        self._record_failure(job, RuntimeError(give_up))
-        return True
+    def recover_queued(self) -> int:
+        """Reconcile a bounded FIFO batch against Redis in single-worker mode."""
+        published = 0
+        for job in self._repository.list_queued():
+            try:
+                payload = durable_payload(job)
+            except ValueError as exc:
+                try:
+                    self._repository.mark_failed(
+                        job.id, str(exc), expected_attempt_count=job.attempt_count,
+                    )
+                except IngestJobConflictError:
+                    pass  # A producer or another request already advanced it.
+                continue
+            if payload is None:
+                # Legacy web bodies were never persisted. The atomic Redis
+                # check reports expired input rather than leaving QUEUED forever.
+                try:
+                    self._queue.enqueue_existing(job.id)
+                except IngestJobOperationError:
+                    # A Redis outage is retryable; only a confirmed missing body
+                    # may be made terminal. Reading also distinguishes outages.
+                    if self._queue.get_payload(job.id) is not None:
+                        raise
+                    self._repository.mark_failed(
+                        job.id, "ingest job payload is missing or expired",
+                        expected_attempt_count=job.attempt_count,
+                    )
+                    continue
+            else:
+                self._queue.enqueue(job.id, payload, ttl_seconds=payload_ttl(job))
+            published += 1
+        return published
 
 
 def _install_sigterm_handler(stop: threading.Event) -> None:
@@ -197,20 +220,16 @@ def _install_sigterm_handler(stop: threading.Event) -> None:
 
 def main(stop: threading.Event) -> None:
     logging.basicConfig(level=logging.INFO)
-    get_milvus_initializer().initialize()
-    worker = IngestWorker()
-    recovered = worker.recover_interrupted()
-    if recovered:
-        logger.warning("recovered %s interrupted ingest jobs", recovered)
-    logger.info("ingest worker started")
     try:
+        get_milvus_initializer().initialize()
+        worker = IngestWorker()
+        logger.info("ingest worker started")
         while not stop.is_set():
             try:
                 worker.run_once(timeout_seconds=5)
             except Exception:
-                # 无论是 Redis / MySQL 短暂不可用，还是单个任务引发的意外异常，
-                # 都只退避重试：进程退出会丢掉所有在途任务，而队列的 processing
-                # 记录仍由 recover_interrupted() 恢复，不必重启。
+                # Redis / MySQL 短暂不可用或单任务异常时退避重试；
+                # 后续轮次重新修复数据库状态，并对账补发队列。
                 logger.exception("ingest worker hit an error; retrying")
                 time.sleep(2)
                 try:
@@ -221,7 +240,9 @@ def main(stop: threading.Event) -> None:
                     logger.exception("ingest recovery unavailable; will retry")
     except KeyboardInterrupt:
         pass
-    logger.info("ingest worker stopped")
+    finally:
+        close_model_clients()
+        logger.info("ingest worker stopped")
 
 
 if __name__ == "__main__":

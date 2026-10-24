@@ -571,6 +571,9 @@ async function retryDocument(doc) {
   setUploadStatus("正在重新提交任务…", "loading");
   try {
     const job = await webRagApiClient.jobs.retry(record.jobId);
+    if (webRagApiClient.getPlugin().pluginId !== plugin.pluginId) return;
+    await sessionStore.setUploadJob(plugin.pluginId, Object.assign({}, record, { status: job.status }));
+    if (webRagApiClient.getPlugin().pluginId !== plugin.pluginId) return;
     activeUploadJob = job;
     startUploadJobMonitor(record, job);
     await loadLibrary();
@@ -635,6 +638,7 @@ async function handleFileUpload(file) {
   var submitted = false;
   try {
     var job = await webRagApiClient.documents.uploadFileAsync(file);
+    if (webRagApiClient.getPlugin().pluginId !== plugin.pluginId) return;
     if (!job || !job.id || job.document_id == null) {
       throw new Error("后端未返回完整的上传任务");
     }
@@ -642,9 +646,12 @@ async function handleFileUpload(file) {
       jobId: job.id,
       documentId: Number(job.document_id),
       filename: file.name,
+      status: job.status,
+      pluginId: plugin.pluginId,
     };
     await sessionStore.setUploadJob(plugin.pluginId, record);
     submitted = true;
+    if (webRagApiClient.getPlugin().pluginId !== plugin.pluginId) return;
     activeUploadJob = job;
     startUploadJobMonitor(record, job);
     libraryState.page = 1;
@@ -669,7 +676,10 @@ async function resumeUploadJobMonitor() {
   const plugin = webRagApiClient.getPlugin();
   try {
     if (!plugin.pluginId) return;
-    const record = await sessionStore.getUploadJob(plugin.pluginId);
+    if (uploadBusy) return;
+    const records = await sessionStore.getUploadJobs(plugin.pluginId);
+    if (webRagApiClient.getPlugin().pluginId !== plugin.pluginId) return;
+    const record = records.find(function (item) { return item.status !== "FAILED"; });
     if (!record || !record.jobId) return;
     if (activeUploadJob && activeUploadJob.id === record.jobId) return;
     startUploadJobMonitor(record, null);
@@ -679,6 +689,7 @@ async function resumeUploadJobMonitor() {
 }
 
 function startUploadJobMonitor(record, initialJob) {
+  record = Object.assign({}, record, { pluginId: record.pluginId || webRagApiClient.getPlugin().pluginId });
   const token = ++uploadJobPollToken;
   activeUploadJob = initialJob || { id: record.jobId, status: "QUEUED", progress: 0 };
   uploadBusy = true;
@@ -687,15 +698,20 @@ function startUploadJobMonitor(record, initialJob) {
 }
 
 async function monitorUploadJob(record, token) {
-  while (token === uploadJobPollToken) {
+  let failures = 0;
+  const isCurrent = function () {
+    return token === uploadJobPollToken && record.pluginId === webRagApiClient.getPlugin().pluginId;
+  };
+  while (isCurrent()) {
     try {
       const job = await webRagApiClient.jobs.get(record.jobId);
-      if (token !== uploadJobPollToken) return;
+      if (!isCurrent()) return;
+      failures = 0;
       activeUploadJob = job;
       const progress = Math.max(0, Math.min(100, Number(job.progress) || 0));
       if (job.status === "SUCCEEDED") {
-        const plugin = webRagApiClient.getPlugin();
-        await sessionStore.clearUploadJob(plugin.pluginId, record.documentId);
+        await sessionStore.clearUploadJob(record.pluginId, record.documentId);
+        if (!isCurrent()) return;
         activeUploadJob = null;
         uploadBusy = false;
         els.libraryUploadBtn.disabled = false;
@@ -705,6 +721,9 @@ async function monitorUploadJob(record, token) {
         return;
       }
       if (job.status === "FAILED") {
+        await sessionStore.setUploadJob(record.pluginId, Object.assign({}, record, { status: "FAILED" }));
+        if (!isCurrent()) return;
+        activeUploadJob = null;
         uploadBusy = false;
         els.libraryUploadBtn.disabled = false;
         setUploadStatus(
@@ -717,7 +736,13 @@ async function monitorUploadJob(record, token) {
       const stage = job.status === "QUEUED" ? "等待 Worker" : "正在解析、切块并向量化";
       setUploadStatus(stage + "：" + record.filename + "（" + progress + "%）", "loading");
     } catch (err) {
-      if (token !== uploadJobPollToken) return;
+      if (!isCurrent()) return;
+      const delay = jobPollRetryDelay(err, ++failures);
+      if (delay != null) {
+        setUploadStatus("任务仍在后台处理，暂时无法查询进度，正在自动重连…", "warn");
+        await waitMilliseconds(delay);
+        continue;
+      }
       activeUploadJob = null;
       uploadBusy = false;
       els.libraryUploadBtn.disabled = false;
@@ -832,6 +857,7 @@ async function confirmDeletePlugin() {
   try {
     await webRagApiClient.plugins.delete(typed);
     const pluginId = plugin.pluginId;
+    stopJobMonitors();
     await webRagApiClient.clearPlugin();
     if (pluginId != null) {
       await sessionStore.clearTabBindingsByPlugin(pluginId);
@@ -1053,7 +1079,7 @@ function renderClipView() {
     setStatus(els.clipStatus, isSubmitting ? "正在提交入库任务…" : "正在提取网页正文…", null);
     els.clipBtn.textContent = isSubmitting ? "正在提交…" : "正在提取…";
   } else if (jobIsActive) {
-    setStatus(els.clipStatus, "已提交，后台正在入库", null);
+    setStatus(els.clipStatus, clipErrorMsg || "已提交，后台正在入库", clipErrorMsg ? "warn" : null);
     els.clipBtn.textContent = "处理中…";
   } else if (activeClipJob && activeClipJob.status === "FAILED") {
     setStatus(els.clipStatus, "入库失败：" + (activeClipJob.error_message || "未知错误"), "err");
@@ -1083,6 +1109,7 @@ function renderClipJob() {
   const stageLabels = {
     QUEUED: "等待 Worker 处理",
     INGESTING: "正在切块、向量化并入库",
+    PROCESSING_DOCUMENT: "正在切块、向量化并入库",
     COMPLETED: "入库完成",
     FAILED: "入库失败",
   };
@@ -1101,16 +1128,38 @@ function waitMilliseconds(milliseconds) {
   });
 }
 
+function jobPollRetryDelay(error, failures) {
+  if (!(error instanceof webRagApiClient.ApiRequestError) || failures > 5) return null;
+  if (error.status !== 0 && error.status !== 429 && error.status < 500) return null;
+  return Math.min(30000, 1500 * Math.pow(2, failures - 1));
+}
+
+function stopJobMonitors() {
+  clipJobPollToken += 1;
+  uploadJobPollToken += 1;
+  activeClipJob = null;
+  activeUploadJob = null;
+  uploadBusy = false;
+  els.libraryUploadBtn.disabled = false;
+}
+
 function startClipJobMonitor(jobId, tabId) {
   const token = ++clipJobPollToken;
   monitorClipJob(jobId, tabId, token);
 }
 
 async function monitorClipJob(jobId, tabId, token) {
-  while (token === clipJobPollToken && currentTabId === tabId) {
+  let failures = 0;
+  const pluginId = webRagApiClient.getPlugin().pluginId;
+  const isCurrent = function () {
+    return token === clipJobPollToken && currentTabId === tabId &&
+      webRagApiClient.getPlugin().pluginId === pluginId;
+  };
+  while (isCurrent()) {
     try {
       const job = await webRagApiClient.jobs.get(jobId);
-      if (token !== clipJobPollToken || currentTabId !== tabId) return;
+      if (!isCurrent()) return;
+      clipErrorMsg = null;
       activeClipJob = job;
       renderClipView();
       if (job.status === "SUCCEEDED") {
@@ -1118,10 +1167,18 @@ async function monitorClipJob(jobId, tabId, token) {
         return;
       }
       if (job.status === "FAILED") return;
+      failures = 0;
     } catch (err) {
-      if (token !== clipJobPollToken || currentTabId !== tabId) return;
-      clipErrorMsg = errorText(err);
+      if (!isCurrent()) return;
+      const delay = jobPollRetryDelay(err, ++failures);
+      clipErrorMsg = delay != null
+        ? "任务仍在后台处理，暂时无法查询进度，正在自动重连…"
+        : "任务状态查询失败：" + errorText(err) + "。重新打开侧栏可继续查询。";
       renderClipView();
+      if (delay != null) {
+        await waitMilliseconds(delay);
+        continue;
+      }
       return;
     }
     await waitMilliseconds(CLIP_JOB_POLL_INTERVAL_MS);
@@ -1129,44 +1186,53 @@ async function monitorClipJob(jobId, tabId, token) {
 }
 
 async function completeClipJob(job, tabId, token) {
+  const pluginId = webRagApiClient.getPlugin().pluginId;
+  const isCurrent = function () {
+    return token === clipJobPollToken && currentTabId === tabId &&
+      webRagApiClient.getPlugin().pluginId === pluginId;
+  };
   if (!job.document_id) {
     clipErrorMsg = "任务完成但未返回 document id";
     renderClipView();
     return;
   }
   const document = await webRagApiClient.documents.get(job.document_id);
-  if (token !== clipJobPollToken || currentTabId !== tabId) return;
-  const storedBinding = await sessionStore.getTabBinding(tabId);
-  if (!storedBinding) return;
-  const expectedUrl = storedBinding.ingestJobPageUrl;
-  let pageStillMatches = !storedBinding.stale;
-  try {
-    pageStillMatches = pageStillMatches && !!expectedUrl && (
-      webRagUrlUtils.normalizeWebUrl(storedBinding.pageUrl) ===
-      webRagUrlUtils.normalizeWebUrl(expectedUrl)
-    );
-  } catch (_err) {
-    pageStillMatches = false;
-  }
-  storedBinding.ingestJobId = null;
-  storedBinding.ingestJobPageUrl = null;
-  if (!pageStillMatches) {
-    await sessionStore.setTabBinding(tabId, storedBinding);
-    binding = storedBinding;
-    activeClipJob = null;
-    renderClipView();
-    return;
-  }
-  storedBinding.documentId = Number(job.document_id);
-  storedBinding.documentUrl = document.url || null;
-  storedBinding.stale = false;
-  if (document.title) storedBinding.pageTitle = document.title;
-  await sessionStore.setTabBinding(tabId, storedBinding);
+  if (!isCurrent()) return;
+  let applied = false;
+  let pageStillMatches = false;
+  const storedBinding = await sessionStore.updateTabBinding(tabId, function (stored) {
+    if (!isCurrent() || stored.pluginId !== pluginId || stored.ingestJobId !== job.id) return stored;
+    const next = Object.assign({}, stored);
+    try {
+      pageStillMatches = !stored.stale && !!stored.ingestJobPageUrl &&
+        webRagUrlUtils.normalizeWebUrl(stored.pageUrl) ===
+        webRagUrlUtils.normalizeWebUrl(stored.ingestJobPageUrl) &&
+        webRagUrlUtils.normalizeWebUrl(document.url) ===
+        webRagUrlUtils.normalizeWebUrl(stored.ingestJobPageUrl);
+    } catch (_err) {
+      pageStillMatches = false;
+    }
+    next.ingestJobId = null;
+    next.ingestJobPageUrl = null;
+    if (pageStillMatches) {
+      next.documentId = Number(job.document_id);
+      next.documentUrl = document.url || null;
+      next.stale = false;
+      if (document.title) next.pageTitle = document.title;
+    } else {
+      next.documentId = null;
+      next.stale = true;
+    }
+    applied = true;
+    return next;
+  });
+  if (!isCurrent() || !applied || !storedBinding) return;
   binding = storedBinding;
   activeClipJob = null;
   clipErrorMsg = null;
   renderClipView();
   updateSendState();
+  if (!pageStillMatches) return;
   try {
     chrome.runtime.sendMessage({
       type: "WEB_RAG_CLIP_COMPLETED",
@@ -1820,7 +1886,7 @@ async function submitClipDraft() {
   }
   if (clipBusy || !clipDraft || clipDraftTabId !== currentTabId) return;
   const submitTabId = currentTabId;
-  const submitBinding = binding;
+  const previousJobId = binding && binding.ingestJobId;
   syncClipDraftFromInputs();
   const draft = {
     url: clipDraft.url,
@@ -1859,13 +1925,18 @@ async function submitClipDraft() {
       raw_text: page.raw_text,
     });
     if (job && job.id) {
-      submitBinding.documentId = null;
-      submitBinding.ingestJobId = job.id;
-      submitBinding.ingestJobPageUrl = page.url;
-      submitBinding.stale = false;
-      submitBinding.pageUrl = page.url;
-      submitBinding.pageTitle = page.title;
-      await sessionStore.setTabBinding(submitTabId, submitBinding);
+      let applied = false;
+      const submitBinding = await sessionStore.updateTabBinding(submitTabId, function (stored) {
+        if (webRagApiClient.getPlugin().pluginId !== plugin.pluginId ||
+            stored.pluginId !== plugin.pluginId || (stored.ingestJobId || null) !== (previousJobId || null) ||
+            !isSameNormalizedWebUrl(stored.pageUrl, page.url)) return stored;
+        applied = true;
+        return Object.assign({}, stored, {
+          documentId: null, ingestJobId: job.id, ingestJobPageUrl: page.url,
+          stale: false, pageUrl: page.url, pageTitle: page.title,
+        });
+      });
+      if (!applied || webRagApiClient.getPlugin().pluginId !== plugin.pluginId) return;
       if (currentTabId === submitTabId) {
         binding = submitBinding;
         activeClipJob = job;
@@ -1898,13 +1969,21 @@ async function retryActiveClipJob() {
   if (!activeClipJob || activeClipJob.status !== "FAILED" || clipBusy) return;
   const jobId = activeClipJob.id;
   const tabId = currentTabId;
+  const pluginId = webRagApiClient.getPlugin().pluginId;
+  const isCurrent = function () {
+    return currentTabId === tabId && webRagApiClient.getPlugin().pluginId === pluginId &&
+      binding && binding.ingestJobId === jobId;
+  };
   els.clipJobRetryBtn.disabled = true;
   try {
-    activeClipJob = await webRagApiClient.jobs.retry(jobId);
+    const job = await webRagApiClient.jobs.retry(jobId);
+    if (!isCurrent()) return;
+    activeClipJob = job;
     clipErrorMsg = null;
     renderClipView();
     startClipJobMonitor(jobId, tabId);
   } catch (err) {
+    if (!isCurrent()) return;
     clipErrorMsg = errorText(err);
     renderClipView();
   } finally {
@@ -2427,6 +2506,7 @@ async function init() {
   bindEvents();
   bindRuntimeMessages();
   webRagApiClient.setUnauthenticatedHandler(async function (ctx) {
+    stopJobMonitors();
     if (ctx && ctx.pluginId != null) {
       await sessionStore.clearTabBindingsByPlugin(ctx.pluginId);
       await sessionStore.clearUploadJob(ctx.pluginId);

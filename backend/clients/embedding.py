@@ -25,14 +25,14 @@
 from __future__ import annotations
 
 import logging
-import threading
-from collections import OrderedDict
+from contextlib import AbstractContextManager
 from typing import Final
 
 from openai import OpenAI
 
 from ..core.config import Settings
 from ..core.security import sha256_hex
+from .client_cache import ClientCache
 from ..models.model_provider import ModelEndpointCredential, WorkspaceModelCredentials
 
 logger: logging.Logger = logging.getLogger(__name__)
@@ -84,13 +84,11 @@ class EmbeddingClient:
             settings: 配置单源实例（推荐通过 core.di.get_settings() 获取）。
         """
         self._settings: Settings = settings
-        # 按 API Key 隔离的 OpenAI client 缓存（Phase 3.4 Step D）：
-        # key = sha256(base_url + model + api_key)，value = OpenAI client；只存进程内存。
-        # 避免用户 A 的 client 被用户 B 复用（错误使用 A 的 Key）。
-        # OrderedDict 维持使用顺序：命中移到队尾，淘汰只丢最久未使用的队首。
-        # _clients_lock 保护读写：embed 经 asyncio.to_thread 调用，缓存会被多个线程共享。
-        self._clients: OrderedDict[str, OpenAI] = OrderedDict()
-        self._clients_lock: threading.Lock = threading.Lock()
+        self._client_cache: ClientCache[OpenAI] = ClientCache(_MAX_CLIENT_CACHE_SIZE, logger)
+
+    def close(self) -> None:
+        """Release cached connections; in-flight requests finish before closing."""
+        self._client_cache.clear()
 
     # ------------------------------------------------------------------ 对外入口
     def embed(
@@ -143,7 +141,7 @@ class EmbeddingClient:
         return all_vectors
 
     # ------------------------------------------------------------------ 内部辅助
-    def _get_client(self, api_key: str | None = None) -> OpenAI:
+    def _get_client(self, api_key: str | None = None) -> AbstractContextManager[OpenAI]:
         """
         按 API Key 隔离的 OpenAI client 获取（Phase 3.4 Step D）。
 
@@ -166,13 +164,6 @@ class EmbeddingClient:
         client_key = sha256_hex(
             f"{endpoint.base_url}\0{endpoint.model}\0{effective_key}"
         )
-        with self._clients_lock:
-            cached = self._clients.get(client_key)
-            if cached is not None:
-                # 命中即移到队尾：被淘汰的始终是最久未使用的 Key，而不是最早创建的 Key
-                self._clients.move_to_end(client_key)
-                return cached
-
         base_url = endpoint.base_url
         model = endpoint.model
         if not base_url or not model:
@@ -180,34 +171,25 @@ class EmbeddingClient:
                 f"Embedding base_url 或 model 配置为空：base_url={base_url!r}, model={model!r}"
             )
 
-        logger.info(
-            "初始化 Embedding OpenAI 兼容客户端：provider=%s, base_url=%s, model=%s, "
-            "timeout=%ss, max_retries=%s",
-            endpoint.provider,
-            base_url,
-            model,
-            self._settings.bailian_embedding_timeout_seconds,
-            self._settings.bailian_max_retries,
-        )
-        client = OpenAI(
-            api_key=effective_key,
-            base_url=base_url,
-            timeout=self._settings.bailian_embedding_timeout_seconds,
-            # 默认 2 = SDK 自身默认值；收紧会同时减少 429 限流吸收，故交运维配置而非硬编码
-            max_retries=self._settings.bailian_max_retries,
-        )
-        with self._clients_lock:
-            self._clients[client_key] = client
-            evicted: OpenAI | None = None
-            if len(self._clients) > _MAX_CLIENT_CACHE_SIZE:
-                # 队首 = 最久未使用；先摘出再锁外关闭，避免 close 的 IO 占着锁
-                _, evicted = self._clients.popitem(last=False)
-        if evicted is not None:
-            try:
-                evicted.close()
-            except Exception as exc:  # noqa: BLE001 — 关闭失败不得影响本次请求
-                logger.warning("关闭被淘汰的 Embedding OpenAI 客户端失败：%s", exc)
-        return client
+        def create() -> OpenAI:
+            logger.info(
+                "初始化 Embedding OpenAI 兼容客户端：provider=%s, base_url=%s, model=%s, "
+                "timeout=%ss, max_retries=%s",
+                endpoint.provider,
+                base_url,
+                model,
+                self._settings.bailian_embedding_timeout_seconds,
+                self._settings.bailian_max_retries,
+            )
+            return OpenAI(
+                api_key=effective_key,
+                base_url=base_url,
+                timeout=self._settings.bailian_embedding_timeout_seconds,
+                # 默认 2 = SDK 自身默认值；收紧会同时减少 429 限流吸收，故交运维配置而非硬编码
+                max_retries=self._settings.bailian_max_retries,
+            )
+
+        return self._client_cache.lease(client_key, create)
 
     def _resolve_endpoint(
         self, api_key: str | None
@@ -243,8 +225,8 @@ class EmbeddingClient:
             EmbeddingResponseError: 返回结构/条数/维度不匹配。
         """
         endpoint = self._resolve_endpoint(api_key)
-        client = self._get_client(api_key)
         model = endpoint.model
+        client_lease = self._get_client(api_key)
 
         try:
             request_kwargs: dict[str, object] = {
@@ -253,9 +235,10 @@ class EmbeddingClient:
             }
             if endpoint.send_dimensions:
                 request_kwargs["dimensions"] = expected_dim
-            response = client.embeddings.create(
-                **request_kwargs,
-            )
+            with client_lease as client:
+                response = client.embeddings.create(
+                    **request_kwargs,
+                )
         except Exception as exc:  # noqa: BLE001 — 统一包装，保留 __cause__
             raise EmbeddingAPIError(
                 f"Embedding API 调用失败（provider={endpoint.provider}, model={model}, batch_size={len(batch)}）：{exc}"

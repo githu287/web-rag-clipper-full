@@ -44,6 +44,7 @@ from ...core.exceptions import (
     PluginNotFoundError,
     PluginOperationError,
 )
+from ...models.document import Document
 from ...models.plugin import PluginStatus, PluginWorkspace
 from .plugin_protocol import PluginRepository
 
@@ -326,12 +327,30 @@ class PluginRepositoryImpl(PluginRepository):
     # ------------------------------------------------------------------ delete
     def delete_plugin(self, plugin_id: str) -> PluginWorkspace:
         """
-        删除一个 Plugin Workspace 行（本阶段只删 MySQL 行；跨系统清理编排属
-        PluginService 职责）。返回被删对象（detached 可读）。
+        锁定 Workspace，确认无剩余 Document 后删除行，返回 detached 对象。
+        跨系统清理由 WorkspaceDeleteService 编排；外键仍作为最终约束。
         """
         try:
             with self._session_factory() as session:
-                plugin = self._get_by_plugin_id_in_session(session, plugin_id)
+                plugin = session.execute(
+                    select(PluginWorkspace)
+                    .where(PluginWorkspace.plugin_id == plugin_id)
+                    .with_for_update()
+                ).scalar_one_or_none()
+                if plugin is None:
+                    raise PluginNotFoundError(f"plugin not found: plugin_id={plugin_id}")
+                # Use a locking/current read: MySQL REPEATABLE READ snapshots
+                # must not hide a document committed after the last list page.
+                remaining_document = session.execute(
+                    select(Document.id)
+                    .where(Document.plugin_id == plugin_id)
+                    .limit(1)
+                    .with_for_update()
+                ).scalar_one_or_none()
+                if remaining_document is not None:
+                    raise PluginOperationError(
+                        "workspace still contains documents; retry deletion"
+                    )
                 session.delete(plugin)
                 session.commit()
                 return plugin

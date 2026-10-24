@@ -23,6 +23,7 @@
 from __future__ import annotations
 
 import unittest
+from contextlib import nullcontext
 from unittest import mock
 
 import httpx
@@ -53,6 +54,11 @@ def _make_settings(**overrides) -> Settings:
     return Settings(_env_file=None, **defaults)
 
 
+def cached_client(owner, *args):
+    with owner._get_client(*args) as client:
+        return client
+
+
 class _FakeEmbeddingData:
     """模拟 openai SDK 的 EmbeddingData（index + embedding）。"""
 
@@ -80,7 +86,7 @@ class EmbeddingClientTest(unittest.TestCase):
         self.client = EmbeddingClient(self.settings)
         self.fake_openai = mock.MagicMock()
         patcher = mock.patch.object(
-            EmbeddingClient, "_get_client", return_value=self.fake_openai
+            EmbeddingClient, "_get_client", side_effect=lambda *args: nullcontext(self.fake_openai)
         )
         self.addCleanup(patcher.stop)
         patcher.start()
@@ -288,7 +294,7 @@ class EmbeddingClientUserKeyTest(unittest.TestCase):
 
     def test_user_api_key_used_in_client(self) -> None:
         """F6-A：显式用户 Key → OpenAI 以该 Key 构造（不读取 settings.bailian_api_key）。"""
-        self.client._get_client("sk-user-a")
+        cached_client(self.client, "sk-user-a")
         self.mock_openai_cls.assert_called_once_with(
             api_key="sk-user-a",
             base_url="https://example.com/v1",
@@ -304,7 +310,7 @@ class EmbeddingClientUserKeyTest(unittest.TestCase):
                 bailian_embedding_timeout_seconds=7,
             )
         )
-        client._get_client("sk-user-a")  # noqa: SLF001
+        cached_client(client, "sk-user-a")  # noqa: SLF001
         _, kwargs = self.mock_openai_cls.call_args
         self.assertEqual(kwargs["timeout"], 7)
 
@@ -316,7 +322,7 @@ class EmbeddingClientUserKeyTest(unittest.TestCase):
                 bailian_max_retries=0,
             )
         )
-        client._get_client("sk-user-a")  # noqa: SLF001
+        cached_client(client, "sk-user-a")  # noqa: SLF001
         _, kwargs = self.mock_openai_cls.call_args
         self.assertEqual(kwargs["max_retries"], 0)
 
@@ -327,41 +333,41 @@ class EmbeddingClientUserKeyTest(unittest.TestCase):
     def test_missing_api_key_raises_config_error(self) -> None:
         """F6-B：api_key=None → EmbeddingConfigError，且不构造 OpenAI。"""
         with self.assertRaises(EmbeddingConfigError) as ctx:
-            self.client._get_client(None)
+            cached_client(self.client, None)
         self.assertIn("User API Key is required", str(ctx.exception))
         self.mock_openai_cls.assert_not_called()
 
     def test_empty_api_key_raises_config_error(self) -> None:
         """F6-B：api_key="" → EmbeddingConfigError，且不构造 OpenAI。"""
         with self.assertRaises(EmbeddingConfigError):
-            self.client._get_client("")
+            cached_client(self.client, "")
         self.mock_openai_cls.assert_not_called()
 
     def test_different_keys_isolated_clients(self) -> None:
         """F6-D：Key A / Key B → 两个独立 OpenAI client（cache 按 Key 隔离）。"""
-        self.client._get_client("sk-user-a")
-        self.client._get_client("sk-user-b")
+        cached_client(self.client, "sk-user-a")
+        cached_client(self.client, "sk-user-b")
         # OpenAI 构造了 2 次，且每次使用各自 Key
         self.assertEqual(self.mock_openai_cls.call_count, 2)
         calls = self.mock_openai_cls.call_args_list
         self.assertEqual(calls[0][1]["api_key"], "sk-user-a")
         self.assertEqual(calls[1][1]["api_key"], "sk-user-b")
         # cache 有 2 个独立条目（Key A / Key B 各占一条）
-        self.assertEqual(len(self.client._clients), 2)  # noqa: SLF001
+        self.assertEqual(len(self.client._client_cache), 2)  # noqa: SLF001
 
     def test_same_key_shared_client(self) -> None:
         """F6-E：相同 Key → 共享同一 OpenAI client（不重复构造）。"""
-        client_a1 = self.client._get_client("sk-user-a")
-        client_a2 = self.client._get_client("sk-user-a")
+        client_a1 = cached_client(self.client, "sk-user-a")
+        client_a2 = cached_client(self.client, "sk-user-a")
         self.assertIs(client_a1, client_a2)
         self.assertEqual(self.mock_openai_cls.call_count, 1)
-        self.assertEqual(len(self.client._clients), 1)  # noqa: SLF001
+        self.assertEqual(len(self.client._client_cache), 1)  # noqa: SLF001
 
     def test_client_cache_is_bounded(self) -> None:
         for index in range(33):
-            self.client._get_client(f"sk-user-{index}")
+            cached_client(self.client, f"sk-user-{index}")
 
-        self.assertEqual(len(self.client._clients), 32)  # noqa: SLF001
+        self.assertEqual(len(self.client._client_cache), 32)  # noqa: SLF001
 
     # ----------------------------------------------------- #26 淘汰语义
     def _use_distinct_clients(self) -> list[mock.Mock]:
@@ -380,9 +386,9 @@ class EmbeddingClientUserKeyTest(unittest.TestCase):
         """淘汰必须 close()：httpx 连接池不能等 GC 才释放。"""
         created = self._use_distinct_clients()
         for index in range(33):
-            self.client._get_client(f"sk-user-{index}")
+            cached_client(self.client, f"sk-user-{index}")
 
-        self.assertEqual(len(self.client._clients), 32)  # noqa: SLF001
+        self.assertEqual(len(self.client._client_cache), 32)  # noqa: SLF001
         created[0].close.assert_called_once_with()
         created[1].close.assert_not_called()
 
@@ -390,30 +396,30 @@ class EmbeddingClientUserKeyTest(unittest.TestCase):
         """命中要刷新使用顺序：先丢最久未使用的 Key，而不是最早创建的 Key。"""
         created = self._use_distinct_clients()
         for index in range(32):
-            self.client._get_client(f"sk-user-{index}")
+            cached_client(self.client, f"sk-user-{index}")
         # 重新触碰 Key 0（命中不重复构造），它变成最新使用，Key 1 退回队首
-        self.assertIs(self.client._get_client("sk-user-0"), created[0])  # noqa: SLF001
+        self.assertIs(cached_client(self.client, "sk-user-0"), created[0])  # noqa: SLF001
         self.assertEqual(self.mock_openai_cls.call_count, 32)
 
-        self.client._get_client("sk-user-32")
+        cached_client(self.client, "sk-user-32")
 
         created[1].close.assert_called_once_with()
         created[0].close.assert_not_called()
-        self.assertEqual(len(self.client._clients), 32)  # noqa: SLF001
+        self.assertEqual(len(self.client._client_cache), 32)  # noqa: SLF001
 
     def test_close_failure_during_eviction_keeps_returned_client(self) -> None:
         """close 失败只该记日志，不能把已经建好的 client 换成一次请求失败。"""
         created = self._use_distinct_clients()
         for index in range(32):
-            self.client._get_client(f"sk-user-{index}")
+            cached_client(self.client, f"sk-user-{index}")
         # 队首 = 最久未使用，会在下一次淘汰时被 close：让它抛错
         created[0].close.side_effect = RuntimeError("close failed")
 
         with self.assertLogs("backend.clients.embedding", level="WARNING") as logs:
-            client = self.client._get_client("sk-user-32")
+            client = cached_client(self.client, "sk-user-32")
 
         self.assertIs(client, created[32])
-        self.assertEqual(len(self.client._clients), 32)  # noqa: SLF001
+        self.assertEqual(len(self.client._client_cache), 32)  # noqa: SLF001
         self.assertIn("close failed", " ".join(logs.output))
 
     def test_workspace_config_uses_embedding_endpoint(self) -> None:
@@ -427,7 +433,7 @@ class EmbeddingClientUserKeyTest(unittest.TestCase):
                 model="chat-model", base_url="https://chat.example/v1",
             ),
         )
-        self.client._get_client(credentials)
+        cached_client(self.client, credentials)
         self.mock_openai_cls.assert_called_once_with(
             api_key="embedding-key",
             base_url="https://embedding.example/v1",

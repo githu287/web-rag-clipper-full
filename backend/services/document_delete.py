@@ -7,6 +7,7 @@ Repeated deletion resumes cleanup; missing documents are idempotent success.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from ..core.exceptions import (
@@ -66,9 +67,14 @@ class DocumentDeleteService:
         Raises:
             DocumentOperationError: status == PROCESSING（ingest 进行中拒绝删除）
                 或 MySQL 更新失败。
-            MilvusRepositoryError: Milvus 侧删除失败（状态已尝试恢复后继续传播）。
-            DocumentStorageError: FileStorage 删除失败（状态已尝试恢复后继续传播）。
+            MilvusRepositoryError: Milvus 侧删除失败（保持 DELETING 供重试）。
+            DocumentStorageError: FileStorage 删除失败（保持 DELETING 供重试）。
         """
+        # All dependencies use synchronous I/O. Keep the ordered cleanup on one
+        # worker thread so slow storage cannot stall unrelated API requests.
+        await asyncio.to_thread(self._delete_document_sync, document_id, plugin_id)
+
+    def _delete_document_sync(self, document_id: int, plugin_id: str) -> None:
         # ---------------------------------------------------------- Step 1: 存在性校验
         # Phase 3.5 Step 2-E：workspace-aware ownership check（跨 Workspace → 不存在）
         try:

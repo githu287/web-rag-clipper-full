@@ -11,7 +11,7 @@ from sqlalchemy.pool import StaticPool
 
 from backend.api.deps import get_current_plugin
 from backend.core.di import get_document_ingest_service, get_plugin_service
-from backend.core.exceptions import DocumentOperationError, IngestJobConflictError
+from backend.core.exceptions import DocumentOperationError, IngestJobConflictError, IngestJobOperationError
 from backend.main import create_app
 from backend.models.base import Base
 from backend.models.document import DocumentStatus as DS
@@ -23,6 +23,8 @@ from backend.services.document_delete import DocumentDeleteService
 from backend.services.document_ingest import DocumentIngestService
 from backend.services.rag_answer import RagAnswerService
 from backend.services.web_clip import WebClipService
+from backend.workers.ingest_worker import IngestWorker
+from sqlalchemy.exc import OperationalError
 
 
 @pytest.fixture
@@ -156,6 +158,179 @@ def test_enqueue_failure_can_finish_queued_job(repos):
     assert jobs.mark_failed(job.id, "redis unavailable").status == JS.FAILED
     with pytest.raises(IngestJobConflictError):
         jobs.mark_failed(job.id, "duplicate")
+
+
+def test_recovery_finalizes_completed_document_without_reingest(repos):
+    documents, jobs = repos
+    doc = make_document(documents)
+    job = jobs.create_job("a", IngestJobType.WEB_CLIP)
+    jobs.claim_job(job.id)
+    jobs.begin_document(job.id, doc.id)
+    documents.update_ingest_result(doc.id, chunk_count=1, status=DS.SUCCESS)
+
+    assert not jobs.recover_interrupted(job.id)
+    recovered = jobs.get_job(job.id, "a")
+    assert recovered.status == JS.SUCCEEDED
+    assert recovered.attempt_count == 1
+    assert documents.get_document(doc.id, "a").status == DS.SUCCESS
+
+
+class MemoryQueue:
+    """Model pending/processing confirmation; DB below is a real Repository."""
+    def __init__(self):
+        self.pending, self.processing, self.payloads = [], [], {}
+        self.fail_ack = False
+
+    def enqueue(self, job_id, payload, *, ttl_seconds=None):
+        if job_id not in self.pending and job_id not in self.processing:
+            self.pending.insert(0, job_id)
+        self.payloads.setdefault(job_id, payload)
+
+    def enqueue_existing(self, job_id):
+        if job_id not in self.payloads:
+            raise IngestJobOperationError("ingest job payload has expired")
+        self.enqueue(job_id, self.payloads[job_id])
+
+    def dequeue(self, timeout_seconds):
+        if not self.pending:
+            return None
+        job_id = self.pending.pop()
+        self.processing.insert(0, job_id)
+        return job_id
+
+    def list_processing(self):
+        return list(self.processing)
+
+    def recover_processing(self):
+        while self.processing:
+            self.pending.insert(0, self.processing.pop())
+
+    def get_payload(self, job_id):
+        return self.payloads.get(job_id)
+
+    def delete_payload(self, job_id):
+        self.payloads.pop(job_id, None)
+
+    def acknowledge(self, job_id):
+        if self.fail_ack:
+            self.fail_ack = False
+            raise IngestJobOperationError("Redis unavailable during ack")
+        self.processing.remove(job_id)
+
+
+def queued_worker(repos, *, fail_first_ingest=False):
+    documents, jobs = repos
+    doc = make_document(documents)
+    job = jobs.create_job("a", IngestJobType.WEB_CLIP)
+    queue = MemoryQueue()
+    queue.enqueue(job.id, {"job_type": IngestJobType.WEB_CLIP, "plugin_id": "a",
+                           "url": "https://example.com/", "raw_text": "body", "title": "Title"})
+    calls = []
+    async def ingest(**kwargs):
+        calls.append(doc.id)
+        kwargs["claim_document"](doc.id)
+        if fail_first_ingest and len(calls) == 1:
+            raise RuntimeError("temporary ingestion failure")
+        return documents.update_ingest_result(doc.id, chunk_count=1, status=DS.SUCCESS)
+    worker = IngestWorker(
+        repository=jobs, queue=queue,
+        plugin_repository=Mock(get_by_plugin_id=Mock(return_value=SimpleNamespace(status="ACTIVE"))),
+        plugin_service=Mock(decrypt_api_key=Mock(return_value="test")),
+        web_clip_service=SimpleNamespace(clip=ingest), document_upload_service=Mock(), max_retries=3,
+    )
+    return worker, queue, job, doc, calls
+
+
+def test_failed_terminal_write_recovers_on_next_cycle_without_restart(repos, monkeypatch):
+    documents, jobs = repos
+    worker, queue, job, doc, calls = queued_worker(repos, fail_first_ingest=True)
+    mark_failed = jobs.mark_failed
+    def fail_once(*args):
+        monkeypatch.setattr(jobs, "mark_failed", mark_failed)
+        raise IngestJobOperationError("MySQL unavailable during failure commit")
+    monkeypatch.setattr(jobs, "mark_failed", fail_once)
+    worker.run_once(0)
+    assert queue.processing == [job.id]
+    assert documents.get_document(doc.id, "a").status == DS.PROCESSING
+    worker.run_once(0)
+    assert jobs.get_job(job.id, "a").status == JS.SUCCEEDED
+    assert jobs.get_job(job.id, "a").attempt_count == 2
+    assert documents.get_document(doc.id, "a").status == DS.SUCCESS
+    assert queue.processing == []
+    assert len(calls) == 2
+
+
+@pytest.mark.parametrize("committed", [False, True])
+def test_success_commit_failure_never_repeats_completed_work(repos, monkeypatch, committed):
+    documents, jobs = repos
+    worker, queue, job, doc, calls = queued_worker(repos)
+    mark_succeeded = jobs.mark_succeeded
+    def uncertain_commit(*args):
+        if committed:
+            mark_succeeded(*args)
+        raise IngestJobOperationError("success commit response lost")
+    monkeypatch.setattr(jobs, "mark_succeeded", uncertain_commit)
+    worker.run_once(0)
+    assert queue.processing == [job.id]
+    assert documents.get_document(doc.id, "a").status == DS.SUCCESS
+    worker.run_once(0)
+    assert jobs.get_job(job.id, "a").status == JS.SUCCEEDED
+    assert jobs.get_job(job.id, "a").attempt_count == 1
+    assert queue.processing == []
+    assert len(calls) == 1
+
+
+def test_ack_failure_recovers_without_restart_or_duplicate_ingest(repos):
+    _, jobs = repos
+    worker, queue, job, _, calls = queued_worker(repos)
+    queue.fail_ack = True
+    worker.run_once(0)
+    assert queue.processing == [job.id]
+    worker.run_once(0)
+    assert jobs.get_job(job.id, "a").status == JS.SUCCEEDED
+    assert queue.processing == []
+    assert len(calls) == 1
+
+
+def test_retry_limit_and_document_failure_commit_before_queue_moves(repos, monkeypatch):
+    documents, jobs = repos
+    worker, queue, job, doc, calls = queued_worker(repos)
+    queue.dequeue(0)
+    for attempt in range(3):
+        if attempt:
+            assert jobs.recover_interrupted(job.id)
+        jobs.claim_job(job.id)
+    jobs.begin_document(job.id, doc.id)
+    release_document = jobs._release_document
+    def fail_after_document_write(*args):
+        release_document(*args)
+        raise OperationalError("injected DB failure", {}, RuntimeError("connection lost"))
+    monkeypatch.setattr(jobs, "_release_document", fail_after_document_write)
+    with pytest.raises(IngestJobOperationError):
+        worker.recover_interrupted()
+    assert queue.processing == [job.id]
+    assert queue.pending == []
+    assert jobs.get_job(job.id, "a").status == JS.RUNNING
+    assert documents.get_document(doc.id, "a").status == DS.PROCESSING
+
+    monkeypatch.setattr(jobs, "_release_document", release_document)
+    worker.run_once(0)
+    assert jobs.get_job(job.id, "a").status == JS.FAILED
+    assert "retry limit" in jobs.get_job(job.id, "a").error_message
+    assert documents.get_document(doc.id, "a").status == DS.FAILED
+    assert queue.processing == []
+    assert calls == []
+
+
+def test_completed_work_wins_over_retry_limit(repos):
+    documents, jobs = repos
+    doc = make_document(documents)
+    job = jobs.create_job("a", IngestJobType.WEB_CLIP)
+    jobs.claim_job(job.id)
+    jobs.begin_document(job.id, doc.id)
+    documents.update_ingest_result(doc.id, chunk_count=1, status=DS.SUCCESS)
+    assert not jobs.recover_interrupted(job.id, max_attempts=1)
+    assert jobs.get_job(job.id, "a").status == JS.SUCCEEDED
 
 
 def test_upload_preflight_failure_does_not_leave_pending_document(repos):
