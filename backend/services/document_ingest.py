@@ -12,6 +12,7 @@ import logging
 
 from ..core.exceptions import DocumentNotFoundError, DocumentOperationError
 from ..models.document import DocumentStatus
+from ..models.model_provider import embedding_claim_options
 from ..repositories.mysql import DocumentRepository
 from .ingest import IngestService
 
@@ -119,6 +120,7 @@ class DocumentIngestService:
                 document_id, plugin_id,
                 {DocumentStatus.PENDING, DocumentStatus.SUCCESS, DocumentStatus.FAILED},
                 DocumentStatus.PROCESSING,
+                **embedding_claim_options(api_key),
             )
         elif document.status != DocumentStatus.PROCESSING:
             raise DocumentOperationError("document processing claim was lost")

@@ -12,6 +12,7 @@ from ..clients.embedding import EmbeddingClient
 from ..core.exceptions import DocumentNotFoundError, DocumentNotSuccessError
 from ..models.api_schema import RagSearchResult
 from ..models.document import DocumentStatus
+from ..models.model_provider import embedding_claim_options
 from ..models.milvus_dto import ChunkSearchResult
 from ..repositories.milvus import MilvusRepository
 from ..repositories.mysql import DocumentRepository
@@ -146,6 +147,9 @@ class RagService:
             expr = f"page_id in [{','.join(map(str, success_ids))}]"
 
         # Resolve access and searchable scope before spending an embedding call.
+        fingerprint = embedding_claim_options(api_key).get("embedding_fingerprint")
+        if fingerprint is not None:
+            await asyncio.to_thread(self._documents.validate_embedding_space, plugin_id, fingerprint)
         vectors = await asyncio.to_thread(self._embedding.embed, [query], api_key=api_key)
         query_vector = vectors[0]
 

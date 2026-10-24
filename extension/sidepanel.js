@@ -111,6 +111,7 @@ let currentTabId = null;
 let binding = null;
 let session = null;
 let isSending = false;
+let activeChatRequest = null;
 let clipBusy = false;
 let clipBusyAction = null;
 let clipErrorMsg = null;
@@ -556,31 +557,53 @@ function openDocumentUrl(url) {
   chrome.tabs.create({ url: url });
 }
 
-// 异步上传会保留原文件与 Job 引用，可由知识库直接重试。
-// 历史同步失败文档没有 Job 记录，仍需用户重新上传原文件。
+// 从服务端恢复网页/上传任务，不依赖浏览器上传映射或仍存活的 Tab。
 async function retryDocument(doc) {
   const plugin = webRagApiClient.getPlugin();
-  const record = await sessionStore.getUploadJob(plugin.pluginId, doc.id);
-  if (!record || Number(record.documentId) !== Number(doc.id)) {
-    setStatus(els.librarySummary, "该文档没有可恢复的异步任务，请重新上传原文件。", "warn");
-    return;
-  }
-  if (uploadBusy) return;
+  if (!plugin.pluginId || uploadBusy) return;
   uploadBusy = true;
   els.libraryUploadBtn.disabled = true;
-  setUploadStatus("正在重新提交任务…", "loading");
+  setUploadStatus("正在查询可恢复的任务…", "loading");
+  let monitoring = false;
+  const fallback = doc.source_type === "webpage"
+    ? "请打开原网页重新剪藏。" : "请重新上传原文件。";
   try {
-    const job = await webRagApiClient.jobs.retry(record.jobId);
+    let job = await webRagApiClient.documents.job(doc.id);
     if (webRagApiClient.getPlugin().pluginId !== plugin.pluginId) return;
-    await sessionStore.setUploadJob(plugin.pluginId, Object.assign({}, record, { status: job.status }));
+    if (job.status === "FAILED") {
+      job = await webRagApiClient.jobs.retry(job.id);
+    } else if (job.status !== "QUEUED" && job.status !== "RUNNING") {
+      setUploadStatus("该文档没有可重试的异步任务，" + fallback, "warn");
+      return;
+    }
     if (webRagApiClient.getPlugin().pluginId !== plugin.pluginId) return;
-    activeUploadJob = job;
+    const record = {
+      jobId: job.id, documentId: Number(doc.id),
+      pluginId: plugin.pluginId,
+      filename: doc.title || doc.filename || "文档",
+      sourceType: doc.source_type,
+    };
+    // Keep a polling hint for panel reopen; the server remains authoritative.
+    try { await sessionStore.setUploadJob(plugin.pluginId, record); } catch (_err) {
+      // Poll the accepted server job even when local persistence is unavailable.
+    }
+    if (webRagApiClient.getPlugin().pluginId !== plugin.pluginId) return;
+    monitoring = true;
     startUploadJobMonitor(record, job);
     await loadLibrary();
   } catch (err) {
-    uploadBusy = false;
-    els.libraryUploadBtn.disabled = false;
-    setUploadStatus("重试失败：" + errorText(err), "err");
+    if (webRagApiClient.getPlugin().pluginId !== plugin.pluginId) return;
+    if (err instanceof webRagApiClient.ApiRequestError && err.code === "UNAUTHENTICATED") return;
+    if (err instanceof webRagApiClient.ApiRequestError && err.status === 404) {
+      setUploadStatus("该文档没有可恢复的异步任务，" + fallback, "warn");
+    } else {
+      setUploadStatus("重试失败：" + errorText(err), "err");
+    }
+  } finally {
+    if (!monitoring && webRagApiClient.getPlugin().pluginId === plugin.pluginId) {
+      uploadBusy = false;
+      els.libraryUploadBtn.disabled = false;
+    }
   }
 }
 
@@ -644,10 +667,10 @@ async function handleFileUpload(file) {
     }
     var record = {
       jobId: job.id,
+      pluginId: plugin.pluginId,
       documentId: Number(job.document_id),
       filename: file.name,
       status: job.status,
-      pluginId: plugin.pluginId,
     };
     await sessionStore.setUploadJob(plugin.pluginId, record);
     submitted = true;
@@ -697,6 +720,13 @@ function startUploadJobMonitor(record, initialJob) {
   monitorUploadJob(record, token);
 }
 
+function stopUploadJobMonitor() {
+  uploadJobPollToken += 1;
+  activeUploadJob = null;
+  uploadBusy = false;
+  els.libraryUploadBtn.disabled = false;
+}
+
 async function monitorUploadJob(record, token) {
   let failures = 0;
   const isCurrent = function () {
@@ -710,18 +740,20 @@ async function monitorUploadJob(record, token) {
       activeUploadJob = job;
       const progress = Math.max(0, Math.min(100, Number(job.progress) || 0));
       if (job.status === "SUCCEEDED") {
-        await sessionStore.clearUploadJob(record.pluginId, record.documentId);
+        try { await sessionStore.clearUploadJob(record.pluginId, record.documentId); } catch (_err) {}
         if (!isCurrent()) return;
         activeUploadJob = null;
         uploadBusy = false;
         els.libraryUploadBtn.disabled = false;
-        setUploadStatus("上传成功：" + record.filename + "（100%）", "ok");
+        setUploadStatus("入库成功：" + record.filename + "（100%）", "ok");
         libraryState.page = 1;
         await loadLibrary();
         return;
       }
       if (job.status === "FAILED") {
-        await sessionStore.setUploadJob(record.pluginId, Object.assign({}, record, { status: "FAILED" }));
+        try {
+          await sessionStore.setUploadJob(record.pluginId, Object.assign({}, record, { status: "FAILED" }));
+        } catch (_err) {}
         if (!isCurrent()) return;
         activeUploadJob = null;
         uploadBusy = false;
@@ -867,6 +899,8 @@ async function confirmDeletePlugin() {
     session = null;
     currentTabId = null;
     isSending = false;
+    activeChatRequest = null;
+    stopUploadJobMonitor();
     clipBusy = false;
     closeDeleteModal();
     renderWelcomeView();
@@ -1331,6 +1365,7 @@ function renderChat() {
     appendMessageToDom(m);
     prevMode = curMode;
   }
+  if (activeChatRequest && !activeChatRequest.settled && chatRequestVisible(activeChatRequest)) appendLoading();
   scrollToBottom(true);
 }
 
@@ -1624,16 +1659,16 @@ function scrollToBottom(force) {
 }
 
 // ================================================================ 会话
-async function saveCurrentSession() {
-  if (!session) return;
-  const firstUser = session.messages.find(function (m) {
+async function saveCurrentSession(target = session) {
+  if (!target) return;
+  const firstUser = target.messages.find(function (m) {
     return m.role === "user";
   });
-  if (firstUser && (!session.title || session.title === "新会话" || session.title.indexOf("当前网页") === 0)) {
+  if (firstUser && (!target.title || target.title === "新会话" || target.title.indexOf("当前网页") === 0)) {
     const t = firstUser.content.trim();
-    session.title = t.length > 30 ? t.slice(0, 30) + "…" : t;
+    target.title = t.length > 30 ? t.slice(0, 30) + "…" : t;
   }
-  const ok = await sessionStore.saveSession(session);
+  const ok = await sessionStore.saveSession(target);
   if (!ok) {
     // 写失败不崩溃，仅记录
     try {
@@ -1658,6 +1693,14 @@ async function newSession() {
 }
 
 // ================================================================ 提问
+function chatRequestValid(request) {
+  return activeChatRequest === request && webRagApiClient.getPlugin().pluginId === request.pluginId;
+}
+
+function chatRequestVisible(request) {
+  return chatRequestValid(request) && session && session.sessionId === request.target.sessionId;
+}
+
 async function sendQuestion() {
   const plugin = webRagApiClient.getPlugin();
   if (!plugin.pluginId) {
@@ -1673,6 +1716,19 @@ async function sendQuestion() {
     return;
   }
   isSending = true;
+  // Capture before the first storage/network await; tabs and sessions remain usable.
+  const request = {
+    pluginId: plugin.pluginId,
+    target: session,
+    context: {
+      mode: mode,
+      documentId: mode === "current" ? binding.documentId : null,
+      pageUrl: binding.pageUrl || null,
+      pageTitle: binding.pageTitle || null,
+    },
+    settled: false,
+  };
+  activeChatRequest = request;
   els.chatTextarea.value = "";
   updateSendState();
 
@@ -1680,50 +1736,44 @@ async function sendQuestion() {
     id: sessionStore.newId(),
     role: "user",
     content: query,
-    mode: mode,
-    documentId: mode === "current" ? binding.documentId : null,
-    pageUrl: binding.pageUrl || null,
-    pageTitle: binding.pageTitle || null,
+    ...request.context,
     sources: null,
     createdAt: Date.now(),
   };
-  session.messages.push(userMsg);
-  await saveCurrentSession();
-  const curMode = mode === "all" ? "all" : "current";
-  const lastMsgEl = els.chatArea.querySelector(".msg:last-of-type");
-  if (lastMsgEl && lastMsgEl.getAttribute("data-mode") !== curMode) {
-    appendModeSeparatorToDom(curMode);
-  }
-  appendMessageToDom(userMsg);
-
-  const loadingEl = appendLoading();
+  request.target.messages.push(userMsg);
   try {
+    await saveCurrentSession(request.target);
+    if (!chatRequestValid(request)) return;
+    if (chatRequestVisible(request)) {
+      session = request.target;
+      renderChat();
+    }
     const data = await webRagApiClient.rag.ask({
       query: query,
-      document_id: mode === "current" && binding.documentId != null ? binding.documentId : null,
+      document_id: request.context.documentId,
     });
-    removeLoading(loadingEl);
+    if (!chatRequestValid(request)) return;
+    request.settled = true;
     const answer = data && typeof data.answer === "string" ? data.answer : "";
     const assistantMsg = {
       id: sessionStore.newId(),
       role: "assistant",
       content: answer || "当前内容中没有足够信息回答该问题。",
-      mode: mode,
-      documentId: mode === "current" ? binding.documentId : null,
-      pageUrl: binding.pageUrl || null,
-      pageTitle: binding.pageTitle || null,
+      ...request.context,
       sources: Array.isArray(data && data.sources) ? data.sources : [],
       createdAt: Date.now(),
     };
-    session.messages.push(assistantMsg);
-    await saveCurrentSession();
-    appendMessageToDom(assistantMsg);
+    request.target.messages.push(assistantMsg);
+    await saveCurrentSession(request.target);
+    if (chatRequestVisible(request)) {
+      session = request.target;
+      renderChat();
+    }
   } catch (err) {
-    removeLoading(loadingEl);
+    if (!chatRequestValid(request)) return;
+    request.settled = true;
     if (err instanceof webRagApiClient.ApiRequestError && err.code === "UNAUTHENTICATED") {
       // 已由 unauthenticatedHandler 处理视图
-      isSending = false;
-      updateSendState();
       return;
     }
     const text = errorText(err);
@@ -1731,22 +1781,27 @@ async function sendQuestion() {
       id: sessionStore.newId(),
       role: "assistant",
       content: text,
-      mode: mode,
-      documentId: null,
-      pageUrl: null,
-      pageTitle: null,
+      ...request.context,
       sources: null,
       createdAt: Date.now(),
     };
-    session.messages.push(errorMsg);
-    await saveCurrentSession();
-    appendMessageToDom(errorMsg);
+    request.target.messages.push(errorMsg);
+    await saveCurrentSession(request.target);
+    if (chatRequestVisible(request)) {
+      session = request.target;
+      renderChat();
+    }
   } finally {
-    isSending = false;
-    updateSendState();
-    try {
-      els.chatTextarea.focus();
-    } catch (_err) {}
+    if (activeChatRequest === request) {
+      const visible = chatRequestVisible(request);
+      activeChatRequest = null;
+      isSending = false;
+      if (visible) renderChat();
+      updateSendState();
+      if (visible) {
+        try { els.chatTextarea.focus(); } catch (_err) {}
+      }
+    }
   }
 }
 
@@ -2515,6 +2570,8 @@ async function init() {
     session = null;
     currentTabId = null;
     isSending = false;
+    activeChatRequest = null;
+    stopUploadJobMonitor();
     clipBusy = false;
     renderWelcomeView();
     setStatus(els.welcomeStatus, "插件凭证已失效，请重新创建插件", "err");

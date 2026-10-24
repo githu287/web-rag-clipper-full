@@ -4,7 +4,7 @@ from uuid import uuid4
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import Engine, func, or_, select, update
+from sqlalchemy import Engine, case, func, or_, select, update
 from sqlalchemy.exc import DBAPIError, IntegrityError, OperationalError
 from sqlalchemy.orm import Session, defer, sessionmaker
 
@@ -16,6 +16,7 @@ from ...core.exceptions import (
 from ...models.document import Document, DocumentStatus
 from ...models.ingest_job import IngestJob, IngestJobStatus, IngestJobType
 from .ingest_job_protocol import IngestJobRepository
+from .workspace_lock import check_embedding_space, lock_workspace
 
 
 _MAX_ERROR_LENGTH = 2048
@@ -39,7 +40,9 @@ class IngestJobRepositoryImpl(IngestJobRepository):
     ) -> IngestJob:
         if job_type not in IngestJobType.ALL:
             raise ValueError(f"unsupported ingest job type: {job_type}")
-        if payload is not None and (payload_ttl_seconds is None or payload_ttl_seconds < 1):
+        if payload is not None and payload_ttl_seconds is None:
+            payload_ttl_seconds = 604800  # Compatibility for pre-deadline callers.
+        if payload is not None and payload_ttl_seconds < 1:
             raise ValueError("durable payload requires a positive TTL")
         try:
             with self._session_factory() as session:
@@ -78,6 +81,16 @@ class IngestJobRepositoryImpl(IngestJobRepository):
             raise
         except (OperationalError, DBAPIError) as exc:
             raise IngestJobOperationError("get ingest job failed") from exc
+
+    def list_queued_jobs(self, limit: int = 100) -> list[IngestJob]:
+        try:
+            with self._session_factory() as session:
+                return list(session.scalars(select(IngestJob).where(
+                    IngestJob.status == IngestJobStatus.QUEUED,
+                    or_(IngestJob.payload.is_not(None), IngestJob.job_type == IngestJobType.FILE_UPLOAD),
+                ).order_by(IngestJob.created_at, IngestJob.id).limit(limit)))
+        except DBAPIError as exc:
+            raise IngestJobOperationError("list queued ingest jobs failed") from exc
 
     def list_queued(self, limit: int = 20) -> list[IngestJob]:
         if limit < 1:
@@ -120,6 +133,31 @@ class IngestJobRepositoryImpl(IngestJobRepository):
                 return len(ids)
         except (OperationalError, DBAPIError) as exc:
             raise IngestJobOperationError("purge ingest payloads failed") from exc
+
+    def get_document_job(self, document_id: int, plugin_id: str) -> IngestJob:
+        """Prefer active work, otherwise the latest job; scope BOTH rows to owner.
+
+        Do not select only FAILED jobs: an older failure must not be retried while
+        another job is queued/running or has already succeeded.
+        """
+        try:
+            with self._session_factory() as session:
+                job = session.scalar(select(IngestJob).join(
+                    Document, Document.id == IngestJob.document_id,
+                ).where(
+                    IngestJob.document_id == document_id,
+                    IngestJob.plugin_id == plugin_id,
+                    Document.plugin_id == plugin_id,
+                ).order_by(
+                    case((IngestJob.status.in_([IngestJobStatus.QUEUED, IngestJobStatus.RUNNING]), 0), else_=1),
+                    IngestJob.created_at.desc(), IngestJob.updated_at.desc(), IngestJob.id.desc(),
+                ).limit(1))
+                if job is None:
+                    raise IngestJobNotFoundError("document ingest job not found")
+                session.expunge(job)
+                return job
+        except DBAPIError as exc:
+            raise IngestJobOperationError("get document ingest job failed") from exc
 
     def claim_job(self, job_id: str) -> IngestJob | None:
         """Atomically transition QUEUED to RUNNING; duplicate deliveries return None."""
@@ -164,7 +202,7 @@ class IngestJobRepositoryImpl(IngestJobRepository):
             error_message=None,
         )
 
-    def begin_document(self, job_id: str, document_id: int) -> None:
+    def begin_document(self, job_id: str, document_id: int, *, embedding_fingerprint: str | None = None) -> None:
         """Claim document and bind its RUNNING job in one transaction."""
         try:
             with self._session_factory() as session:
@@ -175,6 +213,8 @@ class IngestJobRepositoryImpl(IngestJobRepository):
                     raise IngestJobConflictError("only RUNNING jobs can claim documents")
                 if job.stage == "PROCESSING_DOCUMENT":
                     raise IngestJobConflictError("job already holds a document")
+                if embedding_fingerprint is not None:
+                    check_embedding_space(lock_workspace(session, job.plugin_id), embedding_fingerprint)
                 result = session.execute(update(Document).where(
                     Document.id == document_id, Document.plugin_id == job.plugin_id,
                     Document.status.in_([DocumentStatus.PENDING, DocumentStatus.SUCCESS, DocumentStatus.FAILED]),

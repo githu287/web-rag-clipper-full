@@ -56,19 +56,23 @@ class RedisIngestQueue:
 
     def enqueue(
         self, job_id: str, payload: dict[str, Any], *, ttl_seconds: int | None = None,
-    ) -> None:
+    ) -> bool:
         """Restore missing input and delivery atomically; never extend a live TTL."""
         try:
             encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
             ttl = self._payload_ttl if ttl_seconds is None else ttl_seconds
             if ttl < 1:
                 raise ValueError("payload TTL must be positive")
-            self._client.eval(
+            return bool(self._client.eval(
                 self._ENSURE_ENQUEUED, 3, self._payload_key(job_id),
                 self._queue_name, self._processing_name, job_id, encoded, ttl,
-            )
+            ))
         except (RedisError, TypeError, ValueError) as exc:
             raise IngestJobOperationError("enqueue ingest job failed") from exc
+
+    def ensure_enqueued(self, job_id: str, payload: dict[str, Any], *, ttl_seconds: int | None = None) -> bool:
+        """Canonical durable publication; preserves existing payload deadlines."""
+        return self.enqueue(job_id, payload, ttl_seconds=ttl_seconds)
 
     def enqueue_existing(self, job_id: str) -> None:
         try:

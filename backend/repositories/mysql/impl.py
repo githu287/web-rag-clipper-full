@@ -46,9 +46,11 @@ from sqlalchemy.orm import Session, sessionmaker
 from ...core.exceptions import (
     DocumentNotFoundError,
     DocumentOperationError,
+    DocumentQuotaExceededError,
 )
 from ...models.document import Document, DocumentSourceType, DocumentStatus
 from ...models.ingest_job import IngestJob, IngestJobStatus
+from .workspace_lock import check_embedding_space, lock_workspace
 from .protocol import DocumentRepository, _UNSET
 
 
@@ -67,7 +69,7 @@ def _db_error_brief(e: BaseException) -> str:
 class DocumentRepositoryImpl(DocumentRepository):
     """DocumentRepository 的 SQLAlchemy 实现。"""
 
-    def __init__(self, engine: Engine) -> None:
+    def __init__(self, engine: Engine, max_documents_per_workspace: int = 188) -> None:
         """
         注入 Engine，内部构造 sessionmaker。
 
@@ -76,6 +78,9 @@ class DocumentRepositoryImpl(DocumentRepository):
                     测试环境可传 SQLite engine，如 StaticPool in-memory）。
         """
         self._engine = engine
+        if max_documents_per_workspace < 1:
+            raise ValueError("max_documents_per_workspace must be positive")
+        self._max_documents_per_workspace = max_documents_per_workspace
         # expire_on_commit=False：commit 后不自动 expire，detached ORM 属性仍可读。
         # TODO(后续 Phase): 当前 Document 无 relationship，detached 安全。
         #   未来增加 Document↔Page/Chunk relationship 后，需 DTO 转换或 eager
@@ -96,6 +101,8 @@ class DocumentRepositoryImpl(DocumentRepository):
         title: str | None = None,
         url: str | None = None,
         source_type: str | None = None,
+        *,
+        embedding_fingerprint: str | None = None,
     ) -> Document:
         """
         插入一条 Document 记录，返回 detached ORM 对象。
@@ -129,6 +136,16 @@ class DocumentRepositoryImpl(DocumentRepository):
             document.source_type = source_type
         try:
             with self._session_factory() as session:
+                check_embedding_space(lock_workspace(session, plugin_id), embedding_fingerprint)
+                # Every writer holds the same workspace lock through commit.
+                # A preflight count in a service cannot enforce a concurrent limit.
+                count = session.scalar(select(func.count()).select_from(Document).where(
+                    Document.plugin_id == plugin_id,
+                ))
+                if count >= self._max_documents_per_workspace:
+                    raise DocumentQuotaExceededError(
+                        f"知识库文档数已达上限（{self._max_documents_per_workspace} 篇），请先删除部分文档"
+                    )
                 session.add(document)
                 session.commit()
                 session.refresh(document)
@@ -311,11 +328,26 @@ class DocumentRepositoryImpl(DocumentRepository):
 
     def transition_status(
         self, document_id: int, plugin_id: str, expected: set[str], status: str,
+        *, embedding_fingerprint: str | None = None,
     ) -> Document:
         if status not in DocumentStatus.ALL or not expected or not expected <= DocumentStatus.ALL:
             raise ValueError("invalid document transition")
         try:
             with self._session_factory() as session:
+                if embedding_fingerprint is not None:
+                    check_embedding_space(lock_workspace(session, plugin_id), embedding_fingerprint)
+                if status == DocumentStatus.DELETING:
+                    # Preserve legacy files with ambiguous ownership, even when
+                    # old metadata rows predate the public path restriction.
+                    target = session.scalar(select(Document).where(
+                        Document.id == document_id, Document.plugin_id == plugin_id,
+                    ).with_for_update())
+                    if target is None:
+                        raise DocumentNotFoundError("document not found")
+                    if target.file_path and session.scalar(select(Document.id).where(
+                        Document.file_path == target.file_path, Document.id != document_id,
+                    ).limit(1)) is not None:
+                        raise DocumentOperationError("file has multiple document references; deletion refused")
                 result = session.execute(
                     update(Document).where(
                         Document.id == document_id, Document.plugin_id == plugin_id,
@@ -357,6 +389,13 @@ class DocumentRepositoryImpl(DocumentRepository):
                 return result.rowcount == 1
         except (OperationalError, IntegrityError, DBAPIError) as exc:
             raise DocumentOperationError("fail prepared upload failed") from exc
+
+    def validate_embedding_space(self, plugin_id: str, embedding_fingerprint: str) -> None:
+        try:
+            with self._session_factory() as session:
+                check_embedding_space(lock_workspace(session, plugin_id), embedding_fingerprint)
+        except DBAPIError as exc:
+            raise DocumentOperationError("validate embedding configuration failed") from exc
 
     # ----------------------------------------------------------- update_status
     def update_status(

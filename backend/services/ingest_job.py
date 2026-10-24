@@ -42,7 +42,7 @@ class IngestJobService:
             payload=payload, payload_ttl_seconds=self._payload_ttl,
         )
         try:
-            self._queue.enqueue(job.id, payload, ttl_seconds=payload_ttl(job))
+            self._queue.ensure_enqueued(job.id, payload, ttl_seconds=payload_ttl(job))
         except (IngestJobOperationError, ValueError):
             logger.warning("durable ingest publication deferred: job_id=%s", job.id)
         # The DB commit is durable acceptance, even when Redis is unavailable.
@@ -65,13 +65,16 @@ class IngestJobService:
             "document_id": document_id,
         }
         try:
-            self._queue.enqueue(job.id, payload)
+            self._queue.ensure_enqueued(job.id, payload)
         except IngestJobOperationError:
             logger.warning("upload publication deferred: job_id=%s", job.id)
         return job
 
     def get_job(self, job_id: str, plugin_id: str) -> IngestJob:
         return self._repository.get_job(job_id, plugin_id, include_payload=False)
+
+    def get_document_job(self, document_id: int, plugin_id: str) -> IngestJob:
+        return self._repository.get_document_job(document_id, plugin_id)
 
     def retry_job(self, job_id: str, plugin_id: str) -> IngestJob:
         job = self._repository.get_job(job_id, plugin_id)
@@ -92,9 +95,9 @@ class IngestJobService:
             raise IngestJobConflictError(str(exc)) from exc
         try:
             if queued.job_type == IngestJobType.FILE_UPLOAD:
-                self._queue.enqueue(job_id, payload)
+                self._queue.ensure_enqueued(job_id, payload)
             elif payload is not None:
-                self._queue.enqueue(job_id, payload, ttl_seconds=payload_ttl(queued))
+                self._queue.ensure_enqueued(job_id, payload, ttl_seconds=payload_ttl(queued))
             else:
                 self._queue.enqueue_existing(job_id)
         except IngestJobOperationError as exc:

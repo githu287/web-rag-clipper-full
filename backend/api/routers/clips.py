@@ -83,7 +83,7 @@ def create_clip_async(
         2) ensure_capacity：先按规范化 URL 判断是否复用当前 Workspace 的网页，
            仅新文档在满额时返回 429；同 URL 更新不占新额度。
     预检与 Worker 实际创建之间没有事务串联，因此 WebClipService.clip() 在
-    create_document 前还会再查一次，那一次才是权威闸口。
+    Repository 创建事务持有 Workspace 行锁并再次计数，作为权威闸口。
     """
     # 提交时就检查 Workspace 已配置 Key；明文 Key 不写入 Redis payload。
     plugin_service.decrypt_api_key(current_plugin)

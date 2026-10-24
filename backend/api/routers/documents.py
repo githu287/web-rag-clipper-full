@@ -195,6 +195,15 @@ def list_documents(
     )
 
 
+@router.get("/{document_id}/job", response_model=IngestJobResponse, summary="查询文档的入库任务")
+def get_document_job(
+    document_id: int,
+    current_plugin: PluginWorkspace = Depends(get_current_plugin),
+    service: IngestJobService = Depends(get_ingest_job_service),
+) -> IngestJobResponse:
+    return build_job_response(service.get_document_job(document_id, current_plugin.plugin_id))
+
+
 @router.post(
     "",
     response_model=DocumentResponse,
@@ -221,7 +230,7 @@ def create_document(
         3) 构造 DocumentResponse 返回。
 
     Args:
-        request: DocumentCreateRequest（filename / file_path 必填；
+        request: DocumentCreateRequest（filename 必填，file_path 只能省略或为空；
             plugin_id 已从 Schema 移除，归属 = current_plugin.plugin_id）。
         current_plugin: 当前插件工作空间（X-Plugin-ID + X-Plugin-Secret
             → PluginWorkspace；Phase 3.5 Step 2-D）。

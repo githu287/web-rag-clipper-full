@@ -4,15 +4,11 @@
 // 并同步 manifest.json 中 host_permissions 的对应地址。
 //
 // 职责边界（Phase 3.5 Step 2-F）：
-//   - 负责 API_BASE_URL、请求期限与必要的 storage key 常量；
+//   - 只负责 API_BASE_URL 与必要的 storage key 常量；
 //   - 绝不在此处写入：API Key、plugin_secret 明文常量；
 //   - 动态 plugin_secret 从 chrome.storage.local 获取（见 api-client.js）。
 const WEB_RAG_CLIPPER_CONFIG = {
-  API_BASE_URL: "http://localhost:18000",
-  TIMEOUTS: {
-    REQUEST_MS: 30000,
-    MODEL_MS: 300000,
-  },
+  API_BASE_URL: "http://localhost:18001",
   STORAGE_KEYS: {
     // 插件身份：{ plugin_id, plugin_secret, plugin_name }
     // plugin_secret 仅用于 X-Plugin-Secret 请求头，禁止落日志 / URL / DOM / 会话。

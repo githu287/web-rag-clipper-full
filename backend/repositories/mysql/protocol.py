@@ -79,6 +79,8 @@ class DocumentRepository(Protocol):
         title: str | None = None,
         url: str | None = None,
         source_type: str | None = None,
+        *,
+        embedding_fingerprint: str | None = None,
     ) -> Document:
         """
         插入一条 Document 记录。
@@ -219,6 +221,7 @@ class DocumentRepository(Protocol):
 
     def transition_status(
         self, document_id: int, plugin_id: str, expected: set[str], status: str,
+        *, embedding_fingerprint: str | None = None,
     ) -> Document:
         """Atomically claim a document; reject a stale state or foreign owner."""
         ...
@@ -228,6 +231,11 @@ class DocumentRepository(Protocol):
 
         Return False without changes if missing, reserved or already advanced.
         """
+
+        ...
+
+    def validate_embedding_space(self, plugin_id: str, embedding_fingerprint: str) -> None:
+        """Reject a stale query credential snapshot before embedding the query."""
         ...
 
     # ----------------------------------------------------------- update_status

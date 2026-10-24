@@ -202,6 +202,9 @@ class PluginRepository(Protocol):
         """
         更换模型的 API Key（只更新 api_key_ciphertext / api_key_nonce + updated_at）。
 
+        带 Embedding 指纹时，须与文档创建共享 Workspace 行锁，并在提交前
+        原子检查已有文档，拒绝不兼容的向量空间切换。
+
         明确不改变：id、plugin_id、plugin_name / plugin_name_norm、
         plugin_secret_hash、status（换 Key 时 Workspace 身份不变、归属不变）。
 

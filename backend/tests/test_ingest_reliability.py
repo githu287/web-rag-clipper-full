@@ -181,6 +181,9 @@ class MemoryQueue:
         self.pending, self.processing, self.payloads = [], [], {}
         self.fail_ack = False
 
+    def ensure_enqueued(self, job_id, payload, *, ttl_seconds=None):
+        return self.enqueue(job_id, payload, ttl_seconds=ttl_seconds)
+
     def enqueue(self, job_id, payload, *, ttl_seconds=None):
         if job_id not in self.pending and job_id not in self.processing:
             self.pending.insert(0, job_id)

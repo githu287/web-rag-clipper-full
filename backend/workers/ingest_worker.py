@@ -19,6 +19,7 @@ from ..core.di import (
 )
 from ..models.document_api_schema import WebClipRequest
 from ..models.ingest_job import IngestJobType
+from ..models.model_provider import embedding_claim_options
 from ..core.exceptions import IngestJobConflictError, IngestJobOperationError
 from ..tasks.payload import durable_payload, payload_ttl
 from ..models.plugin import PluginStatus
@@ -97,7 +98,7 @@ class IngestWorker:
                         raw_text=request.raw_text,
                         plugin_id=job.plugin_id,
                         api_key=api_key,
-                        claim_document=lambda document_id: self._repository.begin_document(job_id, document_id),
+                        claim_document=lambda document_id: self._repository.begin_document(job_id, document_id, **embedding_claim_options(api_key)),
                     )
                 )
             else:
@@ -113,7 +114,7 @@ class IngestWorker:
                         document_id=document_id,
                         plugin_id=job.plugin_id,
                         api_key=api_key,
-                        claim_document=lambda document_id: self._repository.begin_document(job_id, document_id),
+                        claim_document=lambda document_id: self._repository.begin_document(job_id, document_id, **embedding_claim_options(api_key)),
                     )
                 )
         except Exception as exc:  # worker boundary: persist failure and continue
@@ -169,6 +170,10 @@ class IngestWorker:
             self._queue.recover_processing()
         return recovered
 
+    def dispatch_queued(self) -> int:
+        """Compatibility entry for explicit queue reconciliation."""
+        return self.recover_queued()
+
     def recover_queued(self) -> int:
         """Reconcile a bounded FIFO batch against Redis in single-worker mode."""
         published = 0
@@ -199,7 +204,8 @@ class IngestWorker:
                     )
                     continue
             else:
-                self._queue.enqueue(job.id, payload, ttl_seconds=payload_ttl(job))
+                published += int(bool(self._queue.ensure_enqueued(job.id, payload, ttl_seconds=payload_ttl(job))))
+                continue
             published += 1
         return published
 

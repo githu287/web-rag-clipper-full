@@ -45,7 +45,7 @@ class DocumentCreateRequest(BaseModel):
 
     字段：
         filename : 文件名（非空，<=255 字符）。
-        file_path: 文件存储路径（非空，<=512 字符）。
+        file_path: 兼容字段，只允许空串；物理文件只能通过上传接口创建。
 
     归属（Phase 3.5 Step 2-B）：plugin_id 不由客户端传入，Document 归属 =
     当前 Plugin（X-Plugin-ID 解析的 current_plugin.plugin_id）。
@@ -60,10 +60,9 @@ class DocumentCreateRequest(BaseModel):
         description="文件名（非空，<=255 字符）",
     )
     file_path: str = Field(
-        ...,
-        min_length=1,
-        max_length=512,
-        description="文件存储路径（非空，<=512 字符）",
+        default="",
+        max_length=0,
+        description="仅创建元数据；不得指定本地文件路径，上传文件请使用 /documents/upload/async",
     )
 
 

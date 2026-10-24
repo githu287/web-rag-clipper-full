@@ -46,7 +46,7 @@ class IngestJobServiceTest(unittest.TestCase):
         result = self.service.create_web_clip_job("plugin-a", request)
 
         self.assertIs(result, job)
-        payload = self.queue.enqueue.call_args.args[1]
+        payload = self.queue.ensure_enqueued.call_args.args[1]
         self.assertNotIn("api_key", payload)
         self.assertEqual(payload["raw_text"], "body")
         self.assertEqual(payload["plugin_id"], "plugin-a")
@@ -54,7 +54,7 @@ class IngestJobServiceTest(unittest.TestCase):
     def test_enqueue_failure_retains_durable_job_for_worker_publication(self) -> None:
         job = make_job()
         self.repository.create_job.return_value = job
-        self.queue.enqueue.side_effect = IngestJobOperationError("redis down")
+        self.queue.ensure_enqueued.side_effect = IngestJobOperationError("redis down")
         result = self.service.create_web_clip_job(
             "plugin-a", WebClipRequest(url="https://example.com/", raw_text="body"),
         )
@@ -79,7 +79,7 @@ class IngestJobServiceTest(unittest.TestCase):
             IngestJobType.FILE_UPLOAD,
             document_id=73,
         )
-        payload = self.queue.enqueue.call_args.args[1]
+        payload = self.queue.ensure_enqueued.call_args.args[1]
         self.assertEqual(
             payload,
             {
@@ -94,7 +94,7 @@ class IngestJobServiceTest(unittest.TestCase):
         job.job_type = IngestJobType.FILE_UPLOAD
         job.document_id = 73
         self.repository.create_job.return_value = job
-        self.queue.enqueue.side_effect = IngestJobOperationError("redis down")
+        self.queue.ensure_enqueued.side_effect = IngestJobOperationError("redis down")
 
         self.assertIs(self.service.create_file_upload_job("plugin-a", 73), job)
         self.repository.mark_failed.assert_not_called()
@@ -132,7 +132,7 @@ class IngestJobServiceTest(unittest.TestCase):
         result = self.service.retry_job(failed.id, "plugin-a")
 
         self.assertIs(result, queued)
-        self.queue.enqueue.assert_called_once_with(
+        self.queue.ensure_enqueued.assert_called_once_with(
             failed.id,
             {
                 "job_type": IngestJobType.FILE_UPLOAD,

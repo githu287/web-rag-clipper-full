@@ -18,6 +18,8 @@ redis>=5.0.0,<6.0.0
 # 版本严格对齐 Phase 2.2 §2：Milvus Server=milvusdb/milvus:v2.4.4（docker-compose.yml）
 # 官方推荐同 minor 最终补丁版 pymilvus==2.4.15（含 2.4.x 全部修复）；禁止升级到 2.5.x+/3.x 跨 minor。
 pymilvus==2.4.15
+# pymilvus 2.4.15 imports pkg_resources; retain the verified compatible runtime.
+setuptools==80.9.0
 
 # 阿里云百炼 OpenAI 兼容 API
 openai>=1.40.0,<2.0.0

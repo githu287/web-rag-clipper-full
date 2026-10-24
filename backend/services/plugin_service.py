@@ -50,6 +50,7 @@ import hmac
 import json
 import logging
 import re
+from dataclasses import replace
 from typing import Final
 
 from ..clients.embedding import EmbeddingClient
@@ -173,6 +174,7 @@ class PluginService:
                 调最小 embedding 请求做真实验证（不调 LLM）。
         """
         self._plugin_repository: PluginRepository = plugin_repository
+        self._settings = settings
         self._master_key: str = settings.app_master_key
         self._embedding_client: EmbeddingClient | None = embedding_client
         self._llm_client: LLMClient | None = llm_client
@@ -399,7 +401,15 @@ class PluginService:
             plugin.api_key_ciphertext, plugin.api_key_nonce, self._master_key
         )
         if not plaintext.lstrip().startswith("{"):
-            return plaintext
+            legacy = legacy_dashscope_credentials(plaintext)
+            return WorkspaceModelCredentials(
+                replace(legacy.embedding,
+                        base_url=getattr(self._settings, "bailian_base_url", legacy.embedding.base_url),
+                        model=getattr(self._settings, "bailian_embedding_model", legacy.embedding.model)),
+                replace(legacy.llm,
+                        base_url=getattr(self._settings, "bailian_base_url", legacy.llm.base_url),
+                        model=getattr(self._settings, "bailian_llm_model", legacy.llm.model)),
+            )
         try:
             payload = json.loads(plaintext)
             if not isinstance(payload, dict):
@@ -416,7 +426,7 @@ class PluginService:
     def get_model_config(
         self, plugin: PluginWorkspace
     ) -> WorkspaceModelCredentials | None:
-        """返回解密后的双端点配置；旧百炼 Key 返回 None，由 API 显示 legacy。"""
+        """返回解密后的双端点配置；旧百炼 Key 在解密时转换为端点快照。"""
         if plugin.api_key_ciphertext is None or plugin.api_key_nonce is None:
             return None
         value = self.decrypt_api_key(plugin)

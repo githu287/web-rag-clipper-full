@@ -53,6 +53,7 @@ from ..chunkers import Chunker
 from ..core.exceptions import DocumentOperationError, DocumentQuotaExceededError
 from ..core.url_normalization import normalize_web_url
 from ..models.document import Document, DocumentSourceType, DocumentStatus
+from ..models.model_provider import embedding_claim_options
 from ..repositories.mysql import DocumentRepository
 from .document_ingest import DocumentIngestService
 
@@ -101,10 +102,9 @@ class WebClipService:
         """
         新建 Document 前的只读配额预检（优化 #24b 写入侧配额 / #24c 提交时预检）。
 
-        count_documents 含**全部状态**（PENDING / FAILED 等同样占额度）。预检与
-        真正创建之间没有事务串联，并发提交最多让 Workspace 略超上限几篇，不会无界
-        增长；因此本方法只是「准入提示」，clip() 在 create_document 前调的同一检查
-        才是权威闸口（异步任务在 Worker 里执行时会再查一次）。
+        同 Workspace 的已有 URL 不新增 Document，因此满额也允许重新剪藏。
+        count_documents 含全部状态；本方法只是准入提示，真正的配额限制由
+        Repository 在持有 Workspace 行锁的创建事务内执行。
 
         提交预检传入 url 时，先按与 clip() 相同的规则查找当前 Workspace 的
         既有网页；复用既有文档不消耗新额度，满额时也允许提交更新。
@@ -184,6 +184,7 @@ class WebClipService:
                 title=title,
                 url=normalized_url,
                 source_type=DocumentSourceType.WEBPAGE,
+                **embedding_claim_options(api_key),
             )
         else:
             if document.status in {
@@ -207,6 +208,7 @@ class WebClipService:
                 document.id, plugin_id,
                 {DocumentStatus.PENDING, DocumentStatus.SUCCESS, DocumentStatus.FAILED},
                 DocumentStatus.PROCESSING,
+                **embedding_claim_options(api_key),
             )
 
         # ------------------------------------------------------------------

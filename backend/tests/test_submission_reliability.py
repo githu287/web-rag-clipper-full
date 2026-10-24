@@ -63,7 +63,7 @@ def test_lost_enqueue_response_preserves_worker_state(repos, retry, kind, worker
         observed.append(jobs.get_job(job_id, "a"))
         raise IngestJobOperationError("enqueue response lost")
 
-    queue.enqueue.side_effect = accepted_then_disconnected
+    queue.ensure_enqueued.side_effect = accepted_then_disconnected
     queue.enqueue_existing.side_effect = accepted_then_disconnected
     if retry:
         body = {"job_type": kind, "plugin_id": "a", "url": "https://example.com", "raw_text": "body"}
@@ -131,10 +131,10 @@ def test_upload_route_compensation_preserves_accepted_jobs(repos, claimed):
 def test_enqueue_outage_retains_durable_job_and_pending_upload(repos):
     documents, jobs = repos
     document = documents.create_document("note.txt", "note.txt", "a")
-    queue = Mock(enqueue=Mock(side_effect=IngestJobOperationError("redis down")))
+    queue = Mock(ensure_enqueued=Mock(side_effect=IngestJobOperationError("redis down")))
     service = IngestJobService(jobs, queue, SimpleNamespace(ingest_max_retries=3, ingest_payload_ttl_seconds=600))
     result = service.create_file_upload_job("a", document.id)
-    job_id = queue.enqueue.call_args.args[0]
+    job_id = queue.ensure_enqueued.call_args.args[0]
     assert result.id == job_id
     assert jobs.get_job(job_id, "a").status == JS.QUEUED
     assert documents.get_document(document.id, "a").status == DS.PENDING
@@ -184,7 +184,7 @@ def test_upload_api_lost_enqueue_response_does_not_break_worker(repos, monkeypat
             jobs.mark_succeeded(job_id, document.id)
         raise IngestJobOperationError("enqueue response lost")
 
-    queue.enqueue.side_effect = accepted_then_disconnected
+    queue.ensure_enqueued.side_effect = accepted_then_disconnected
     app = create_app()
     monkeypatch.setattr("backend.main.get_milvus_initializer", lambda: Mock())
     app.dependency_overrides[get_current_plugin] = lambda: SimpleNamespace(plugin_id="a")
@@ -197,7 +197,7 @@ def test_upload_api_lost_enqueue_response_does_not_break_worker(repos, monkeypat
         response = client.post("/documents/upload/async", files={"file": ("note.txt", b"body", "text/plain")})
     assert response.status_code == 202
     assert response.json()["status"] == JS.QUEUED
-    job_id = queue.enqueue.call_args.args[0]
+    job_id = queue.ensure_enqueued.call_args.args[0]
     assert jobs.get_job(job_id, "a").status == (JS.SUCCEEDED if completed else JS.RUNNING)
     assert documents.get_document(document.id, "a").status == (DS.SUCCESS if completed else DS.PROCESSING)
     if not completed:

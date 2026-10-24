@@ -7,6 +7,8 @@
 | 文件 | 说明 |
 |---|---|
 | `README.md` | 项目定位、快速启动、模型配置、使用流程、测试与排障 |
+| `.github/workflows/ci.yml` | push/PR/手动触发的 Linux/Windows 后端、扩展与数据格式回归 |
+| `scripts/check.py` | 本地与 CI 统一离线检查入口，自动发现 Node 测试并传播失败 |
 | `ARCHITECTURE.md` | 当前实现的分层、数据流、隔离与一致性设计 |
 | `FILE_INDEX.md` | 本文件 |
 | `.env.example` | 环境变量模板；部分字段是尚未消费的预留配置 |
@@ -26,7 +28,6 @@
 | `backend/api/routers/__init__.py` | Router 子包标记；文件内按 prefix 列出当前 6 个路由器 |
 | `backend/api/routers/plugins.py` | Workspace 注册、详情、改名、多服务商模型配置与删除 |
 | `backend/api/routers/documents.py` | 文档列表/详情、创建、上传、ingest 与删除 |
-| `backend/api/upload.py` | multipart 临时文件限读、大小未知及短读取处理，最多消费文件上限加 1 字节 |
 | `backend/api/routers/clips.py` | 网页正文剪藏：同步入库与异步提交（提交前校验 Key 配置与 Workspace 配额） |
 | `backend/api/routers/jobs.py` | 异步入库任务查询与失败重试 |
 | `backend/api/routers/ingest.py` | 已切分 chunks 的底层 re-ingest |
@@ -38,6 +39,7 @@
 |---|---|
 | `backend/core/__init__.py` | Core 包标记 |
 | `backend/core/config.py` | Pydantic Settings 单一配置源与参数交叉校验 |
+| `backend/core/request_budget.py` | 根据模型超时及重试配置计算公开客户端等待预算 |
 | `backend/core/db.py` | SQLAlchemy Engine、Session 工厂和 MySQL URL |
 | `backend/core/di.py` | Repository、Client、Service 和存储组件的 DI 工厂 |
 | `backend/core/exceptions.py` | Document、Plugin、Security、Milvus 等领域异常 |
@@ -53,7 +55,7 @@
 | `backend/models/document.py` | `documents` ORM、Document 状态与来源类型 |
 | `backend/models/plugin.py` | `plugin_workspaces` ORM 与 Workspace 状态 |
 | `backend/models/model_provider.py` | Embedding/LLM 服务商预设、端点校验、加密载荷与向量空间指纹 |
-| `backend/models/ingest_job.py` | 异步任务状态、持久化网页正文及原始有效期 |
+| `backend/models/ingest_job.py` | `ingest_jobs` ORM、任务类型与状态机 |
 | `backend/models/ingest_job_api_schema.py` | 任务进度/结果 API Schema |
 | `backend/models/milvus_dto.py` | `ChunkVector` / `ChunkSearchResult` 严格 DTO |
 | `backend/models/api_schema.py` | Ingest、RAG、Plugin 与模型配置 API Schema |
@@ -67,11 +69,11 @@
 | `backend/services/plugin_service.py` | Workspace 注册、认证、改名、双模型配置加密与向量空间切换保护 |
 | `backend/services/document_upload.py` | 可分阶段的文件校验/落盘与解析/切块/入库编排（落盘前校验 Workspace 文档数配额） |
 | `backend/services/document_ingest.py` | Document 状态机和 ingest 成功/失败收敛 |
-| `backend/services/document_delete.py` | 线程池中顺序执行 Milvus → 文件 → MySQL 的幂等删除 |
-| `backend/services/workspace_delete.py` | 非阻塞地分批清理文档后删除 Workspace |
+| `backend/services/document_delete.py` | Milvus → 文件 → MySQL 的幂等文档删除 |
+| `backend/services/workspace_delete.py` | 分批清理文档后删除 Workspace |
 | `backend/services/web_clip.py` | 网页文档创建/复用、切块、入库与元数据更新（新建受 Workspace 配额限制，同 URL 复用不受限） |
 | `backend/services/ingest.py` | old IDs → upsert new → delete stale |
-| `backend/services/ingest_job.py` | 持久化受理、尽力发布、归属查询、任务重试及旧任务补偿 |
+| `backend/services/ingest_job.py` | 任务创建、Redis 入队、归属查询与重试编排 |
 | `backend/services/rag.py` | Query 向量化、检索文档数上界、范围过滤、搜索和 metadata 组装 |
 | `backend/services/rag_answer.py` | Retrieval、Context、Prompt、LLM、Sources 编排 |
 
@@ -82,11 +84,12 @@
 | `backend/repositories/__init__.py` | Repository 包标记 |
 | `backend/repositories/mysql/__init__.py` | 导出 Document Repository 接口与实现 |
 | `backend/repositories/mysql/protocol.py` | Document Repository Protocol |
-| `backend/repositories/mysql/impl.py` | Document 持久化、Workspace 过滤及未被任务占用的待处理上传补偿 |
+| `backend/repositories/mysql/impl.py` | SQLAlchemy Document Repository 与 Workspace 过滤 |
 | `backend/repositories/mysql/plugin_protocol.py` | Plugin Repository Protocol |
-| `backend/repositories/mysql/plugin_impl.py` | Workspace 持久化，最终删除事务锁定并检查无剩余文档 |
+| `backend/repositories/mysql/plugin_impl.py` | SQLAlchemy Plugin Workspace Repository |
 | `backend/repositories/mysql/ingest_job_protocol.py` | 异步入库任务 Repository Protocol |
-| `backend/repositories/mysql/ingest_job_impl.py` | 任务与正文同事务创建、原子 claim、待发布扫描、过期清理及中断恢复 |
+| `backend/repositories/mysql/ingest_job_impl.py` | 任务创建、原子 claim、终态与崩溃恢复持久化 |
+| `backend/repositories/mysql/workspace_lock.py` | 模型配置与文档写入共享的 Workspace 行锁、Embedding 快照校验 |
 | `backend/repositories/milvus/__init__.py` | 导出 Milvus Protocol、实现与初始化器 |
 | `backend/repositories/milvus/protocol.py` | Milvus Repository Protocol |
 | `backend/repositories/milvus/impl.py` | pymilvus 查询、upsert、删除与搜索实现 |
@@ -97,7 +100,6 @@
 | 文件 | 说明 |
 |---|---|
 | `backend/clients/__init__.py` | Client 包标记 |
-| `backend/clients/client_cache.py` | 带请求租用计数的 LRU；安全淘汰、延迟关闭与退出清理 |
 | `backend/clients/embedding.py` | 多服务商 OpenAI-compatible Embedding Client、batch、维度与 Key 隔离（缓存按 LRU 淘汰并关闭连接池） |
 | `backend/clients/llm.py` | LLM Protocol 与多服务商 OpenAI-compatible Chat Completion 实现（缓存按 LRU 淘汰并关闭连接池） |
 | `backend/parsers/__init__.py` | Parser 包标记 |
@@ -109,8 +111,7 @@
 | `backend/storage/__init__.py` | Storage 包标记 |
 | `backend/storage/protocol.py` | File Storage Protocol |
 | `backend/storage/local.py` | 本地保存/删除与路径穿越防护 |
-| `backend/tasks/redis_queue.py` | Redis Lua 去重发布、payload TTL、待处理/processing 队列及 ack/recovery |
-| `backend/tasks/payload.py` | 从持久化任务恢复输入、检查网页正文原始有效期 |
+| `backend/tasks/redis_queue.py` | Redis 待处理/processing 队列、payload TTL 与 ack/recovery |
 | `backend/workers/ingest_worker.py` | 异步网页与文件入库 Worker CLI（SIGTERM 在任务边界优雅退出） |
 | `backend/requirements.txt` | 后端依赖和 Milvus Client 版本约束 |
 
@@ -123,8 +124,9 @@
 | `backend/tests/test_file_storage.py` | 保存/删除、幂等与路径穿越 |
 | `backend/tests/test_embedding_client.py` | 批处理、维度、异常、Key 隔离与缓存淘汰 |
 | `backend/tests/test_llm_client.py` | LLM 参数、响应、异常包装与缓存淘汰 |
-| `backend/tests/test_client_cache.py` | 多线程 SDK 请求、缓存竞争、淘汰与 API/Worker 生命周期清理 |
 | `backend/tests/test_model_provider.py` | 服务商预设、端点安全、配置加密兼容与向量空间切换保护 |
+| `backend/tests/test_request_budget.py` | 等待预算、SDK 重试预留、浏览器计时上限与公开字段隔离 |
+| `backend/tests/test_ingest_recovery_fixes.py` | 统一配额、满额重新剪藏、任务查找隔离、上传竞争补偿与切块边界 |
 | `backend/tests/test_security.py` | AES-GCM、哈希、随机凭证与篡改检测 |
 | `backend/tests/test_url_normalization.py` | URL 规范化、跟踪参数、哈希路由 fragment 策略（与 `url-utils.test.js` 共享向量）和非法 URL 边界 |
 | `backend/tests/test_milvus_repository.py` | Milvus 搜索 limit/ef 参数在连接前校验 |
@@ -136,7 +138,6 @@
 | `backend/tests/test_document_ingest_service.py` | Ingest 状态、重试和删除互斥 |
 | `backend/tests/test_document_delete_service.py` | 删除顺序、幂等和失败收敛 |
 | `backend/tests/test_workspace_delete_service.py` | Workspace 级联删除和重试 |
-| `backend/tests/test_delete_reliability.py` | 删除期间事件循环响应、剩余文档保护和并发新增后的重试收敛 |
 | `backend/tests/test_web_clip_service.py` | URL 复用、状态与隔离 |
 | `backend/tests/test_rag_service.py` | 检索范围、文档数上界、后过滤、metadata 与隔离 |
 | `backend/tests/test_rag_answer_service.py` | Context、空结果、Sources 与 LLM |
@@ -145,15 +146,12 @@
 | `backend/tests/test_rag_answer_api.py` | `/rag/ask` 契约和异常映射 |
 | `backend/tests/test_document_api.py` | Document CRUD、列表/详情与分页 API |
 | `backend/tests/test_document_upload_api.py` | 同步/异步 multipart 上传 API |
-| `backend/tests/test_upload_limits.py` | 上传限读、字节边界、ASGI 并发响应与调用方取消后的受理完整性 |
 | `backend/tests/test_web_clip_api.py` | Web Clip Schema 与响应 + 同步 `POST /clips` HTTP（201/429/401/422） |
 | `backend/tests/test_plugin_api.py` | Plugin Workspace API |
 | `backend/tests/test_error_contract.py` | 异常类 → 状态码 → 响应体形状（`type`/`code`）的表驱动契约与双向守门 |
 | `backend/tests/test_ingest_job_repository.py` | 任务状态机、原子 claim、恢复与归属 |
-| `backend/tests/test_ingest_job_service.py` | 入队失败补偿、payload 安全与重试上限 |
-| `backend/tests/test_submission_reliability.py` | 入队响应丢失、Worker 状态保护、上传 API 补偿及失败事务回滚 |
-| `backend/tests/test_durable_publication.py` | 数据库提交后进程中断、Redis 丢失、分批补发、正文过期与成功清理 |
-| `backend/tests/test_durable_payload_migration.py` | 0011 临时 SQLite 升降级及 MySQL 离线 SQL 验证 |
+| `backend/tests/test_ingest_job_service.py` | Redis 故障下的持久化接收、payload 安全与重试上限 |
+| `backend/tests/test_priority_fixes.py` | 文件归属、崩溃补投、缓存丢失、Embedding 切换交错与旧凭证回归 |
 | `backend/tests/test_ingest_job_api.py` | 异步提交、进度查询、重试和错误映射 |
 | `backend/tests/test_redis_ingest_queue.py` | Redis 原子入队、processing ack 与恢复 |
 | `backend/tests/test_ingest_worker.py` | Worker 成功、失败、重复投递、中断恢复与优雅停机 |
@@ -181,8 +179,10 @@
 | `extension/tests/extractor.test.js` | 正文候选评分、噪声识别和文本规范化回归测试 |
 | `extension/tests/url-utils.test.js` | 扩展 URL 规范化的 Node.js 回归测试 |
 | `extension/tests/session-store.test.js` | 上传任务持久化与 Session 并发保存合并回归测试 |
-| `extension/tests/api-client.test.js` | JSON 与上传两条通道共用错误分类的回归测试 |
+| `extension/tests/api-client.test.js` | JSON/上传错误分类、响应正文超时、模型等待预算与身份切换回归 |
 | `extension/tests/clip-detect.test.js` | 剪藏探测缓存 TTL、跨上下文保底与失败不缓存的回归测试 |
+| `extension/tests/chat-request.test.js` | 会话切换、页面快照、错误归属与旧请求清理交错回归 |
+| `extension/tests/library-retry.test.js` | 服务端任务恢复、来源提示、进行中任务轮询与本地存储失败回归 |
 
 ## `alembic/` — 数据库迁移
 
@@ -200,7 +200,7 @@
 | `alembic/versions/0008_documents_user_id_default.py` | 为旧 `user_id` 设置默认 0 |
 | `alembic/versions/0009_create_ingest_jobs.py` | 创建持久化异步入库任务表 |
 | `alembic/versions/0010_expand_model_config_ciphertext.py` | 扩展加密模型配置字段并增加 Embedding 指纹 |
-| `alembic/versions/0011_durable_ingest_payload.py` | 增加持久化网页任务正文、有效期和恢复扫描索引 |
+| `alembic/versions/0011_durable_ingest_payload.py` | 任务投递 payload 与状态扫描索引，支持可靠补投 |
 
 ## `evaluation/` — Retrieval 基线
 
@@ -258,4 +258,24 @@
 | `backend/tests/test_ingest_reliability.py` | Persistent state, recovery, ownership and event loop regressions |
 | `backend/services/rag_context.py` | Context 字符预算、正文去重与来源编号一致性 |
 | `backend/tests/test_rag_context.py` | 截断来源、空证据、元数据预算与日志回归 |
+
+## 两版整合补充索引
+
+| 文件 | 说明 |
+|---|---|
+| `backend/api/upload.py` | multipart 临时文件限读、大小未知及短读取处理，最多消费文件上限加 1 字节 |
+| `backend/clients/client_cache.py` | 带请求租用计数的 LRU；安全淘汰、延迟关闭与退出清理 |
+| `backend/tasks/payload.py` | 从持久化任务恢复输入、检查网页正文原始有效期 |
+| `backend/tests/test_client_cache.py` | 多线程 SDK 请求、缓存竞争、淘汰与 API/Worker 生命周期清理 |
+| `backend/tests/test_delete_reliability.py` | 删除期间事件循环响应、剩余文档保护和并发新增后的重试收敛 |
+| `backend/tests/test_upload_limits.py` | 上传限读、字节边界、ASGI 并发响应与调用方取消后的受理完整性 |
+| `backend/tests/test_submission_reliability.py` | 入队响应丢失、Worker 状态保护、上传 API 补偿及失败事务回滚 |
+| `backend/tests/test_durable_publication.py` | 数据库提交后进程中断、Redis 丢失、分批补发、正文过期与成功清理 |
+| `backend/tests/test_durable_payload_migration.py` | 两种 0011 结构升级至 0012、已有期限保留、历史回填及 MySQL SQL 编译 |
 | `extension/tests/sidepanel-jobs.test.js` | 网络波动恢复、轮询重试上限、上传恢复与剪藏绑定竞争 |
+| `alembic/versions/0012_ingest_payload_deadline.py` | 正文期限与索引，在线兼容本地及远端两种 0011 结构 |
+| `VERSION_COMPARISON.md` | 本地/远端版本取舍、整合决策、验证结果与边界 |
+| `LOCAL_DEVELOPMENT.md` | 可跨机器复用的环境准备、迁移与启动步骤 |
+| `DEVELOPMENT_NOTES.md` | 远端原开发环境的历史接手记录 |
+| `PROJECT_REVIEW.md` | 历史审查问题及对应修复记录 |
+| `docker-compose.override.yml` | 沿用远端固定摘要的 MinIO 开发镜像覆盖 |

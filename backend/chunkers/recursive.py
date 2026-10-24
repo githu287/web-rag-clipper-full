@@ -6,7 +6,7 @@ RecursiveCharacterChunker：递归字符切分实现（Phase 2.10 Step 2）。
    （。！？；，、）、再按空格，最后退化为逐字符。
 2) 每层选出「在文本中出现」的最高优先级分隔符切分；片段小于 chunk_size 的
    暂存，超过的继续用更细分隔符递归。
-3) 最终用 chunk_size 合并片段，相邻 chunk 之间保留 chunk_overlap 字符重叠，
+3) 最终用 chunk_size 合并片段，相邻 chunk 之间保留最多 chunk_overlap 字符重叠，
    保证上下文不丢失且无重复内容遗漏。
 
 设计约束：
@@ -142,10 +142,10 @@ class RecursiveCharacterChunker:
     def _merge_splits(self, splits: list[str]) -> list[str]:
         """
         将片段（含保留的分隔符片段）直接拼接为不超过 chunk_size 的块，
-        相邻块间保留 chunk_overlap 字符重叠。
+        相邻块间保留最多 chunk_overlap 字符重叠。
 
-        重叠实现：新块以「上一块末尾 chunk_overlap 个字符」开头，保证边界
-        上下文不丢失；overlap=0 时所有块拼接即还原原文。
+        当前片段接近上限时缩短重叠，确保两者合计不超过 chunk_size。
+        overlap=0 时所有块拼接即还原原文。
         """
         chunks: list[str] = []
         current: list[str] = []
@@ -156,8 +156,9 @@ class RecursiveCharacterChunker:
                 chunk_text = "".join(current)
                 chunks.append(chunk_text)
 
-                if self._chunk_overlap > 0:
-                    overlap_text = chunk_text[-self._chunk_overlap :]
+                overlap = min(self._chunk_overlap, self._chunk_size - len(split))
+                if overlap > 0:
+                    overlap_text = chunk_text[-overlap:]
                     current = [overlap_text]
                     current_len = len(overlap_text)
                 else:

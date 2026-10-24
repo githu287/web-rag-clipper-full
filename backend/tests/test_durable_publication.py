@@ -29,11 +29,16 @@ class MemoryQueue:
         if self.offline:
             raise IngestJobOperationError("Redis unavailable")
 
+    def ensure_enqueued(self, job_id, payload, *, ttl_seconds=None):
+        return self.enqueue(job_id, payload, ttl_seconds=ttl_seconds)
+
     def enqueue(self, job_id, payload, *, ttl_seconds=None):
         self.check()
         self.payloads.setdefault(job_id, payload)
         if job_id not in self.pending and job_id not in self.processing:
             self.pending.insert(0, job_id)
+            return True
+        return False
 
     def enqueue_existing(self, job_id):
         self.check()
@@ -181,7 +186,7 @@ def test_reconciliation_is_bounded_and_does_not_duplicate_delivery(system):
     jobs = [submit(system, JT.WEB_CLIP) for _ in range(23)]
     system.queue.offline = False
     assert system.worker.recover_queued() == 20
-    assert system.worker.recover_queued() == 20
+    assert system.worker.recover_queued() == 0
     assert len(system.queue.pending) == 20
     for _ in jobs:
         assert system.worker.run_once(0)
