@@ -1,5 +1,7 @@
 # 本地开发与升级
 
+2026-10-27 本机已完成备份、真实 MySQL `0012` 升级、模型/服务链路与隔离浏览器扩展页面验收，API 与单 Worker 已启动；实际结果、备份位置、发现的向量删除一致性修复及验证边界见 [LIVE_ACCEPTANCE.md](LIVE_ACCEPTANCE.md)。这是当次运行记录，重新使用前仍应检查服务状态。
+
 在当前仓库根目录执行以下命令。本文是可复用的操作指南，不表示基础设施或后台进程已经运行。2026-10-24 整合只验证离线测试，未安装依赖、读取个人 `.env`、启动服务或迁移实际数据库；结果见 [VERSION_COMPARISON.md](VERSION_COMPARISON.md)。远端原开发机器的验证记录作为历史保留于 `DEVELOPMENT_NOTES.md` 和 `PROJECT_REVIEW.md`。
 
 ## 环境与配置

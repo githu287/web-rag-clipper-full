@@ -1,5 +1,7 @@
 # 开发接手笔记
 
+2026-10-27 补充：本机已冷备份五个数据卷与原配置、逻辑备份 MySQL，并实际迁移到 `0012`。真实模型 API、独立 Chrome 扩展页面、Worker 进程退出、Redis 重启/测试队列丢失、成功后未确认、过期清理和并发配额均通过。真实验收发现删除前 Bounded 读取可能漏掉新向量，现改为 Strong 读取并补回归；8 轮跨进程立即写入/删除通过。最新离线基线 813 passed / 117 subtests passed、8 组扩展和 150 条数据格式通过。详见 [LIVE_ACCEPTANCE.md](LIVE_ACCEPTANCE.md)。
+
 > 历史记录：下文为 2026-10-22/23 在另一开发环境的接手与验证记录，不代表当前机器运行状态。2026-10-24 整合后的迁移 head 为 `0012`；版本取舍和本次验证见 [VERSION_COMPARISON.md](VERSION_COMPARISON.md)，启动步骤见 [LOCAL_DEVELOPMENT.md](LOCAL_DEVELOPMENT.md)。
 
 核对日期：2026-10-22（Asia/Shanghai）。代码基线：`394c85d`，分支 `main`。

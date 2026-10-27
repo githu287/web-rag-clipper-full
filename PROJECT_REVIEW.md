@@ -1,5 +1,7 @@
 # 当前项目不足与代码审查
 
+2026-10-27：已对整合版执行本机 `0012` 升级与真实模型、浏览器扩展页面、Worker/Redis 故障恢复验收；新增修复 Milvus Bounded 读取在刚写入后删除时可能留下孤儿向量的问题。结果和边界见 [LIVE_ACCEPTANCE.md](LIVE_ACCEPTANCE.md)，最新离线测试 813 passed / 117 subtests passed、扩展 8 组通过。
+
 > 历史报告：下文的基线、行号、服务状态及测试数量属于 2026-10-22/23 的原审查环境。当前整合已保留其修复并加入本地可靠性改进，迁移 head 为 `0012`。最新取舍、测试和未验证范围见 [VERSION_COMPARISON.md](VERSION_COMPARISON.md)。
 
 日期：2026-10-22（Asia/Shanghai）。代码基线：`394c85d`，包含当前本机环境配置改动。

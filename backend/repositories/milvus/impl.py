@@ -167,6 +167,10 @@ class PyMilvusRepositoryImpl(MilvusRepository):
                     collection_name=self._collection_name,
                     filter=expr,
                     output_fields=["id"],
+                    # Other processes write vectors (the ingest worker). Bounded
+                    # reads can miss recent IDs and let deletion/re-ingest leave
+                    # orphan vectors after the MySQL document is removed.
+                    consistency_level="Strong",
                 )
             except Exception as exc:  # noqa: BLE001 — 统一包装 + 保留 __cause__
                 wrapped = _wrap_milvus_error(msg_prefix, exc)

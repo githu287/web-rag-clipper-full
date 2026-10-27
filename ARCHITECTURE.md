@@ -255,6 +255,8 @@ Embedding 配置保存和 Document 创建使用同一 Workspace 行锁。配置�
 
 ### 8.1 文档删除
 
+删除和重新入库枚举旧 chunk ID 时显式采用 Milvus Strong 一致性，防止 API 客户端因默认 Bounded 读取漏掉 Worker 刚写入的向量。按精确 ID 删除策略保持不变；本机跨进程立即写入/删除验收见 `LIVE_ACCEPTANCE.md`。
+
 删除流程按 Milvus chunks → 本地文件 → MySQL Document 的顺序执行。接口对不存在的文档幂等返回 204；网页文档跳过文件删除。入库和删除用带归属、预期状态及活动任务条件的原子 UPDATE 领取文档，避免先检查再更新的竞争。异步任务尚未提交终态时，其文档也不可被其他操作领取。
 
 这不是分布式事务。若中途失败，文档保持 `DELETING`，避免部分向量已删除却恢复 `SUCCESS`；Side Panel 提供“继续删除”。保留的 MySQL 权威记录使重试可以继续收敛；错误由 API 映射为可观察的 5xx。

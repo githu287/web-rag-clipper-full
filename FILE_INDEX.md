@@ -7,6 +7,7 @@
 | 文件 | 说明 |
 |---|---|
 | `README.md` | 项目定位、快速启动、模型配置、使用流程、测试与排障 |
+| `LIVE_ACCEPTANCE.md` | 本机 0012 升级备份、真实模型/浏览器/故障验收及向量读取一致性修复 |
 | `.github/workflows/ci.yml` | push/PR/手动触发的 Linux/Windows 后端、扩展与数据格式回归 |
 | `scripts/check.py` | 本地与 CI 统一离线检查入口，自动发现 Node 测试并传播失败 |
 | `ARCHITECTURE.md` | 当前实现的分层、数据流、隔离与一致性设计 |
@@ -130,6 +131,7 @@
 | `backend/tests/test_security.py` | AES-GCM、哈希、随机凭证与篡改检测 |
 | `backend/tests/test_url_normalization.py` | URL 规范化、跟踪参数、哈希路由 fragment 策略（与 `url-utils.test.js` 共享向量）和非法 URL 边界 |
 | `backend/tests/test_milvus_repository.py` | Milvus 搜索 limit/ef 参数在连接前校验 |
+| `backend/tests/test_milvus_delete_visibility.py` | 删除前强一致枚举 Worker 刚写入的向量，防止遗留孤儿 chunk |
 | `backend/tests/test_document_repository.py` | CRUD、筛选、分页和 Workspace 隔离 |
 | `backend/tests/test_plugin_repository.py` | Plugin Repository 数据契约 |
 | `backend/tests/test_plugin_service.py` | 名称、认证、API Key 与敏感信息保护 |
