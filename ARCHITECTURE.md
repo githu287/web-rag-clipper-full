@@ -47,9 +47,11 @@
 ### 3.1 浏览器扩展
 
 - `background.js` 管理 Side Panel 行为和 Tab URL 变化通知。
-- `extractor.js` 对 `article`、`main`、`role=main` 和常见正文容器计算文本长度、链接密度与结构评分；无有效候选时才降级到 `body`。
-- 提取器在 DOM 副本中移除脚本、导航、页脚、侧栏、推荐、分享、广告等噪声，并把标题、列表、引用、代码块、表格和图片替代文本序列化为结构化纯文本。
-- `content.js` 是消息入口和 SPA URL 监听层。Side Panel 在提交前展示标题、正文、字符数及提取诊断；用户可编辑、取消或重新提取。预览期间如果 Tab 或 URL 变化，草稿会失效，防止正文与来源错绑。
+- `extractor.js` 提供 article/page/selection/region 四种模式。智能正文对常见容器评分；无有效候选时在清理后的惰性 DOM 副本上尝试本地 Readability，最后降级到 body。候选准备上限 48，Readability 解析上限 30000 节点。
+- 提取器按模式清噪，把标题、列表、引用、代码、表格和图片替代说明序列化为结构化文本。显式整页/选区/区域保留导航等文字；所有模式排除脚本及输入框值。选区在原节点上判断 CSS 隐藏后复制，开放 Shadow DOM 按渲染插槽展开，避免重复读取 light DOM。
+- `capture-content.js` 负责最多 3 秒的内容稳定等待、可见 iframe 元数据及可取消的区域选择。区域高亮放在独立组件中，点击不会打开页面链接；不主动滚动、翻页、展开或发起网络请求。
+- `page-capture.js` 由 Side Panel 与 Popup 共用，注入本地打包的 Readability/extractor/capture-content/content，按 frameId 定向通信。通过父页面可见框架 URL 筛选可访问子框架（最多探测 64、提取 12，含顶层），并行提取、去重、标注内嵌来源，合并后统一限制为 500000 字符。权限不足可降级到顶层，并显示诊断。
+- `content.js` 是消息入口，保留旧 V3 消息并新增可异步响应的 V4 捕获/描述/取消消息；仅顶层上报 SPA URL。Side Panel 显示模式、结构和质量诊断；切换 Tab、来源导航或身份清理时取消旧捕获。结果返回前再次检查顶层 URL，草稿提交仍校验 URL 与 Workspace 绑定。
 - `url-utils.js` 为扩展的“已剪藏”检测提供 URL 规范化；最终写入与查重仍以后端 `normalize_web_url()` 为权威。
 - `api-client.js` 集中添加 Plugin Header、解析错误和处理 401；计时覆盖响应头及正文，上传同样使用 AbortController。问答/检索/模型验证的预算从公开服务商目录读取，普通请求 30 秒、上传 120 秒；不自动重试，客户端超时不保证取消服务端处理。晚到的旧凭证 401 不会清除新的身份。
 - `session-store.js` 把会话、当前会话和 Tab 上下文存入 `chrome.storage.local`。
@@ -184,7 +186,7 @@ Side Panel 选择文件 → POST /documents/upload/async
 ### 6.2 网页剪藏
 
 ```text
-Side Panel 注入 extractor.js + content.js
+Side Panel → page-capture.js 按框架注入 Readability + extractor.js + capture-content.js + content.js
   → 候选正文评分 → DOM 副本清噪 → 结构化文本序列化
   → 预览/编辑 + 提取诊断 → 用户确认
   → POST /clips/async → MySQL Job(QUEUED) + Redis payload/queue → 202
@@ -302,7 +304,7 @@ Workspace 删除要求 `confirm=true` 且提交名称与当前名称完全一致
 
 - 网页和文件 ingest 已异步化；当前恢复策略假定只运行一个 Worker 进程。
 - RAG 的同步数据库、向量检索、Embedding 和 LLM 调用通过 `asyncio.to_thread` 执行，避免阻塞 API 事件循环；旧同步入库兼容路径仍不适合作为高并发入口。
-- 网页正文提取基于浏览器可见 DOM；Shadow DOM、跨域 iframe、分页内容、登录墙及尚未渲染完成的 SPA 需要后续专项适配。
+- 网页提取基于当前已加载的 DOM；支持部分开放 Shadow DOM/插槽和有权限访问的可见 HTTP(S) iframe。关闭的组件、重定向后无法匹配的框架、分页、虚拟列表、登录墙及超出等待窗口的 SPA 仍需专项适配。PDF/图片 OCR/音视频不在本阶段范围。
 - 向量维度或 Collection Schema 改动不能仅改环境变量，必须重建 Collection 并全量重新 ingest。
 - 若启用公网访问，需要补齐 CORS、TLS、限流、Secret 轮换、审计和更严格的部署配置。
 - 新解析器应实现 `DocumentParser` Protocol，新存储或数据库适配应实现对应 Protocol。

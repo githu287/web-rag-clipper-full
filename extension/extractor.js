@@ -6,7 +6,7 @@
   if (typeof module === "object" && module.exports) module.exports = api;
   if (root) root.webRagPageExtractor = api;
 })(typeof globalThis !== "undefined" ? globalThis : this, function () {
-  const VERSION = "1.4.0";
+  const VERSION = "1.5.0";
   const MIN_MEANINGFUL_CHARS = 180;
   const MAX_EXTRACTED_CHARS = 500000;
 
@@ -26,6 +26,11 @@
     ".story-body",
     ".article__body",
     ".notion-page-content",
+    "#js_content",
+    ".RichText.ztext",
+    "#article_content",
+    "#cnblogs_post_body",
+    ".markdown-section",
     "[itemprop='articleBody']",
     "#mw-content-text",
     "#content",
@@ -34,7 +39,7 @@
 
   const HARD_REMOVE_SELECTOR = [
     "script", "style", "noscript", "template", "nav",
-    "iframe", "form", "button", "svg", "canvas", "dialog",
+    "iframe", "button", "svg", "canvas", "dialog",
     "interactive-example", "mdn-live-sample-result",
     "[role='navigation']", "[role='banner']", "[role='dialog']",
   ].join(", ");
@@ -193,12 +198,21 @@
       element.shadowRoot && element.shadowRoot.querySelector("pre");
   }
 
-  function cloneForExtraction(rootElement) {
+  function cloneForExtraction(rootElement, range) {
     const pairs = [];
     let shadowRootCount = 0;
 
     function cloneNode(source) {
-      if (source.nodeType !== 1) return source.cloneNode(true);
+      if (range && !range.intersectsNode(source)) return null;
+      if (source.nodeType !== 1) {
+        const cloned = source.cloneNode(true);
+        if (range && source.nodeType === 3) {
+          const start = source === range.startContainer ? range.startOffset : 0;
+          const end = source === range.endContainer ? range.endOffset : source.length;
+          cloned.nodeValue = source.nodeValue.slice(start, end);
+        }
+        return cloned;
+      }
       const target = source.cloneNode(false);
       pairs.push({ source, target });
 
@@ -211,12 +225,18 @@
           ? [source.shadowRoot.querySelector("pre")]
           : Array.from(source.shadowRoot.childNodes || []);
         shadowChildren.filter(Boolean).forEach(function (child) {
-          container.appendChild(cloneNode(child));
+          const cloned = cloneNode(child);
+          if (cloned) container.appendChild(cloned);
         });
       }
 
-      Array.from(source.childNodes || []).forEach(function (child) {
-        target.appendChild(cloneNode(child));
+      // Follow the rendered slot tree once; copying both light and shadow DOM
+      // duplicates slotted paragraphs and can include unrendered fallback text.
+      const children = source.tagName === "SLOT" && source.assignedNodes
+        ? source.assignedNodes({ flatten: true }) : source.childNodes;
+      Array.from(source.shadowRoot ? [] : children || []).forEach(function (child) {
+        const cloned = cloneNode(child);
+        if (cloned) target.appendChild(cloned);
       });
       return target;
     }
@@ -224,8 +244,9 @@
     return { clone: cloneNode(rootElement), pairs, shadowRootCount };
   }
 
-  function cleanClone(rootElement, doc) {
-    const materialized = cloneForExtraction(rootElement);
+  function cleanClone(rootElement, doc, options) {
+    const explicit = options && options.mode !== "article";
+    const materialized = cloneForExtraction(rootElement, options && options.range);
     const clone = materialized.clone;
     const marked = new Set();
     let hiddenRemovedNodes = 0;
@@ -241,16 +262,19 @@
 
       const hidden = !isShadowCodeExample(source) && isElementHidden(source, doc && doc.defaultView);
       const meaningfulTableButton = source.tagName === "BUTTON" && source.closest && source.closest("td,th");
-      const hardNoise = source.matches && source.matches(HARD_REMOVE_SELECTOR) && !meaningfulTableButton;
-      const namedNoise = isNoiseElement(source);
-      const semanticNoise = shouldRemoveSemanticContainer(source, rootElement);
+      const hardSelector = explicit
+        ? "script,style,noscript,template,iframe,svg,canvas,dialog,input,textarea,select,[role='dialog'],[data-web-rag-picker]"
+        : HARD_REMOVE_SELECTOR + ",input,textarea,select,[data-web-rag-picker]";
+      const hardNoise = source.matches && source.matches(hardSelector) && !meaningfulTableButton;
+      const namedNoise = !explicit && isNoiseElement(source);
+      const semanticNoise = !explicit && shouldRemoveSemanticContainer(source, rootElement);
       if (!hidden && !hardNoise && !namedNoise && !semanticNoise) return;
       marked.add(target);
       if (hidden) hiddenRemovedNodes += 1;
       else noiseRemovedNodes += 1;
     });
 
-    if ((rootElement.tagName || "").toUpperCase() === "BODY") {
+    if (!explicit && (rootElement.tagName || "").toUpperCase() === "BODY") {
       Array.from(clone.children || []).filter(function (node) {
         return node.tagName === "HEADER";
       }).forEach(function (node) {
@@ -314,7 +338,7 @@
     const seen = new Set();
     CANDIDATE_SELECTORS.forEach(function (selector) {
       doc.querySelectorAll(selector).forEach(function (element) {
-        if (seen.has(element) || isNoiseElement(element) || isEffectivelyHidden(element, doc.defaultView)) return;
+        if (seen.size >= 48 || seen.has(element) || isNoiseElement(element) || isEffectivelyHidden(element, doc.defaultView)) return;
         seen.add(element);
         const candidate = prepareCandidate(element, doc);
         if (candidate.metrics.textLength === 0) return;
@@ -553,8 +577,74 @@
     return warnings;
   }
 
-  function extract(doc) {
-    const selected = selectRoot(doc);
+  function readabilityCandidate(doc, fallback) {
+    const Reader = typeof globalThis !== "undefined" && globalThis.Readability;
+    if (typeof Reader !== "function" || !fallback.element) return null;
+    try {
+      // Readability mutates its input. Work only on an inert, already cleaned
+      // copy and serialize its returned DOM directly, never render its HTML.
+      const copy = doc.implementation.createHTMLDocument(doc.title || "");
+      const base = copy.createElement("base");
+      base.href = doc.baseURI;
+      copy.head.appendChild(base);
+      copy.body.replaceWith(copy.importNode(fallback.cleaned.clone, true));
+      const article = new Reader(copy, {
+        maxElemsToParse: 30000, charThreshold: MIN_MEANINGFUL_CHARS,
+        serializer: function (node) { return node; },
+      }).parse();
+      if (!article || !article.content) return null;
+      const metrics = collectMetrics(article.content);
+      if (metrics.textLength < MIN_MEANINGFUL_CHARS || linkDensity(metrics) > 0.45) return null;
+      return Object.assign({}, fallback, {
+        cleaned: Object.assign({}, fallback.cleaned, { clone: article.content }),
+        metrics, fallback: false, strategy: "readability", expandedFrom: null,
+      });
+    } catch (_error) {
+      return null;
+    }
+  }
+
+  function extract(doc, options) {
+    options = options || {};
+    const mode = options.mode || "article";
+    if (!["article", "page", "selection", "region"].includes(mode)) throw new Error("不支持的剪藏方式");
+    let selected;
+    if (mode === "selection") {
+      const selection = doc.defaultView && doc.defaultView.getSelection();
+      if (!selection || selection.isCollapsed || !selection.rangeCount) throw new Error("请先在网页中选中文字，再提取");
+      const container = doc.createElement("div");
+      const totals = { clone: container, removedNodes: 0, hiddenRemovedNodes: 0, noiseRemovedNodes: 0, shadowRootCount: 0 };
+      for (let index = 0; index < selection.rangeCount; index += 1) {
+        const range = selection.getRangeAt(index);
+        const ancestor = range.commonAncestorContainer.nodeType === 1
+          ? range.commonAncestorContainer : range.commonAncestorContainer.parentElement;
+        if (ancestor && ancestor.closest("input,textarea,select")) {
+          throw new Error("请选取网页正文，不能剪藏输入框内容");
+        }
+        if (!ancestor || isEffectivelyHidden(ancestor, doc.defaultView)) continue;
+        // Clean the original selected subtree before detaching it, so CSS-only
+        // hidden nodes keep their real visibility during select-all captures.
+        const cleaned = cleanClone(ancestor, doc, { mode, range });
+        container.appendChild(cleaned.clone);
+        for (const key of ["removedNodes", "hiddenRemovedNodes", "noiseRemovedNodes", "shadowRootCount"]) totals[key] += cleaned[key];
+      }
+      selected = { element: container, cleaned: totals,
+        candidateCount: 1, fallback: false, strategy: "selection" };
+    } else if (mode === "page" || mode === "region") {
+      const element = mode === "region" ? options.root : doc.body;
+      if (!element || element.ownerDocument !== doc || !element.isConnected || isEffectivelyHidden(element, doc.defaultView)) {
+        throw new Error("所选区域已失效，请重新选择");
+      }
+      selected = { element, cleaned: cleanClone(element, doc, { mode }),
+        candidateCount: 1, fallback: false, strategy: mode };
+    } else {
+      selected = selectRoot(doc);
+      if (selected.fallback) selected = readabilityCandidate(doc, selected) || selected;
+    }
+    if (selected.cleaned && !selected.metrics) {
+      selected.metrics = collectMetrics(selected.cleaned.clone);
+      selected.sourceTextLength = (selected.element.textContent || "").length;
+    }
     if (!selected.element) {
       return {
         text: "",
@@ -577,7 +667,9 @@
       inlineCodeCount: 0,
       emphasisCount: 0,
     };
-    let text = normalizeStructuredText(serializeChildren(cleaned.clone, serializationContext));
+    let text = normalizeStructuredText(mode === "region"
+      ? serializeNode(cleaned.clone, serializationContext)
+      : serializeChildren(cleaned.clone, serializationContext));
     let truncated = false;
     if (text.length > MAX_EXTRACTED_CHARS) {
       text = text.slice(0, MAX_EXTRACTED_CHARS).trimEnd();
@@ -593,7 +685,8 @@
       text,
       diagnostics: {
         extractor_version: VERSION,
-        strategy: describeElement(selected.element),
+        mode,
+        strategy: selected.strategy || describeElement(selected.element),
         expanded_from: selected.expandedFrom,
         candidate_count: selected.candidateCount,
         source_char_count: selected.sourceTextLength || 0,

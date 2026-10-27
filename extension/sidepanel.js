@@ -31,6 +31,9 @@ const els = {
   clipStatus: document.getElementById("clip-status"),
   clipStale: document.getElementById("clip-stale"),
   clipBtn: document.getElementById("clip-btn"),
+  clipMode: document.getElementById("clip-mode"),
+  clipModeHint: document.getElementById("clip-mode-hint"),
+  clipCaptureCancel: document.getElementById("clip-capture-cancel"),
   clipJob: document.getElementById("clip-job"),
   clipJobStage: document.getElementById("clip-job-stage"),
   clipJobProgress: document.getElementById("clip-job-progress"),
@@ -113,6 +116,8 @@ let session = null;
 let isSending = false;
 let activeChatRequest = null;
 let clipBusy = false;
+let clipCaptureController = null;
+let clipExtractionToken = 0;
 let clipBusyAction = null;
 let clipErrorMsg = null;
 let clipDraft = null;
@@ -889,6 +894,9 @@ async function confirmDeletePlugin() {
   try {
     await webRagApiClient.plugins.delete(typed);
     const pluginId = plugin.pluginId;
+    if (clipCaptureController) clipCaptureController.abort();
+    clipExtractionToken += 1;
+    clipCaptureController = null;
     stopJobMonitors();
     await webRagApiClient.clearPlugin();
     if (pluginId != null) {
@@ -978,6 +986,7 @@ async function loadTabContext(tabId) {
     return;
   }
   if (currentTabId !== tabId) {
+    if (clipCaptureController) clipCaptureController.abort();
     clipJobPollToken += 1;
     activeClipJob = null;
     clearClipDraft();
@@ -1091,6 +1100,8 @@ function renderClipView() {
     (activeClipJob.status === "QUEUED" || activeClipJob.status === "RUNNING")
   );
   els.clipBtn.disabled = clipBusy || jobIsActive;
+  els.clipMode.disabled = clipBusy || jobIsActive;
+  els.clipCaptureCancel.hidden = !(clipBusy && clipBusyAction === "extract");
   renderClipJob();
   els.clipPreview.hidden = !clipDraft;
   if (clipDraft) {
@@ -1110,7 +1121,8 @@ function renderClipView() {
   els.gotoChatBtn.hidden = !hasDoc;
   if (clipBusy) {
     const isSubmitting = clipBusyAction === "save";
-    setStatus(els.clipStatus, isSubmitting ? "正在提交入库任务…" : "正在提取网页正文…", null);
+    const extracting = els.clipMode.value === "region" ? "请在网页中点击要剪藏的区域，Esc 可取消…" : "正在等待页面内容并提取…";
+    setStatus(els.clipStatus, isSubmitting ? "正在提交入库任务…" : extracting, null);
     els.clipBtn.textContent = isSubmitting ? "正在提交…" : "正在提取…";
   } else if (jobIsActive) {
     setStatus(els.clipStatus, clipErrorMsg || "已提交，后台正在入库", clipErrorMsg ? "warn" : null);
@@ -1119,7 +1131,8 @@ function renderClipView() {
     setStatus(els.clipStatus, "入库失败：" + (activeClipJob.error_message || "未知错误"), "err");
     els.clipBtn.textContent = "重新提取";
   } else if (clipErrorMsg) {
-    setStatus(els.clipStatus, "剪藏失败：" + clipErrorMsg, "err");
+    const wasCancelled = /取消/.test(clipErrorMsg);
+    setStatus(els.clipStatus, wasCancelled ? "已取消提取" + (clipDraft ? "，原有预览已保留" : "") : "剪藏失败：" + clipErrorMsg, wasCancelled ? null : "err");
     els.clipBtn.textContent = clipDraft ? "重新提取" : "重试提取";
   } else if (clipDraft) {
     setStatus(els.clipStatus, "已提取，请检查并确认剪藏", null);
@@ -1321,6 +1334,8 @@ function renderExtractionDiagnostics(trimmedLength) {
     short_content: "提取内容较短",
     missing_headings: "长正文未识别到标题结构",
     truncated: "超长内容已截断",
+    content_unsettled: "页面仍在变化，可能需要重新提取",
+    frames_incomplete: "部分内嵌页面受权限或数量限制，未完整提取",
   };
   const warnings = Array.isArray(diagnostics.quality_warnings)
     ? diagnostics.quality_warnings.map(function (item) { return warningLabels[item] || item; })
@@ -1330,6 +1345,7 @@ function renderExtractionDiagnostics(trimmedLength) {
   if (diagnostics.truncated) warnings.push("超长内容已截断");
   const uniqueWarnings = Array.from(new Set(warnings));
   const parts = [
+    "剪藏方式：" + ({ article: "智能正文", page: "整页可读内容", selection: "选中文字", region: "指定区域" }[diagnostics.mode] || "智能正文"),
     (diagnostics.fallback ? "降级区域：" : "正文区域：") + strategy,
     "原始 " + sourceCount.toLocaleString("zh-CN") + " 字 → 提取 " + trimmedLength.toLocaleString("zh-CN") + " 字",
     "清理 " + removedCount.toLocaleString("zh-CN") + " 个节点（隐藏 " + hiddenCount.toLocaleString("zh-CN") + "）",
@@ -1340,6 +1356,7 @@ function renderExtractionDiagnostics(trimmedLength) {
       (Number(diagnostics.preserved_link_count) || 0) + " 链接",
   ];
   if (shadowRootCount > 0) parts.push("读取 " + shadowRootCount.toLocaleString("zh-CN") + " 个组件内容区");
+  if (diagnostics.included_frame_count) parts.push("包含 " + diagnostics.included_frame_count + " 个内嵌页面");
   if (diagnostics.expanded_from) parts.push("已从 " + diagnostics.expanded_from + " 扩展正文范围");
   if (uniqueWarnings.length > 0) parts.push("⚠ " + uniqueWarnings.join("；"));
   els.clipPreviewDiagnostics.textContent = parts.join(" · ");
@@ -1807,95 +1824,15 @@ async function sendQuestion() {
 
 // ================================================================ 剪藏
 /**
- * 带超时的 chrome.tabs.sendMessage 封装。
- * 作用：避免 content.js 注入失败或未响应时导致 Promise 永久 pending，
- * 剪藏按钮一直 loading。
- * @param {number} tabId 目标标签页 ID
- * @param {object} message 发送的消息对象
- * @param {number} timeoutMs 超时毫秒数，默认 10 秒
- * @returns {Promise<any>} content.js 返回的响应
- */
-function sendMessageWithTimeout(tabId, message, timeoutMs) {
-  const timeout = timeoutMs || 10000;
-  return new Promise(function (resolve, reject) {
-    const timer = setTimeout(function () {
-      reject(new Error("页面响应超时，请刷新网页后重试"));
-    }, timeout);
-    try {
-      chrome.tabs.sendMessage(tabId, message, function (response) {
-        clearTimeout(timer);
-        // chrome.runtime.lastError 通常在「没有接收端（content.js 未注入）」时设置
-        if (chrome.runtime.lastError) {
-          reject(new Error(chrome.runtime.lastError.message || "页面内容脚本未就绪，请刷新网页后重试"));
-          return;
-        }
-        resolve(response);
-      });
-    } catch (err) {
-      clearTimeout(timer);
-      reject(err);
-    }
-  });
-}
-
-/**
  * 从当前激活 Tab 提取网页正文。
  * 作用：1) 校验 Tab 可访问性；2) 注入提取器和 content.js；3) 请求正文提取；4) 返回结构化数据。
  * @returns {Promise<{url: string, title: string, raw_text: string, diagnostics: object|null}>} 提取结果
  */
 async function extractCurrentPage() {
-  const tab = await chrome.tabs.get(currentTabId).catch(() => null);
-  if (!tab || tab.id == null || !/^https?:/.test(tab.url || "")) {
-    throw new Error("当前标签页不是可访问的网页");
-  }
-  // 先注入可测试的提取引擎，再注入消息入口。
-  // 此处不再静默吞掉错误：如果因权限/CSP 导致注入失败，直接向用户暴露明确原因。
-  const injectExtractionScripts = function () {
-    return chrome.scripting.executeScript({
-      target: { tabId: tab.id },
-      files: ["extractor.js", "content.js"],
-    });
-  };
-  try {
-    await injectExtractionScripts();
-  } catch (injectErr) {
-    const msg = injectErr && injectErr.message ? injectErr.message : "未知注入错误";
-    // Chrome 常见注入失败文案包含「Cannot access」「permission」等，统一翻译为用户可读提示
-    if (/cannot\s+access/i.test(msg) || /permission/i.test(msg)) {
-      throw new Error("当前网页暂不支持剪藏（浏览器权限限制）");
-    }
-    if (/chrome(-extension)?:\/\//i.test(tab.url || "")) {
-      throw new Error("当前网页暂不支持剪藏");
-    }
-    throw new Error("页面注入失败：" + msg);
-  }
-  // 使用版本化消息，避免页面中旧版 content.js 监听器抢先返回旧提取结果。
-  let response;
-  try {
-    response = await sendMessageWithTimeout(tab.id, { type: "WEB_CLIP_EXTRACT_V3" }, 10000);
-  } catch (messageError) {
-    const message = messageError && messageError.message ? messageError.message : "";
-    if (!/message port closed|receiving end does not exist|could not establish connection/i.test(message)) {
-      throw messageError;
-    }
-    await injectExtractionScripts();
-    response = await sendMessageWithTimeout(tab.id, { type: "WEB_CLIP_EXTRACT_V3" }, 10000);
-  }
-  if (!response || response.ok !== true || typeof response.raw_text !== "string") {
-    const detail = response && response.error ? "：" + response.error : "";
-    throw new Error("页面内容提取失败" + detail);
-  }
-  // 正文长度校验：避免剪藏空白页面（如纯图片站、未渲染的 SPA）
-  const trimmed = response.raw_text.trim();
-  if (trimmed.length === 0) {
-    throw new Error("网页正文为空，请确认页面已加载完成后重试");
-  }
-  return {
-    url: response.url || tab.url || "",
-    title: response.title || tab.title || "",
-    raw_text: trimmed,
-    diagnostics: response.diagnostics || null,
-  };
+  return webRagPageCapture.capture(currentTabId, {
+    mode: els.clipMode.value || "article",
+    signal: clipCaptureController && clipCaptureController.signal,
+  });
 }
 
 async function prepareClipPreview() {
@@ -1913,23 +1850,30 @@ async function prepareClipPreview() {
   clipBusyAction = "extract";
   clipErrorMsg = null;
   const extractionTabId = currentTabId;
+  const token = ++clipExtractionToken;
+  const controller = new AbortController();
+  clipCaptureController = controller;
   renderClipView();
   try {
     const page = await extractCurrentPage();
-    if (currentTabId !== extractionTabId) {
+    if (controller.signal.aborted || token !== clipExtractionToken || currentTabId !== extractionTabId ||
+        webRagApiClient.getPlugin().pluginId !== plugin.pluginId) {
       return;
     }
     clipDraft = page;
     clipDraftTabId = extractionTabId;
   } catch (err) {
-    if (currentTabId === extractionTabId) {
-      clearClipDraft();
+    if (token === clipExtractionToken && currentTabId === extractionTabId && webRagApiClient.getPlugin().pluginId === plugin.pluginId) {
+      // Keep an edited draft if a replacement extraction is cancelled or fails.
       clipErrorMsg = err instanceof webRagApiClient.ApiRequestError ? err.message : err && err.message ? err.message : "未知错误";
     }
   } finally {
-    clipBusy = false;
-    clipBusyAction = null;
-    renderClipView();
+    if (token === clipExtractionToken) {
+      clipCaptureController = null;
+      clipBusy = false;
+      clipBusyAction = null;
+      renderClipView();
+    }
   }
 }
 
@@ -2378,6 +2322,18 @@ function bindEvents() {
   els.clipBtn.addEventListener("click", function () {
     prepareClipPreview();
   });
+  els.clipMode.addEventListener("change", function () {
+    const hints = {
+      article: "自动识别文章，清理导航与广告；识别不全时可切换其他方式。",
+      page: "提取当前已加载的整页文字，可能包含导航和推荐，请在预览中检查。",
+      selection: "先在网页中选中文字，再点击提取。支持有权限访问的内嵌页面。",
+      region: "点击提取后，在网页中移动鼠标查看范围并点击；↑ 扩大范围，Esc 取消。",
+    };
+    els.clipModeHint.textContent = hints[els.clipMode.value];
+  });
+  els.clipCaptureCancel.addEventListener("click", function () {
+    if (clipCaptureController) clipCaptureController.abort();
+  });
   els.clipPreviewRefreshBtn.addEventListener("click", function () {
     prepareClipPreview();
   });
@@ -2492,10 +2448,12 @@ function bindRuntimeMessages() {
       }
     } else if (message.type === "WEB_RAG_TAB_URL_CHANGED") {
       if (message.tabId === currentTabId) {
+        if (clipCaptureController && binding && !isSameNormalizedWebUrl(binding.pageUrl, message.url)) clipCaptureController.abort();
         fireAndForget(refreshContextFromStorage(), "TAB_URL_CHANGED 刷新上下文");
       }
     } else if (message.type === "WEB_RAG_TAB_REMOVED") {
       if (message.tabId === currentTabId) {
+        if (clipCaptureController) clipCaptureController.abort();
         fireAndForget(
           getCurrentTab().then(function (tab) {
             if (tab && tab.id != null) return loadTabContext(tab.id);
@@ -2561,6 +2519,9 @@ async function init() {
   bindEvents();
   bindRuntimeMessages();
   webRagApiClient.setUnauthenticatedHandler(async function (ctx) {
+    if (clipCaptureController) clipCaptureController.abort();
+    clipExtractionToken += 1;
+    clipCaptureController = null;
     stopJobMonitors();
     if (ctx && ctx.pluginId != null) {
       await sessionStore.clearTabBindingsByPlugin(ctx.pluginId);

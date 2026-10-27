@@ -1,5 +1,7 @@
 # 开发接手笔记
 
+2026-10-27 剪藏兼容性：扩展升级为 0.8.0，加入智能正文/整页/选区/区域四种方式、本地 Readability 0.6.0 补充、有限等待与可见 iframe 提取合并。原有真实侧栏剪藏→问答→删除链路重跑通过；隔离 Chrome 中四种侧栏方式、取消保留草稿及无后端提取回归通过。离线基线后端仍为 813 passed / 117 subtests，扩展增加到 9 组；CI 新增独立 Chromium 真实提取 job。实现和未覆盖范围见 [CLIPPING_COMPATIBILITY.md](CLIPPING_COMPATIBILITY.md)。此次不增加 Workspace 凭证备份/导入功能。
+
 2026-10-27 补充：本机已冷备份五个数据卷与原配置、逻辑备份 MySQL，并实际迁移到 `0012`。真实模型 API、独立 Chrome 扩展页面、Worker 进程退出、Redis 重启/测试队列丢失、成功后未确认、过期清理和并发配额均通过。真实验收发现删除前 Bounded 读取可能漏掉新向量，现改为 Strong 读取并补回归；8 轮跨进程立即写入/删除通过。最新离线基线 813 passed / 117 subtests passed、8 组扩展和 150 条数据格式通过。详见 [LIVE_ACCEPTANCE.md](LIVE_ACCEPTANCE.md)。
 
 > 历史记录：下文为 2026-10-22/23 在另一开发环境的接手与验证记录，不代表当前机器运行状态。2026-10-24 整合后的迁移 head 为 `0012`；版本取舍和本次验证见 [VERSION_COMPARISON.md](VERSION_COMPARISON.md)，启动步骤见 [LOCAL_DEVELOPMENT.md](LOCAL_DEVELOPMENT.md)。

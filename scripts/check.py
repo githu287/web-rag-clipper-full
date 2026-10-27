@@ -54,6 +54,7 @@ def check_extension() -> None:
         raise RuntimeError("No extension scripts or test suites found")
     for path in sources:
         run(node, "--check", str(path.relative_to(ROOT)))
+    run(node, "--check", "extension/vendor/readability/Readability.js")
     # Pass filenames as argv, not a shell glob; works on both Windows and Linux.
     run(node, "--test", *(str(path.relative_to(ROOT)) for path in suites))
 

@@ -1,0 +1,12 @@
+{
+  "package": "@mozilla/readability",
+  "version": "0.6.0",
+  "tarball": "https://registry.npmjs.org/@mozilla/readability/-/readability-0.6.0.tgz",
+  "integrity": "sha512-juG5VWh4qAivzTAeMzvY9xs9HY5rAcr2E4I7tiSSCokRFi7XIZCAu92ZkSTsIj1OPceCifL3cpfteP3pDT9/QQ==",
+  "files": {
+    "LICENSE.md": "a5b1e8181751ce05b85b7bfaa832b785e87086250a5148e679d17ca9bdcfa958",
+    "Readability.js": "34dcab3d0832d0019f02990eed6b6124e029e8c32b9f0c6f2550544ff8dff174",
+    "APACHE-2.0.txt": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+  },
+  "license_text_url": "https://www.apache.org/licenses/LICENSE-2.0.txt"
+}

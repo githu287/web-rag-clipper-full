@@ -15,7 +15,7 @@
 (() => {
   "use strict";
 
-  const CONTENT_SCRIPT_VERSION = "0.7.4";
+  const CONTENT_SCRIPT_VERSION = "0.8.0";
   window.__WEB_RAG_CLIPPER_INJECTED__ = CONTENT_SCRIPT_VERSION;
 
   function extractPage() {
@@ -70,6 +70,21 @@
       sendResponse({ ok: true });
       return;
     }
+    if (message.type === "WEB_CLIP_DESCRIBE") {
+      sendResponse(globalThis.webRagContentCapture.describe(message.mode));
+      return;
+    }
+    if (message.type === "WEB_CLIP_CANCEL") {
+      globalThis.webRagContentCapture.cancel(message.requestId);
+      sendResponse({ ok: true });
+      return;
+    }
+    if (message.type === "WEB_CLIP_CAPTURE_V4") {
+      globalThis.webRagContentCapture.capture(message.options).then(sendResponse, function (error) {
+        sendResponse({ ok: false, error: error.message || "提取失败" });
+      });
+      return true;
+    }
     if (message.type === "WEB_CLIP_EXTRACT_V3") {
       try {
         const result = extractPage();
@@ -97,6 +112,8 @@
   // history.pushState / replaceState 不触发 chrome.tabs.onUpdated，SPA 路由变化依赖此通知
   // 使 background 将旧 documentId 置为失效（stale），避免跨页面错误复用。
   const notifyUrlChanged = () => {
+    // Child-frame navigation must never replace the top-level page binding.
+    if (window !== window.top) return;
     try {
       chrome.runtime.sendMessage({
         type: "WEB_RAG_URL_CHANGED",

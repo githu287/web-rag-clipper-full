@@ -8,8 +8,10 @@
 |---|---|
 | `README.md` | 项目定位、快速启动、模型配置、使用流程、测试与排障 |
 | `LIVE_ACCEPTANCE.md` | 本机 0012 升级备份、真实模型/浏览器/故障验收及向量读取一致性修复 |
-| `.github/workflows/ci.yml` | push/PR/手动触发的 Linux/Windows 后端、扩展与数据格式回归 |
+| `.github/workflows/ci.yml` | push/PR/手动触发的 Linux/Windows 离线回归，以及 Linux Chromium 真实扩展提取测试 |
 | `scripts/check.py` | 本地与 CI 统一离线检查入口，自动发现 Node 测试并传播失败 |
+| `scripts/check_capture_browser.py` | 无后端/凭证的真实 Chrome/Chromium 扩展提取、跨域 iframe、延迟渲染与区域交互测试 |
+| `CLIPPING_COMPATIBILITY.md` | 四种剪藏方式、依赖来源、真实浏览器验证和网站适配边界 |
 | `ARCHITECTURE.md` | 当前实现的分层、数据流、隔离与一致性设计 |
 | `FILE_INDEX.md` | 本文件 |
 | `.env.example` | 环境变量模板；部分字段是尚未消费的预留配置 |
@@ -168,6 +170,11 @@
 | `extension/url-utils.js` | 与后端对齐的 URL 规范化查重辅助 |
 | `extension/background.js` | Side Panel 行为和 Tab 消息广播 |
 | `extension/extractor.js` | 可测试的正文候选评分、DOM 清噪与结构化文本序列化引擎 |
+| `extension/page-capture.js` | Side Panel/Popup 共用的多框架提取、合并去重、长度限制、取消及导航校验 |
+| `extension/capture-content.js` | 内容稳定等待、可见框架描述、区域高亮选择与清理 |
+| `extension/vendor/readability/` | 本地打包的 Mozilla Readability 0.6.0、来源/完整性摘要及许可证 |
+| `extension/tests/page-capture.test.js` | 框架筛选、去重、长度、导航、受限提示及取消回归 |
+| `extension/tests/capture-driver.html` | 浏览器测试的扩展上下文入口，不存储 Workspace 凭证 |
 | `extension/content.js` | 提取消息入口、降级处理和 SPA URL 监听 |
 | `extension/api-client.js` | Plugin Header、JSON/multipart 请求与错误分类 |
 | `extension/clip-detect.js` | 按 URL 探测是否已剪藏，带短 TTL 缓存 |

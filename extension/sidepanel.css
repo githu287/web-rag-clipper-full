@@ -1154,6 +1154,13 @@ button.page-num:not(.current):hover {
   flex: 1;
 }
 
+.clip-mode-label { display: block; margin-top: 12px; margin-bottom: 6px; font-weight: 600; }
+.clip-mode { width: 100%; padding: 9px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text); font: inherit; }
+.clip-mode:focus { outline: 2px solid var(--primary); outline-offset: 2px; }
+#clip-mode-hint { margin-top: 6px; line-height: 1.6; }
+#clip-capture-cancel { margin-top: 8px; }
+#clip-capture-cancel[hidden] { display: none; }
+
 .clip-preview {
   margin-top: 14px;
   padding: 12px;

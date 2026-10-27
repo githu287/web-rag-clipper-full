@@ -9,7 +9,7 @@ Web RAG Clipper 是一个本地优先、以网页剪藏为核心的个人知识�
 - Plugin Workspace 注册与双凭证认证
 - Workspace 级多模型服务配置：Embedding 与问答模型可分别选择服务商，API Key 加密保存
 - 网页正文候选评分与噪声清理，保留标题、列表、引用、代码块和表格结构
-- Side Panel 剪藏前预览编辑、提取质量诊断，以及 `.txt` / `.md` / `.markdown` 文件上传
+- Side Panel 四种剪藏方式（智能正文、整页可读内容、选中文字、指定区域）、预览编辑、提取质量诊断，以及 `.txt` / `.md` / `.markdown` 文件上传
 - 网页 URL 规范化与重复识别；锚点、默认端口和常见跟踪参数不会产生新文档，哈希路由站点（`#/...`）的每个路由各算一篇
 - Redis 异步网页/文件入库、持久化任务状态、进度轮询与失败重试
 - MySQL 文档生命周期与 Milvus 向量索引
@@ -175,7 +175,7 @@ Worker 会初始化 Milvus，恢复上次意外中断且未确认的任务，并
 
 ## 使用流程
 
-1. 打开普通 HTTP(S) 网页，在扩展 Side Panel 中点击“提取并预览”。
+1. 打开普通 HTTP(S) 网页，在扩展 Side Panel 中选择剪藏方式，点击“提取并预览”。
 2. 检查标题、正文和提取诊断；必要时手工删除导航、广告等内容。
 3. 确认剪藏后，API 创建任务，Worker 完成切块、Embedding 和 Milvus 入库。
 4. 在“当前网页”模式只检索这篇文档，或切换“全部知识库”跨文档提问。
@@ -183,7 +183,16 @@ Worker 会初始化 Milvus，恢复上次意外中断且未确认的任务，并
 
 上传接口在进入业务落盘前按上限加 1 字节进行有界读取，超限返回 413；同步和异步上传接口均在线程池运行。此限制针对业务读取，不代表 ASGI/multipart 解析层的总请求体限制。文档和 Workspace 删除也将同步数据库、文件及向量调用移入线程，避免阻塞事件循环。
 
-适合剪藏文章、技术文档、博客和语义结构清晰的 SPA 页面。浏览器内部页、扩展商店页、登录墙、跨域 iframe，以及主要内容位于 Shadow DOM 的页面可能无法完整提取。
+| 剪藏方式 | 用法 |
+|---|---|
+| 智能正文 | 默认模式，按正文容器评分清理导航、广告和推荐；无可靠候选时尝试本地 Readability，再降级提取 |
+| 整页可读内容 | 保留已加载的整页文字，包括导航和推荐；适合列表、问答和非文章页面，保存前检查预览 |
+| 选中文字 | 先在网页选中文字，再点击提取；只保留选中范围，支持有权限访问的可见 iframe |
+| 指定区域 | 点击提取后在网页移动鼠标查看高亮，点击选定区域；↑ 扩大范围、Esc 或侧栏按钮取消 |
+
+自动提取最多等待约 3 秒让内容稳定，不会主动滚动、点击展开或翻页。提取可见、可访问的 HTTP(S) iframe，合并结果时标注内嵌来源并去重，文档仍绑定顶层网页 URL。最多探测 64 个框架并处理其中 12 个（含顶层）；跨域需要浏览器授予对应站点权限，权限受限或数量超限会显示诊断提醒。
+
+四种方式共享 50 万字符上限，保存前均可编辑。同一规范化 URL 再次保存会更新已有文档，选区与区域不会自动创建多个独立摘录。图片仅保留替代说明；不下载图片、不执行 OCR。支持部分开放 Shadow DOM 与插槽；关闭的组件、浏览器内部页、扩展商店页、未登录/未购买的正文、PDF/Canvas、虚拟列表及未加载的后续内容仍有边界。当前基于合成页面验证通用能力，尚未完成主流网站逐站兼容率测量，详见 [剪藏能力与验收](CLIPPING_COMPATIBILITY.md)。
 
 ## API 概览
 
@@ -294,7 +303,17 @@ node extension/tests/clip-detect.test.js
 node extension/tests/chat-request.test.js
 node extension/tests/library-retry.test.js
 node extension/tests/sidepanel-jobs.test.js
+node extension/tests/page-capture.test.js
 ```
+
+真实 Chrome 扩展提取回归另行运行，不要求启动后端、不使用 Workspace 凭证：
+
+```powershell
+.venv/Scripts/python.exe -m pip install playwright==1.64.1
+.venv/Scripts/python.exe scripts/check_capture_browser.py
+```
+
+需要已安装支持扩展调试接口的 Chrome；报告及截图默认存放于被 Git 忽略的 `.venv/runtime/capture-browser/`。该检查通过扩展页面驱动真实 content script，覆盖跨域 iframe、延迟渲染与区域交互；不等于原生 Side Panel 容器及工具栏入口验收。
 
 ## Retrieval 评测
 
@@ -337,7 +356,7 @@ python -c "import secrets; print(secrets.token_hex(16))"
 - 知识库重试从服务端查询文档任务，支持网页与上传、本地记录丢失及关闭原 Tab 的情况；进行中任务直接恢复状态查询。历史同步文档或已丢失正文的任务仍需重新剪藏/上传，且任务重试次数上限保持生效。
 - 当前 Worker 是单进程模式；启动时恢复 Redis processing 列表，并在任务边界定期补投 MySQL 中可恢复的排队任务。
 - 仅解析 UTF-8 文本和 Markdown；PDF、DOCX、OCR 尚未接入。
-- 扩展正文提取采用 DOM 候选评分和启发式清理；复杂 SPA、Shadow DOM、跨域 iframe、分页和登录墙仍可能提取不完整。
+- 扩展提供正文/整页/选区/区域四种方式，使用 DOM 候选评分与本地 Readability 补充；部分开放 Shadow DOM、插槽与有权限的可见 iframe 可读取，复杂 SPA、虚拟列表、分页和登录墙仍可能提取不完整。
 - 会话历史保存在浏览器 `chrome.storage.local`，后端没有会话表。
 - Milvus Collection 已存在时初始化器不会自动迁移 Schema；修改向量维度需重建并重新 ingest。
 - 文档删除和 Workspace 删除通过有序、可重试的补偿流程实现，不是跨 MySQL/Milvus/文件系统的分布式事务。

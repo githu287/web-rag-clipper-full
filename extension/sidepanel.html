@@ -86,7 +86,17 @@
         <div class="pc-title" id="clip-title">—</div>
         <div class="pc-url" id="clip-url">—</div>
         <div class="pc-status" id="clip-status"></div>
+        <label class="clip-mode-label" for="clip-mode">剪藏方式</label>
+        <select id="clip-mode" class="clip-mode" aria-describedby="clip-mode-hint">
+          <option value="article">智能正文</option>
+          <option value="page">整页可读内容</option>
+          <option value="selection">选中文字</option>
+          <option value="region">指定区域</option>
+        </select>
+        <div class="hint" id="clip-mode-hint">自动识别文章，清理导航与广告；识别不全时可切换其他方式。</div>
+        <div class="hint">同一网页再次保存会更新已有文档，请先检查预览。</div>
         <button type="button" class="clip-btn" id="clip-btn">提取并预览</button>
+        <button type="button" class="btn-secondary" id="clip-capture-cancel" hidden>取消提取</button>
         <div class="pc-stale" id="clip-stale" hidden>⚠ 页面已变化，请重新剪藏当前网页</div>
 
         <section class="clip-job" id="clip-job" hidden aria-live="polite">
@@ -255,6 +265,7 @@
   <script src="session-store.js"></script>
   <script src="api-client.js"></script>
   <script src="clip-detect.js"></script>
+  <script src="page-capture.js"></script>
   <script src="sidepanel.js"></script>
 </body>
 </html>

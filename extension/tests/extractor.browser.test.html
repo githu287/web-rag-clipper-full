@@ -8,6 +8,7 @@
   </style>
 </head>
 <body>
+  <script src="../vendor/readability/Readability.js"></script>
   <script src="../extractor.js"></script>
   <script>
     "use strict";
@@ -135,6 +136,49 @@
     assert(complexResult.text.includes("| 完全支持 | 52 |"), "表格按钮应保留无障碍状态文字");
     assert(!complexResult.text.split("\n").some(function (line) { return line.trim() === "*"; }), "应移除孤立装饰星号");
     assert(complexResult.diagnostics.shadow_root_count === 2, "应统计读取的开放 Shadow DOM 数量");
+
+    document.body.innerHTML = `<nav>页面导航应在整页模式保留</nav><article><p>${fill("原有正文段落。", 40)}</p></article><p style="display:none">隐藏标记</p><textarea>私密输入内容</textarea>`;
+    const wholePage = webRagPageExtractor.extract(document, { mode: "page" });
+    assert(wholePage.text.includes("页面导航应在整页模式保留"), "整页模式不能仍按正文规则删除导航");
+    assert(!wholePage.text.includes("隐藏标记"), "整页模式不应输出隐藏内容");
+    assert(!wholePage.text.includes("私密输入内容"), "任何模式都不应读取输入框值");
+
+    document.body.innerHTML = `<article><slot-example><p slot="content">插槽正文唯一标记</p><p>未分配内容标记</p></slot-example></article>`;
+    document.querySelector("slot-example").attachShadow({ mode: "open" }).innerHTML = `<slot name="content">不应出现的插槽占位文字</slot>`;
+    const slots = webRagPageExtractor.extract(document);
+    assert(slots.text.split("插槽正文唯一标记").length === 2, "插槽文字应只输出一次");
+    assert(!slots.text.includes("未分配内容标记") && !slots.text.includes("插槽占位文字"), "不应输出未渲染的组件内容");
+
+    document.body.innerHTML = `<form id="aspnetForm"><input type="hidden" value="不应进入正文"><div id="unknown-layout"><h1>未知结构的文章</h1>${Array(8).fill(`<p>${fill("这是一篇结构不标准的文章，包含完整的叙述和标点。", 15)}</p>`).join("")}</div></form>`;
+    const unknown = webRagPageExtractor.extract(document);
+    assert(unknown.diagnostics.strategy === "readability", "无正文候选时应尝试 Readability");
+    assert(unknown.text.includes("未知结构的文章"), "Readability 应保留有效文章内容");
+    assert(document.querySelector("#unknown-layout"), "提取不得破坏原始页面 DOM");
+    assert(!unknown.text.includes("不应进入正文"), "form 包裹的文章应保留正文而排除控件值");
+
+    document.body.innerHTML = `<p id="selected">前缀 <strong>只要选中内容</strong> 后缀</p><p>不应混入的正文</p>`;
+    const range = document.createRange(); range.selectNodeContents(document.querySelector("strong"));
+    const selection = window.getSelection(); selection.removeAllRanges(); selection.addRange(range);
+    const selected = webRagPageExtractor.extract(document, { mode: "selection" });
+    assert(selected.text.includes("只要选中内容") && !selected.text.includes("前缀") && !selected.text.includes("后缀"), "选区模式不得混入选区外内容");
+    selection.removeAllRanges();
+
+    const selectedText = document.getElementById("selected").firstChild;
+    range.setStart(selectedText, 1); range.setEnd(selectedText, 2); selection.addRange(range);
+    assert(webRagPageExtractor.extract(document, { mode: "selection" }).text === selectedText.nodeValue.slice(1, 2), "文本节点的部分选区必须按字符偏移截断");
+    selection.removeAllRanges();
+    const region = webRagPageExtractor.extract(document, { mode: "region", root: document.getElementById("selected") });
+    assert(region.text.includes("前缀") && !region.text.includes("不应混入"), "区域模式仅应输出指定节点");
+
+    document.body.innerHTML = `<article><p>可见选区文字</p><p class="inactive-panel">CSS隐藏文字不得混入选区</p><textarea>选区输入框内容</textarea></article>`;
+    range.selectNodeContents(document.querySelector("article")); selection.addRange(range);
+    const selectedAll = webRagPageExtractor.extract(document, { mode: "selection" });
+    assert(selectedAll.text.includes("可见选区文字") && !selectedAll.text.includes("CSS隐藏") && !selectedAll.text.includes("选区输入框"), "全选也应使用原始 CSS 可见性并排除输入框");
+    selection.removeAllRanges();
+
+    document.body.innerHTML = `<table><tr><th>标题A</th><th>标题B</th></tr><tr><td>内容A</td><td>内容B</td></tr></table>`;
+    const tableRegion = webRagPageExtractor.extract(document, { mode: "region", root: document.querySelector("table") });
+    assert(tableRegion.text.includes("| 标题A | 标题B |\n| --- | --- |"), "指定整张表格时仍须保留表格结构");
 
     document.body.innerHTML = `<pre id="test-result">${failures.length === 0
       ? "EXTRACTOR_BROWSER_TESTS_PASSED"

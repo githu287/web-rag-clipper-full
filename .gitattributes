@@ -1,0 +1,2 @@
+# Keep vendored upstream bytes stable for SOURCE.json checksums on Windows.
+/extension/vendor/readability/* text eol=lf
