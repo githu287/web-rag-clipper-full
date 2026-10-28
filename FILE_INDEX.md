@@ -20,7 +20,10 @@
 | `scripts/check_ocr_browser.py` | 真实扩展→生产 OCR 路由→本地模型→可编辑预览，使用临时身份不写库 |
 | `CLIPPING_COMPATIBILITY.md` | 四种剪藏方式、依赖来源、真实浏览器验证和网站适配边界 |
 | `SITE_AUDIT_2026-10-28.md` | 13 个公开网页的实测结果、代码保真修复、访问受限与图片边界 |
+| `REAL_SITE_ACCEPTANCE_2026-10-28.md` | 0.11.1 真实公开网页、分页版本对照、OCR 入库/问答及测试数据清理验收 |
 | `scripts/audit_capture_sites.py` | 按需在线样本审计，记录可见块/源码保留、标题、噪声、状态与耗时；运行数据默认不入库 |
+| `scripts/audit_pagination_sites.py` | 按需真实分页审计，独立比较逐页正文/标题/主图并检查原页和临时页记录；支持旧版扩展对照 |
+| `extension/tests/pagination-sites.json` | 真实分页公开 URL、参考正文范围和隐藏/JS 翻页边界；与合成本地样本分开 |
 | `ARCHITECTURE.md` | 当前实现的分层、数据流、隔离与一致性设计 |
 | `FILE_INDEX.md` | 本文件 |
 | `.env.example` | 环境变量模板；部分字段是尚未消费的预留配置 |
@@ -201,7 +204,7 @@
 | `extension/tests/page-capture.test.js` | 框架筛选、去重、长度、导航、受限提示及取消回归 |
 | `extension/tests/capture-driver.html` | 浏览器测试的扩展上下文入口，不存储 Workspace 凭证 |
 | `extension/tests/site-samples.json` | 线上公开网页样本、参照正文与标题选择器，以及噪声检查项 |
-| `extension/tests/site-fixtures.json` | 11 份原创 DOM 模式回归样本，复现站点问题且不复制原文；由真实浏览器 CI 执行 |
+| `extension/tests/site-fixtures.json` | 12 份原创 DOM 模式回归样本，复现站点问题且不复制原文；由真实浏览器 CI 执行 |
 | `extension/content.js` | 提取消息入口、降级处理和 SPA URL 监听 |
 | `extension/api-client.js` | Plugin Header、JSON/multipart 请求与错误分类 |
 | `extension/clip-detect.js` | 按 URL 探测是否已剪藏，带短 TTL 缓存 |

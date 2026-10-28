@@ -42,6 +42,8 @@ FastAPI
 
 更完整的组件边界、数据流和一致性策略见 [ARCHITECTURE.md](ARCHITECTURE.md)，逐文件说明见 [FILE_INDEX.md](FILE_INDEX.md)。
 
+0.11.1 已完成 [真实网页、分页、OCR 入库与问答验收](REAL_SITE_ACCEPTANCE_2026-10-28.md)，并修复分页页码标题、正文容器外主图遗漏及 OCR 装饰小图干扰。报告包含通过样本、访问受限和尚未支持的图集边界。
+
 ## 技术栈
 
 | 领域 | 实现 |

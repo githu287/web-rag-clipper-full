@@ -6,7 +6,7 @@
   if (typeof module === "object" && module.exports) module.exports = api;
   if (root) root.webRagPageExtractor = api;
 })(typeof globalThis !== "undefined" ? globalThis : this, function () {
-  const VERSION = "1.6.0";
+  const VERSION = "1.6.1";
   const MIN_MEANINGFUL_CHARS = 180;
   const MAX_EXTRACTED_CHARS = 500000;
 
@@ -275,6 +275,12 @@
         const lazy = source.getAttribute("data-src") || source.getAttribute("data-original") || source.getAttribute("data-lazy-src");
         const raw = source.naturalWidth > 32 && source.currentSrc ? source.currentSrc : lazy || source.currentSrc || source.getAttribute("src");
         target.removeAttribute("data-web-rag-image");
+        target.removeAttribute("data-web-rag-small-image");
+        const knownNatural = source.currentSrc && raw === source.currentSrc && source.naturalWidth > 0 && source.naturalHeight > 0;
+        const explicitSize = !lazy && source.hasAttribute("width") && source.hasAttribute("height");
+        const width = knownNatural ? source.naturalWidth : explicitSize ? Number(source.getAttribute("width")) : 0;
+        const height = knownNatural ? source.naturalHeight : explicitSize ? Number(source.getAttribute("height")) : 0;
+        if (width > 0 && height > 0 && width <= 48 && height <= 48) target.setAttribute("data-web-rag-small-image", "true");
         try {
           const url = new URL(raw || "", source.baseURI);
           if (raw && /^https?:$/.test(url.protocol) && url.href.length <= 8192) target.setAttribute("data-web-rag-image", url.href);
@@ -742,6 +748,30 @@
     } else {
       selected = selectRoot(doc);
       if (selected.fallback) selected = readabilityCandidate(doc, selected) || selected;
+      // Observed People.cn photo articles keep the visible H1 outside the
+      // content container (and Readability can omit it). Keep that title while
+      // retaining the generic body-selection/cleaning behavior.
+      if (!selected.articleTitle && doc.querySelector("#picG")) {
+        try {
+          if (["bj.people.com.cn", "pic.people.com.cn", "lianghui.people.com.cn"].includes(new URL(doc.URL).hostname)) {
+            const heading = Array.from(doc.querySelectorAll("h1")).find(function (node) {
+              return !isEffectivelyHidden(node, doc.defaultView) && (node.textContent || "").trim();
+            });
+            if (heading) selected.articleTitle = heading.textContent.replace(/\s+/g, " ").trim().slice(0, 512);
+            const photo = doc.querySelector("#picG");
+            if (selected.element && !selected.element.contains(photo) && !isEffectivelyHidden(photo, doc.defaultView)) {
+              const supplement = cleanClone(photo, doc);
+              supplement.clone.querySelectorAll(".page_n,.about_pic").forEach(function (node) { node.remove(); });
+              const combined = doc.createElement("div");
+              combined.append(supplement.clone, selected.cleaned.clone);
+              selected.cleaned.clone = combined;
+              for (const field of ["removedNodes", "hiddenRemovedNodes", "noiseRemovedNodes", "shadowRootCount"]) selected.cleaned[field] += supplement[field];
+              selected.sourceTextLength += (photo.textContent || "").length;
+              selected.metrics = collectMetrics(combined);
+            }
+          }
+        } catch (_error) {}
+      }
     }
     if (selected.cleaned && !selected.metrics) {
       selected.metrics = collectMetrics(selected.cleaned.clone);
@@ -768,6 +798,7 @@
     const images = [];
     if (options.collectImages) {
       for (const image of imageNodes) {
+        if (mode === "article" && image.getAttribute("data-web-rag-small-image") === "true") continue;
         const url = image.getAttribute("data-web-rag-image");
         if (url && !images.some(function (item) { return item.url === url; }) && images.length < 33) {
           images.push({ url, alt: String(image.getAttribute("alt") || "").slice(0, 160) });

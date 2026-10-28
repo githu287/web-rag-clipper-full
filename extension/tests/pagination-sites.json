@@ -1,0 +1,39 @@
+{
+  "description": "Opt-in real public pages, not local fixtures. HTTPS certificate failures and hidden/JS pagination are recorded as access/support boundaries; no certificate or login bypass.",
+  "samples": [
+    {
+      "id": "people-beijing-three-pages",
+      "url": "http://bj.people.com.cn/n2/2026/0125/c14540-41482429.html",
+      "root": ".rm_txt_con",
+      "image_root": "#picG",
+      "expected_pages": 3,
+      "expected_stop": "unsupported"
+    },
+    {
+      "id": "people-photo-hidden-next",
+      "url": "http://pic.people.com.cn/n1/2026/0308/c1016-40677491-2.html",
+      "root": ".pic_content",
+      "image_root": "#picG",
+      "expected_pages": 1,
+      "expected_stop": "complete",
+      "boundary": "Published next-page anchor is hidden by the site; gallery navigation uses JS controls. This is not a complete gallery capture."
+    },
+    {
+      "id": "people-archive-hidden-next",
+      "url": "http://lianghui.people.com.cn/2016npc/n1/2016/0305/c402194-28173982-2.html",
+      "root": ".content.clear",
+      "image_root": "#picG",
+      "expected_pages": 1,
+      "expected_stop": "complete",
+      "boundary": "Published next-page anchor is hidden; record current-page content only, not all 12 gallery pages."
+    },
+    {
+      "id": "vue-next-chapter-negative",
+      "url": "https://cn.vuejs.org/guide/essentials/reactivity-fundamentals.html",
+      "root": "main .vp-doc, main .vt-doc",
+      "expected_pages": 1,
+      "expected_stop": "complete",
+      "negative_control": true
+    }
+  ]
+}

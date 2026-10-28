@@ -48,6 +48,7 @@
   function titleKey(title) {
     return String(title || "").normalize("NFKC")
       .replace(/\(\s*\d+(?:\s*\/\s*\d+)?\s*\)|第\s*\d+\s*页/gi, "")
+      .replace(/【\s*[1-9]\d{0,2}(?:\s*\/\s*\d{1,3})?\s*】(?=\s*(?:[-_|—]|$))/gu, "")
       .replace(/[\s\p{P}\p{S}]/gu, "").toLowerCase();
   }
   function sameArticle(first, next) {

@@ -1,6 +1,6 @@
 # 网页剪藏能力与验证
 
-2026-10-28 更新，扩展 0.11.0。四种模式于 0.8.0 加入，0.8.1 完成 [13 个公开页面实测](SITE_AUDIT_2026-10-28.md)，0.9.0 加入 [可选自动加载](SCROLL_CAPTURE.md)，0.10.0 加入 [可选本地图片 OCR](IMAGE_OCR.md)，0.11.0 加入 [可选分页文章合并](PAGINATION_CAPTURE.md)。不宣称全网覆盖率。
+2026-10-28 更新，扩展 0.11.1。四种模式于 0.8.0 加入，0.8.1 完成 [13 个公开页面实测](SITE_AUDIT_2026-10-28.md)，0.9.0 加入 [可选自动加载](SCROLL_CAPTURE.md)，0.10.0 加入 [可选本地图片 OCR](IMAGE_OCR.md)，0.11.0 加入 [可选分页文章合并](PAGINATION_CAPTURE.md)。0.11.1 完成 [真实分页、OCR 入库和问答验收](REAL_SITE_ACCEPTANCE_2026-10-28.md) 并修复观察到的问题。不宣称全网覆盖率。
 
 ## 已实现
 
@@ -47,4 +47,4 @@ Node 离线回归额外覆盖框架筛选、重复文本合并、总长度上限
 - 不保存图片文件；OCR 不覆盖 CSS 背景、Canvas、SVG、内嵌/临时地址，动画只识别首帧。PDF/扫描件文件和音视频尚未接入；复杂表格和多列图片仍可能丢失结构或顺序。
 - 微信文字/图片、掘金、博客园、GitHub README、Vue、MDN、新华网、政府公告和发改委已完成本轮样本检查；知乎文章/回答和 CSDN 返回 403，不能声称这些站点登录后已通过。具体样本、度量及限制见实测报告，合成模式测试不等于全站兼容通过。
 
-复跑线上样本使用 `scripts/audit_capture_sites.py`，按需加 `--auto-scroll`；输出默认忽略，线上访问不纳入 CI 成败。11 份原创 DOM 模式、自动滚动、真实 OCR 预览和本地分页样本均纳入 Chromium 扩展 CI。图片验证见 [图片 OCR](IMAGE_OCR.md)，分页规则与本轮验证边界见 [分页文章合并](PAGINATION_CAPTURE.md)；不宣称识别准确率或新增线上分页覆盖率。
+复跑线上样本使用 `scripts/audit_capture_sites.py`，按需加 `--auto-scroll`；真实分页使用 `scripts/audit_pagination_sites.py`。输出默认忽略，线上访问不纳入 CI 成败。12 份原创 DOM 模式、自动滚动、真实 OCR 预览和本地分页样本均纳入 Chromium 扩展 CI。图片验证见 [图片 OCR](IMAGE_OCR.md)，分页规则见 [分页文章合并](PAGINATION_CAPTURE.md)，最新样本与实际入库链路见 [真实验收报告](REAL_SITE_ACCEPTANCE_2026-10-28.md)；不宣称逐字识别准确率或全站覆盖率。

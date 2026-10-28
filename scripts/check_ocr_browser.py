@@ -6,6 +6,7 @@ No .env, databases, model keys, remote pages or document writes.
 from __future__ import annotations
 
 import argparse
+import base64
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 from pathlib import Path
@@ -46,10 +47,13 @@ def main():
             if self.path.endswith(".png"):
                 image_requests.append({"path": self.path, "workspace_header": bool(self.headers.get("X-Plugin-ID") or self.headers.get("X-Plugin-Secret"))})
                 data = (fixture / ("long.png" if self.path == "/long.png" else "bilingual.png")).read_bytes()
+                if self.path == "/tiny.png":
+                    data = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZVNoAAAAASUVORK5CYII=")
                 content_type = "image/png"
             else:
                 body = '''<nav><img src="/nav.png" alt="导航图片"></nav>
                 <article id="article"><h1>图片剪藏测试</h1><p>可编辑的网页正文。</p>
+                <img src="/tiny.png" alt="小图标" width="16" height="16">
                 <img src="/bilingual.png" alt="中英文正文" width="600">
                 <img src="/long.png" alt="长图正文" width="600">
                 <img src="/hidden.png" hidden alt="隐藏图片"></article>
@@ -129,7 +133,7 @@ def main():
                 assert not ordinary["images"]
                 done("Default-off and article image scope exclude navigation, sidebar and hidden images")
 
-                source.evaluate("""()=>{const range=document.createRange();range.selectNode(document.querySelector('article img'));const selection=getSelection();selection.removeAllRanges();selection.addRange(range)}""")
+                source.evaluate("""()=>{const range=document.createRange();range.selectNode(document.querySelector('article img[alt="中英文正文"]'));const selection=getSelection();selection.removeAllRanges();selection.addRange(range)}""")
                 selected = driver.evaluate("async id=>webRagPageCapture.capture(id,{mode:'selection',collectImages:true})", tab)
                 assert len(selected["images"]) == 1 and selected["images"][0]["alt"] == "中英文正文", selected
                 done("Image-only DOM selection stays inside the selected range")

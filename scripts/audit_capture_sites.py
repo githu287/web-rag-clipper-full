@@ -28,11 +28,19 @@ INSPECT = r"""sample => {
     .filter(el=>!el.parentElement.closest('pre'))
     .map(el=>({tag:el.tagName,text:el.tagName==='PRE' ? (el.querySelector('code')||el).innerText.trim() : el.innerText.trim()})).filter(b=>b.text.length>=30) : [];
   const title = Array.from(document.querySelectorAll(sample.title)).find(visible);
-  const codeSamples = root ? Array.from(root.querySelectorAll('pre')).filter(visible).map(pre=>{
+  // Reference code includes visible components' open Shadow DOM. Looking only
+  // at light DOM can report zero MDN examples even when users can read/copy them.
+  const codeNodes=new Set();
+  function collectCode(scope){
+    scope.querySelectorAll('pre').forEach(pre=>{if(visible(pre))codeNodes.add(pre)});
+    scope.querySelectorAll('*').forEach(host=>{if(host.shadowRoot&&visible(host))collectCode(host.shadowRoot)});
+  }
+  if(root)collectCode(root);
+  const codeSamples = Array.from(codeNodes).map(pre=>{
     const lines=pre.querySelectorAll('td.hljs-ln-code');
     if(lines.length) return Array.from(lines).map(line=>line.textContent).join('\n');
     return (Array.from(pre.children).find(el=>el.tagName==='CODE')||pre).textContent;
-  }).filter(text=>text.trim()) : [];
+  }).filter(text=>text.trim());
   return {title:document.title,expected_title:title&&title.innerText.trim(),url:location.href,
     body_chars:(document.body.innerText||'').length,body_preview:(document.body.innerText||'').slice(0,1000),
     reference_chars:text.length,reference_first:(blocks[0]?.text||text).slice(0,80),reference_last:(blocks.at(-1)?.text||text).slice(-80),

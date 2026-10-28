@@ -75,6 +75,8 @@ def main():
             if case == "canonical":
                 title = "分页文章标题" + str(number)
                 links += '<link rel="canonical" href="/story?case=canonical&amp;page=1">'
+            if case == "square-title":
+                title = "分页文章测试" + ("【" + str(number) + "】" if number > 1 else "")
             if case == "suffix":
                 target = "/article_" + str(number + 1) + ".html?" + urlencode({"case": case, "page": number + 1})
                 # Suffix pagination keeps non-pagination query values unchanged.
@@ -168,7 +170,7 @@ def main():
                 assert combined["raw_text"].count("分页来源（第 ") == 3
                 done("Three real rendered pages merge in order with sources and images, retaining original URL and scroll position")
 
-                for case in ["plain-next","canonical"]:
+                for case in ["plain-next","canonical","square-title"]:
                     tab=navigate(case);begin(tab);value=result()
                     assert value["diagnostics"]["pagination_page_count"]==3,(case,value)
                 source.goto(base+"/article.html?case=suffix")

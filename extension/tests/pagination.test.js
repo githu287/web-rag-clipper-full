@@ -18,6 +18,9 @@ for (const right of ["https://evil.example/story?page=2", "http://example.com/st
   assert.equal(rules.nextURL("https://example.com/story", right), null, right);
 }
 assert.equal(rules.titleKey("新闻正文（2/3） - 测试站"), rules.titleKey("新闻正文 - 测试站"));
+assert.equal(rules.titleKey("真实文章标题【2】--新闻站"), rules.titleKey("真实文章标题--新闻站"));
+assert.equal(rules.titleKey("真实文章标题【3】"), rules.titleKey("真实文章标题"));
+assert.notEqual(rules.titleKey("报告【2026】"), rules.titleKey("报告【2027】"));
 assert(rules.sameArticle({title:"一篇文章第1页"}, {title:"一篇文章第2页"}));
 assert(!rules.sameArticle({title:"另一篇文章"}, {title:"完全不同正文"}));
 assert(!rules.sameArticle({url:"https://example.com/story",title:"新闻甲",pagination:{canonical:"https://example.com/"}},
