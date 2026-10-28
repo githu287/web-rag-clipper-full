@@ -94,6 +94,11 @@
           <option value="region">指定区域</option>
         </select>
         <div class="hint" id="clip-mode-hint">自动识别文章，清理导航与广告；识别不全时可切换其他方式。</div>
+        <label class="clip-scroll-option" for="clip-auto-scroll">
+          <input type="checkbox" id="clip-auto-scroll" aria-describedby="clip-auto-scroll-hint">
+          <span>加载更多后提取</span>
+        </label>
+        <div class="hint" id="clip-auto-scroll-hint">可用于智能正文和整页内容。最多滚动 20 次、25 秒，完成后恢复阅读位置；加载仍未结束时会提醒。</div>
         <div class="hint">同一网页再次保存会更新已有文档，请先检查预览。</div>
         <button type="button" class="clip-btn" id="clip-btn">提取并预览</button>
         <button type="button" class="btn-secondary" id="clip-capture-cancel" hidden>取消提取</button>

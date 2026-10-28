@@ -15,7 +15,7 @@
 (() => {
   "use strict";
 
-  const CONTENT_SCRIPT_VERSION = "0.8.1";
+  const CONTENT_SCRIPT_VERSION = "0.9.0";
   window.__WEB_RAG_CLIPPER_INJECTED__ = CONTENT_SCRIPT_VERSION;
 
   function extractPage() {
@@ -75,9 +75,8 @@
       return;
     }
     if (message.type === "WEB_CLIP_CANCEL") {
-      globalThis.webRagContentCapture.cancel(message.requestId);
-      sendResponse({ ok: true });
-      return;
+      globalThis.webRagContentCapture.cancel(message.requestId).then(function () { sendResponse({ ok: true }); });
+      return true;
     }
     if (message.type === "WEB_CLIP_CAPTURE_V4") {
       globalThis.webRagContentCapture.capture(message.options).then(sendResponse, function (error) {

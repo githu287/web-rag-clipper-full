@@ -34,6 +34,7 @@ const els = {
   clipMode: document.getElementById("clip-mode"),
   clipModeHint: document.getElementById("clip-mode-hint"),
   clipCaptureCancel: document.getElementById("clip-capture-cancel"),
+  clipAutoScroll: document.getElementById("clip-auto-scroll"),
   clipJob: document.getElementById("clip-job"),
   clipJobStage: document.getElementById("clip-job-stage"),
   clipJobProgress: document.getElementById("clip-job-progress"),
@@ -118,6 +119,7 @@ let activeChatRequest = null;
 let clipBusy = false;
 let clipCaptureController = null;
 let clipExtractionToken = 0;
+let clipScrollProgress = null;
 let clipBusyAction = null;
 let clipErrorMsg = null;
 let clipDraft = null;
@@ -1101,6 +1103,7 @@ function renderClipView() {
   );
   els.clipBtn.disabled = clipBusy || jobIsActive;
   els.clipMode.disabled = clipBusy || jobIsActive;
+  els.clipAutoScroll.disabled = clipBusy || jobIsActive || !["article", "page"].includes(els.clipMode.value || "article");
   els.clipCaptureCancel.hidden = !(clipBusy && clipBusyAction === "extract");
   renderClipJob();
   els.clipPreview.hidden = !clipDraft;
@@ -1121,7 +1124,9 @@ function renderClipView() {
   els.gotoChatBtn.hidden = !hasDoc;
   if (clipBusy) {
     const isSubmitting = clipBusyAction === "save";
-    const extracting = els.clipMode.value === "region" ? "请在网页中点击要剪藏的区域，Esc 可取消…" : "正在等待页面内容并提取…";
+    const extracting = clipScrollProgress
+      ? "正在加载并采集：" + clipScrollProgress.steps + "/20 次滚动 · 已采集 " + clipScrollProgress.collected_chars.toLocaleString("zh-CN") + " 字 · " + Math.floor(clipScrollProgress.elapsed_ms / 1000) + " 秒"
+      : els.clipMode.value === "region" ? "请在网页中点击要剪藏的区域，Esc 可取消…" : "正在等待页面内容并提取…";
     setStatus(els.clipStatus, isSubmitting ? "正在提交入库任务…" : extracting, null);
     els.clipBtn.textContent = isSubmitting ? "正在提交…" : "正在提取…";
   } else if (jobIsActive) {
@@ -1337,6 +1342,10 @@ function renderExtractionDiagnostics(trimmedLength) {
     content_unsettled: "页面仍在变化，可能需要重新提取",
     frames_incomplete: "部分内嵌页面受权限或数量限制，未完整提取",
     image_heavy: "页面以图片为主，当前仅保存说明文字，未识别图片中的文字",
+    scroll_incomplete: "已达到自动加载限制或页面无法继续滚动，内容可能不完整",
+    scroll_overlap_uncertain: "部分滚动片段无法可靠对齐，请检查重复或遗漏",
+    scroll_other_containers: "页面还有其他滚动区域，本次只处理主要区域",
+    scroll_new_frames: "新加载的内嵌页面可能遗漏，建议单独打开剪藏",
   };
   const warnings = Array.isArray(diagnostics.quality_warnings)
     ? diagnostics.quality_warnings.map(function (item) { return warningLabels[item] || item; })
@@ -1348,9 +1357,9 @@ function renderExtractionDiagnostics(trimmedLength) {
   const parts = [
     "剪藏方式：" + ({ article: "智能正文", page: "整页可读内容", selection: "选中文字", region: "指定区域" }[diagnostics.mode] || "智能正文"),
     (diagnostics.fallback ? "降级区域：" : "正文区域：") + strategy,
-    "原始 " + sourceCount.toLocaleString("zh-CN") + " 字 → 提取 " + trimmedLength.toLocaleString("zh-CN") + " 字",
+    diagnostics.scroll_enabled ? "累计采集 " + trimmedLength.toLocaleString("zh-CN") + " 字" : "原始 " + sourceCount.toLocaleString("zh-CN") + " 字 → 提取 " + trimmedLength.toLocaleString("zh-CN") + " 字",
     "清理 " + removedCount.toLocaleString("zh-CN") + " 个节点（隐藏 " + hiddenCount.toLocaleString("zh-CN") + "）",
-    "结构：" + (Number(diagnostics.heading_count) || 0) + " 标题 / " +
+    (diagnostics.scroll_enabled ? "末次片段结构：" : "结构：") + (Number(diagnostics.heading_count) || 0) + " 标题 / " +
       (Number(diagnostics.paragraph_count) || 0) + " 段落 / " +
       (Number(diagnostics.code_block_count) || 0) + " 代码块 / " +
       (Number(diagnostics.inline_code_count) || 0) + " 行内代码 / " +
@@ -1358,6 +1367,8 @@ function renderExtractionDiagnostics(trimmedLength) {
   ];
   if (shadowRootCount > 0) parts.push("读取 " + shadowRootCount.toLocaleString("zh-CN") + " 个组件内容区");
   if (diagnostics.included_frame_count) parts.push("包含 " + diagnostics.included_frame_count + " 个内嵌页面");
+  if (diagnostics.scroll_enabled) parts.push("自动加载：" + diagnostics.scroll_steps + " 次滚动 / " + diagnostics.scroll_snapshots + " 个片段" +
+    (diagnostics.scroll_stop_reason === "bottom_stable" ? "，已到达当前底部并暂时稳定" : "，已停止，请检查完整性"));
   if (diagnostics.expanded_from) parts.push("已从 " + diagnostics.expanded_from + " 扩展正文范围");
   if (uniqueWarnings.length > 0) parts.push("⚠ " + uniqueWarnings.join("；"));
   els.clipPreviewDiagnostics.textContent = parts.join(" · ");
@@ -1830,9 +1841,18 @@ async function sendQuestion() {
  * @returns {Promise<{url: string, title: string, raw_text: string, diagnostics: object|null}>} 提取结果
  */
 async function extractCurrentPage() {
+  const controller = clipCaptureController;
+  const token = clipExtractionToken;
   return webRagPageCapture.capture(currentTabId, {
     mode: els.clipMode.value || "article",
-    signal: clipCaptureController && clipCaptureController.signal,
+    signal: controller && controller.signal,
+    autoScroll: !!els.clipAutoScroll.checked,
+    onProgress: function (progress) {
+      if (controller && !controller.signal.aborted && clipCaptureController === controller && token === clipExtractionToken) {
+        clipScrollProgress = progress;
+        renderClipView();
+      }
+    },
   });
 }
 
@@ -1854,6 +1874,7 @@ async function prepareClipPreview() {
   const token = ++clipExtractionToken;
   const controller = new AbortController();
   clipCaptureController = controller;
+  clipScrollProgress = null;
   renderClipView();
   try {
     const page = await extractCurrentPage();
@@ -1871,6 +1892,7 @@ async function prepareClipPreview() {
   } finally {
     if (token === clipExtractionToken) {
       clipCaptureController = null;
+      clipScrollProgress = null;
       clipBusy = false;
       clipBusyAction = null;
       renderClipView();
@@ -2331,6 +2353,7 @@ function bindEvents() {
       region: "点击提取后，在网页中移动鼠标查看范围并点击；↑ 扩大范围，Esc 取消。",
     };
     els.clipModeHint.textContent = hints[els.clipMode.value];
+    renderClipView();
   });
   els.clipCaptureCancel.addEventListener("click", function () {
     if (clipCaptureController) clipCaptureController.abort();

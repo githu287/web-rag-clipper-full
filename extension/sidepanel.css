@@ -1160,6 +1160,10 @@ button.page-num:not(.current):hover {
 #clip-mode-hint { margin-top: 6px; line-height: 1.6; }
 #clip-capture-cancel { margin-top: 8px; }
 #clip-capture-cancel[hidden] { display: none; }
+.clip-scroll-option { display: flex; align-items: center; gap: 8px; margin-top: 12px; font-weight: 600; cursor: pointer; }
+.clip-scroll-option input { width: 16px; height: 16px; accent-color: var(--primary); }
+.clip-scroll-option:has(input:disabled) { color: var(--text-sub); cursor: default; }
+#clip-auto-scroll-hint { margin-top: 6px; line-height: 1.6; }
 
 .clip-preview {
   margin-top: 14px;

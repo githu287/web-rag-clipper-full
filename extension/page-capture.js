@@ -8,7 +8,14 @@
 })(typeof globalThis !== "undefined" ? globalThis : this, function () {
   const MAX_CHARS = 500000;
   const MAX_FRAMES = 12;
-  const FILES = ["vendor/readability/Readability.js", "extractor.js", "capture-content.js", "content.js"];
+  const FILES = ["url-utils.js", "vendor/readability/Readability.js", "extractor.js", "snapshot-merge.js", "scroll-capture.js", "capture-content.js", "content.js"];
+
+  function samePage(left, right) {
+    if (globalThis.webRagUrlUtils) {
+      try { return webRagUrlUtils.normalizeWebUrl(left) === webRagUrlUtils.normalizeWebUrl(right); } catch (_error) {}
+    }
+    return left === right;
+  }
 
   function message(tabId, frameId, payload, timeout, signal) {
     return new Promise(function (resolve, reject) {
@@ -57,6 +64,7 @@
       if (item.frameId !== 0 && remaining > prefix.length) includedFrames += 1;
       if (response.diagnostics && response.diagnostics.truncated) truncated = true;
       if (response.diagnostics && response.diagnostics.content_settled === false) warnings.add("content_unsettled");
+      for (const warning of response.diagnostics && response.diagnostics.quality_warnings || []) warnings.add(warning);
     }
     if (truncated) warnings.add("truncated");
     const rawText = parts.join("").trim();
@@ -71,12 +79,23 @@
     const mode = options.mode || "article";
     if (!["article", "page", "selection", "region"].includes(mode)) throw new Error("不支持的剪藏方式");
     const signal = options.signal;
+    const autoScroll = !!options.autoScroll && (mode === "article" || mode === "page");
     const requestId = String(Date.now()) + ":" + Math.random().toString(36).slice(2);
     const page = await chrome.tabs.get(tabId);
     if (!page || !/^https?:/.test(page.url || "")) throw new Error("当前标签页不是可访问的网页");
     const injected = [];
     const capturedIds = [];
     let limited = false;
+    const progressListener = function (message, sender) {
+      if (message && message.type === "WEB_CLIP_PROGRESS" && message.requestId === requestId &&
+          sender && sender.tab && sender.tab.id === tabId && sender.frameId === 0 &&
+          !(signal && signal.aborted) && typeof options.onProgress === "function") {
+        options.onProgress({ steps: Math.max(0, Math.min(20, Number(message.steps) || 0)),
+          max_steps: 20, elapsed_ms: Math.max(0, Number(message.elapsed_ms) || 0),
+          collected_chars: Math.max(0, Math.min(MAX_CHARS, Number(message.collected_chars) || 0)) });
+      }
+    };
+    if (autoScroll && chrome.runtime.onMessage) chrome.runtime.onMessage.addListener(progressListener);
     try {
       try {
         injected.push(...await chrome.scripting.executeScript({ target: { tabId, allFrames: true }, files: FILES }));
@@ -115,7 +134,8 @@
       const requests = selected.map(async function (frame) {
         capturedIds.push(frame.frameId);
         const response = await message(tabId, frame.frameId,
-          { type: "WEB_CLIP_CAPTURE_V4", options: { mode, requestId } }, mode === "region" ? 60000 : 10000, signal);
+          { type: "WEB_CLIP_CAPTURE_V4", options: { mode, requestId, autoScroll: autoScroll && frame.frameId === 0,
+            scrollLimits: options.scrollLimits } }, mode === "region" ? 60000 : autoScroll ? 40000 : 10000, signal);
         if (!response || !response.ok) throw new Error(response && response.error || "页面内容提取失败");
         if ((mode === "selection" || mode === "region") && !String(response.raw_text || "").trim()) throw new Error("所选内容为空");
         return { frameId: frame.frameId, response };
@@ -140,13 +160,13 @@
         }
       } else {
         const settled = await Promise.allSettled(requests);
-        if (settled[0] && settled[0].status === "rejected" && /访问限制/.test(settled[0].reason.message || "")) throw settled[0].reason;
+        if (settled[0] && settled[0].status === "rejected" && /访问限制|取消|页面已变化/.test(settled[0].reason.message || "")) throw settled[0].reason;
         results = settled.filter(function (item) { return item.status === "fulfilled"; }).map(function (item) { return item.value; });
         if (settled.some(function (item) { return item.status === "rejected"; })) limited = true;
       }
       if (signal && signal.aborted) throw new Error("已取消提取");
       const latest = await chrome.tabs.get(tabId);
-      if (latest.url !== page.url || (top.info.url && top.info.url !== page.url)) throw new Error("页面已变化，请重新提取");
+      if (!samePage(latest.url, page.url) || (top.info.url && !samePage(top.info.url, page.url))) throw new Error("页面已变化，请重新提取");
       const result = merge(results, mode, page);
       if (limited) result.diagnostics.quality_warnings.push("frames_incomplete");
       return result;
@@ -154,6 +174,7 @@
       if (/cannot\s+access|permission/i.test(error.message || "")) throw new Error("当前网页暂不支持剪藏（浏览器权限限制）");
       throw error;
     } finally {
+      if (autoScroll && chrome.runtime.onMessage) chrome.runtime.onMessage.removeListener(progressListener);
       // Settle remaining region pickers immediately, including other frames.
       await Promise.allSettled(capturedIds.map(function (frameId) {
         return message(tabId, frameId, { type: "WEB_CLIP_CANCEL", requestId }, 1000);

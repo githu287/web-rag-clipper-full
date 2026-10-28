@@ -11,6 +11,8 @@
 | `.github/workflows/ci.yml` | push/PR/手动触发的 Linux/Windows 离线回归，以及 Linux Chromium 真实扩展提取测试 |
 | `scripts/check.py` | 本地与 CI 统一离线检查入口，自动发现 Node 测试并传播失败 |
 | `scripts/check_capture_browser.py` | 无后端/凭证的真实 Chrome/Chromium 扩展提取、跨域 iframe、延迟渲染与区域交互测试 |
+| `scripts/check_scroll_capture_browser.py` | 无后端的滚动/虚拟列表/上限/恢复回归与使用合成身份的侧栏 UI 组件检查 |
+| `SCROLL_CAPTURE.md` | 可选自动加载剪藏的操作、预算、合并、恢复与验证边界 |
 | `CLIPPING_COMPATIBILITY.md` | 四种剪藏方式、依赖来源、真实浏览器验证和网站适配边界 |
 | `SITE_AUDIT_2026-10-28.md` | 13 个公开网页的实测结果、代码保真修复、访问受限与图片边界 |
 | `scripts/audit_capture_sites.py` | 按需在线样本审计，记录可见块/源码保留、标题、噪声、状态与耗时；运行数据默认不入库 |
@@ -174,6 +176,9 @@
 | `extension/extractor.js` | 可测试的正文候选评分、DOM 清噪与结构化文本序列化引擎 |
 | `extension/page-capture.js` | Side Panel/Popup 共用的多框架提取、合并去重、长度限制、取消及导航校验 |
 | `extension/capture-content.js` | 内容稳定等待、可见框架描述、区域高亮选择与清理 |
+| `extension/scroll-capture.js` | 受控滚动采样、进度、停止条件及坐标/样式恢复 |
+| `extension/snapshot-merge.js` | 按相邻窗口重叠有序合并，保留合法重复和代码围栏 |
+| `extension/tests/snapshot-merge.test.js` | 增量/虚拟窗口合并、重复、无重叠提醒、代码及长度上限回归 |
 | `extension/vendor/readability/` | 本地打包的 Mozilla Readability 0.6.0、来源/完整性摘要及许可证 |
 | `extension/tests/page-capture.test.js` | 框架筛选、去重、长度、导航、受限提示及取消回归 |
 | `extension/tests/capture-driver.html` | 浏览器测试的扩展上下文入口，不存储 Workspace 凭证 |

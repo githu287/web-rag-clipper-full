@@ -190,7 +190,9 @@ Worker 会初始化 Milvus，恢复上次意外中断且未确认的任务，并
 | 选中文字 | 先在网页选中文字，再点击提取；只保留选中范围，支持有权限访问的可见 iframe |
 | 指定区域 | 点击提取后在网页移动鼠标查看高亮，点击选定区域；↑ 扩大范围、Esc 或侧栏按钮取消 |
 
-自动提取最多等待约 3 秒让内容稳定，不会主动滚动、点击展开或翻页。提取可见、可访问的 HTTP(S) iframe，合并结果时标注内嵌来源并去重，文档仍绑定顶层网页 URL。最多探测 64 个框架并处理其中 12 个（含顶层）；跨域需要浏览器授予对应站点权限，权限受限或数量超限会显示诊断提醒。
+默认提取最多等待约 3 秒让内容稳定。0.9.0 增加可选的“加载更多后提取”，适用于智能正文/整页内容：从页面或主要滚动容器顶部逐段滚动并采集，最多 20 次、滚动预算 25 秒；侧栏显示进度，支持取消按钮或 Esc。完成、取消和失败后恢复原阅读位置；达到次数、时间或字符限制时保留已采集内容，提醒可能不完整。虚拟列表采用相邻片段重叠合并，无法可靠对齐时提醒检查重复/遗漏。不会自动点击“展开全文”或翻页，滚动触发的站点加载行为仍受网站自身权限约束。
+
+提取可见、可访问的 HTTP(S) iframe，合并结果时标注内嵌来源并去重，文档仍绑定顶层网页 URL。自动滚动只处理顶层页面的主要区域，子框架沿用普通提取；滚动中新加载的框架可能遗漏并会提示。最多探测 64 个框架并处理其中 12 个（含顶层）；跨域需要浏览器授予对应站点权限，权限受限或数量超限会显示诊断提醒。
 
 四种方式共享 50 万字符上限，保存前均可编辑。同一规范化 URL 再次保存会更新已有文档，选区与区域不会自动创建多个独立摘录。图片仅保留替代说明；不下载图片、不执行 OCR，图片为主的短文章会提醒。支持部分开放 Shadow DOM 与插槽；关闭的组件、浏览器内部页、扩展商店页、未登录/未购买的正文、PDF/Canvas、虚拟列表及未加载的后续内容仍有边界。0.8.1 已完成 [13 个公开网页样本实测](SITE_AUDIT_2026-10-28.md) 并修复正文范围、标题和代码保真问题；知乎/CSDN 样本受访问限制，没有据此宣称全站兼容。能力说明见 [剪藏能力与验收](CLIPPING_COMPATIBILITY.md)。
 
@@ -311,6 +313,7 @@ node extension/tests/page-capture.test.js
 ```powershell
 .venv/Scripts/python.exe -m pip install playwright==1.64.1
 .venv/Scripts/python.exe scripts/check_capture_browser.py
+.venv/Scripts/python.exe scripts/check_scroll_capture_browser.py
 ```
 
 需要已安装支持扩展调试接口的 Chrome；报告及截图默认存放于被 Git 忽略的 `.venv/runtime/capture-browser/`。该检查通过扩展页面驱动真实 content script，覆盖跨域 iframe、延迟渲染与区域交互；不等于原生 Side Panel 容器及工具栏入口验收。
@@ -322,6 +325,8 @@ node extension/tests/page-capture.test.js
 ```
 
 样本定义在 `extension/tests/site-samples.json`，默认报告和网页快照写入忽略目录 `.venv/runtime/site-audit/`。线上检查不影响 CI；CI 使用 11 份原创 DOM 模式 fixture 重现已修复的缺陷。
+
+可用 `scripts/audit_capture_sites.py --auto-scroll --only github-readme vue-guide` 单独验证开启自动加载后的公开样本。滚动采集原理、停止条件和本机测试见 [自动加载验收](SCROLL_CAPTURE.md)。
 
 ## Retrieval 评测
 

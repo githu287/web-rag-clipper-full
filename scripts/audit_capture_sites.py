@@ -84,6 +84,7 @@ def main() -> None:
     parser.add_argument("--only", nargs="*", help="Sample IDs to run")
     parser.add_argument("--artifacts", type=Path, default=ROOT / ".venv/runtime/site-audit")
     parser.add_argument("--channel", default="chrome")
+    parser.add_argument("--auto-scroll", action="store_true", help="Opt in to bounded scrolling before capture")
     args = parser.parse_args()
     args.artifacts.mkdir(parents=True, exist_ok=True)
     samples = json.loads(args.samples.read_text(encoding="utf-8"))["samples"]
@@ -96,6 +97,7 @@ def main() -> None:
     def save():
         report = {"date": datetime.now(timezone(timedelta(hours=8))).isoformat(),
             "extension_version": json.loads((ROOT / "extension/manifest.json").read_text(encoding="utf-8"))["version"],
+            "auto_scroll": args.auto_scroll,
             "method": "Real extension capture; public pages in a fresh headless Chrome profile. No login or challenge bypass. Coverage compares rendered reference DOM blocks only; not unseen content.",
             "results": results}
         (args.artifacts / "report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -128,7 +130,7 @@ def main() -> None:
                     page.screenshot(path=str(args.artifacts / f"{sample['id']}.png"))
                     tab_id = driver.evaluate("async url=>(await chrome.tabs.query({})).find(t=>t.url===url).id", page.url)
                     capture_start = time.monotonic()
-                    result = driver.evaluate("async id=>webRagPageCapture.capture(id,{mode:'article'})", tab_id)
+                    result = driver.evaluate("async data=>webRagPageCapture.capture(data.id,{mode:'article',autoScroll:data.autoScroll})", {"id": tab_id, "autoScroll": args.auto_scroll})
                     record["capture_seconds"] = round(time.monotonic() - capture_start, 3)
                     # Wait logic can expose newly rendered text; inspect again.
                     inspected = page.evaluate(INSPECT, sample)

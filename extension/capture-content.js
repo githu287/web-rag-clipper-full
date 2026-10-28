@@ -1,11 +1,17 @@
-// Browser-side capture helpers. No network requests or page event activation.
+// Browser-side capture helpers. Optional scrolling can trigger site lazy loading.
 "use strict";
 (function () {
-  if (globalThis.webRagContentCapture) globalThis.webRagContentCapture.cancel();
+  const previousCleanup = globalThis.webRagContentCapture
+    ? globalThis.webRagContentCapture.cancel() : Promise.resolve();
   let active = null;
+  const cancelledRequests = new Set();
 
   function cancelled() {
     return new Error("已取消提取");
+  }
+
+  function samePage(url) {
+    return webRagUrlUtils.normalizeWebUrl(document.URL) === webRagUrlUtils.normalizeWebUrl(url);
   }
 
   function visible(element) {
@@ -141,15 +147,20 @@
   }
 
   async function capture(options) {
-    if (active) active.abort();
+    await previousCleanup;
+    while (active) { const running = active; running.abort(); await running.done; }
+    if (options && cancelledRequests.has(options.requestId)) throw cancelled();
     const controller = new AbortController();
     controller.requestId = options && options.requestId;
+    let complete;
+    controller.done = new Promise(function (resolve) { complete = resolve; });
     active = controller;
     const startUrl = document.URL;
     const mode = options && options.mode || "article";
+    const scroll = !!(options && options.autoScroll && (mode === "article" || mode === "page"));
     // The extension page may close before it can send CANCEL. Keep an
     // independent deadline in the web page so a picker cannot stay forever.
-    const deadline = setTimeout(function () { controller.abort(); }, mode === "region" ? 60000 : 12000);
+    const deadline = setTimeout(function () { controller.abort(); }, mode === "region" ? 60000 : scroll ? 35000 : 12000);
     try {
       if (webRagPageExtractor.hasAccessBarrier(document)) {
         throw new Error("当前页面显示访问限制，请在网页中完成登录或验证、确认正文可见后再提取");
@@ -159,18 +170,34 @@
       if (mode === "region") root = await pickRegion(controller.signal);
       else if (mode !== "selection") waiting = await waitForContent(controller.signal);
       if (controller.signal.aborted) throw cancelled();
-      if (document.URL !== startUrl) throw new Error("页面已变化，请重新提取");
-      const result = webRagPageExtractor.extract(document, { mode, root });
+      if (!samePage(startUrl)) throw new Error("页面已变化，请重新提取");
+      const progress = function (details) {
+        try { chrome.runtime.sendMessage(Object.assign({ type: "WEB_CLIP_PROGRESS", requestId: controller.requestId }, details)).catch(function () {}); }
+        catch (_error) {}
+      };
+      const result = scroll ? await webRagScrollCapture.run({ mode, signal: controller.signal,
+        limits: options.scrollLimits, progress, cancel: function () { controller.abort(); } })
+        : webRagPageExtractor.extract(document, { mode, root });
+      if (!samePage(startUrl)) throw new Error("页面已变化，请重新提取");
       Object.assign(result.diagnostics, waiting);
       return { ok: true, url: document.URL, title: document.title || "", raw_text: result.text, diagnostics: result.diagnostics };
     } finally {
       clearTimeout(deadline);
       if (active === controller) active = null;
+      complete();
     }
   }
 
   globalThis.webRagContentCapture = {
     capture, describe,
-    cancel: function (requestId) { if (active && (!requestId || requestId === active.requestId)) active.abort(); },
+    cancel: async function (requestId) {
+      if (requestId) {
+        cancelledRequests.add(requestId);
+        if (cancelledRequests.size > 64) cancelledRequests.delete(cancelledRequests.values().next().value);
+      }
+      await previousCleanup;
+      const running = active;
+      if (running && (!requestId || requestId === running.requestId)) { running.abort(); await running.done; }
+    },
   };
 })();

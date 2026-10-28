@@ -31,8 +31,10 @@ const page = { url: "https://example.com/article", title: "Top page" };
   let navigate = false;
   let hang = false;
   let blockedTop = false;
+  const listeners = new Set();
+  const captureOptions = [];
   global.chrome = {
-    runtime: {},
+    runtime: { onMessage: { addListener: fn => listeners.add(fn), removeListener: fn => listeners.delete(fn) } },
     scripting: { executeScript: async () => Object.keys(frames).map(frameId => ({ frameId: Number(frameId) })) },
     tabs: {
       get: async () => ({ ...page, url: navigate && requested.length ? "https://example.com/new" : page.url }),
@@ -42,7 +44,16 @@ const page = { url: "https://example.com/article", title: "Top page" };
         if (message.type === "WEB_CLIP_CANCEL") { cancelled.push(id); callback({ ok: true }); }
         if (message.type === "WEB_CLIP_CAPTURE_V4") {
           requested.push(id);
-          if (!hang) callback(blockedTop && id === 0 ? { ok: false, error: "当前页面显示访问限制" } : result(id, id === 0 ? text : "内嵌正文").response);
+          captureOptions.push({ id, options: message.options });
+          if (message.options.autoScroll) {
+            for (const listener of listeners) {
+              listener({ type: "WEB_CLIP_PROGRESS", requestId: "old", steps: 7 }, { tab: { id: 9 }, frameId: 0 });
+              listener({ type: "WEB_CLIP_PROGRESS", requestId: message.options.requestId, steps: 8 }, { tab: { id: 10 }, frameId: 0 });
+              listener({ type: "WEB_CLIP_PROGRESS", requestId: message.options.requestId, steps: 9 }, { tab: { id: 9 }, frameId: 1 });
+              listener({ type: "WEB_CLIP_PROGRESS", requestId: message.options.requestId, steps: 2, collected_chars: 100 }, { tab: { id: 9 }, frameId: 0 });
+            }
+          }
+          if (!hang) callback(blockedTop && id === 0 ? { ok: false, error: typeof blockedTop === "string" ? blockedTop : "当前页面显示访问限制" } : result(id, id === 0 ? text : "内嵌正文").response);
         }
       },
     },
@@ -64,7 +75,17 @@ const page = { url: "https://example.com/article", title: "Top page" };
   requested = [];
   const partial = await capture.capture(9, { mode: "article" });
   assert(partial.diagnostics.quality_warnings.includes("frames_incomplete"));
+  const progress = [];
+  captureOptions.length = 0;
+  await capture.capture(9, { mode: "page", autoScroll: true, onProgress: value => progress.push(value) });
+  assert.deepEqual(progress.map(item => item.steps), [2], "only current tab, top frame and current request can update progress");
+  assert(captureOptions.find(item => item.id === 0).options.autoScroll);
+  assert.equal(captureOptions.find(item => item.id === 1).options.autoScroll, false);
+  assert.equal(listeners.size, 0, "temporary progress listeners must be removed");
   blockedTop = true;
   await assert.rejects(capture.capture(9, { mode: "article" }), /访问限制/, "an accessible child must not hide a top-level access error");
+  blockedTop = "已取消提取";
+  await assert.rejects(capture.capture(9, { mode: "article", autoScroll: true }), /取消/, "a child-frame success must not hide Escape cancellation");
+  assert.equal(listeners.size, 0);
   console.log("page capture filtering, deduplication, limits, cancellation and navigation tests passed");
 })().catch(error => { console.error(error); process.exitCode = 1; });

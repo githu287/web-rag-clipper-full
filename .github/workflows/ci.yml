@@ -79,3 +79,5 @@ jobs:
         run: python -m playwright install --with-deps chromium
       - name: Exercise real unpacked extension on local fixtures
         run: python scripts/check_capture_browser.py --channel chromium
+      - name: Exercise bounded scrolling and virtual-list capture
+        run: python scripts/check_scroll_capture_browser.py --channel chromium
