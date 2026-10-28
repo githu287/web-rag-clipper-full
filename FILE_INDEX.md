@@ -12,6 +12,8 @@
 | `scripts/check.py` | 本地与 CI 统一离线检查入口，自动发现 Node 测试并传播失败 |
 | `scripts/check_capture_browser.py` | 无后端/凭证的真实 Chrome/Chromium 扩展提取、跨域 iframe、延迟渲染与区域交互测试 |
 | `CLIPPING_COMPATIBILITY.md` | 四种剪藏方式、依赖来源、真实浏览器验证和网站适配边界 |
+| `SITE_AUDIT_2026-10-28.md` | 13 个公开网页的实测结果、代码保真修复、访问受限与图片边界 |
+| `scripts/audit_capture_sites.py` | 按需在线样本审计，记录可见块/源码保留、标题、噪声、状态与耗时；运行数据默认不入库 |
 | `ARCHITECTURE.md` | 当前实现的分层、数据流、隔离与一致性设计 |
 | `FILE_INDEX.md` | 本文件 |
 | `.env.example` | 环境变量模板；部分字段是尚未消费的预留配置 |
@@ -175,6 +177,8 @@
 | `extension/vendor/readability/` | 本地打包的 Mozilla Readability 0.6.0、来源/完整性摘要及许可证 |
 | `extension/tests/page-capture.test.js` | 框架筛选、去重、长度、导航、受限提示及取消回归 |
 | `extension/tests/capture-driver.html` | 浏览器测试的扩展上下文入口，不存储 Workspace 凭证 |
+| `extension/tests/site-samples.json` | 线上公开网页样本、参照正文与标题选择器，以及噪声检查项 |
+| `extension/tests/site-fixtures.json` | 11 份原创 DOM 模式回归样本，复现站点问题且不复制原文；由真实浏览器 CI 执行 |
 | `extension/content.js` | 提取消息入口、降级处理和 SPA URL 监听 |
 | `extension/api-client.js` | Plugin Header、JSON/multipart 请求与错误分类 |
 | `extension/clip-detect.js` | 按 URL 探测是否已剪藏，带短 TTL 缓存 |

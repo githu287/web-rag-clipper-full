@@ -1,0 +1,111 @@
+{
+  "description": "Public page samples for opt-in live capture audits. Access restrictions are recorded separately from extraction defects; these samples do not establish a site-wide compatibility rate.",
+  "samples": [
+    {
+      "id": "wechat-science",
+      "site": "微信公众号",
+      "url": "https://mp.weixin.qq.com/s/v8g0jI-c49RsihsaPBgeRQ",
+      "root": "#js_content",
+      "title": "#activity-name",
+      "min_chars": 180
+    },
+    {
+      "id": "wechat-text",
+      "site": "微信公众号文字文章",
+      "url": "https://mp.weixin.qq.com/s/7W8MjSxdnqCAwfgOPQRxjQ",
+      "root": "#js_content",
+      "title": "#activity-name",
+      "min_chars": 500
+    },
+    {
+      "id": "zhihu-article",
+      "site": "知乎文章",
+      "url": "https://zhuanlan.zhihu.com/p/373014693",
+      "root": ".Post-RichTextContainer, .Post-RichText",
+      "title": ".Post-Title",
+      "min_chars": 1000
+    },
+    {
+      "id": "zhihu-answer",
+      "site": "知乎回答",
+      "url": "https://www.zhihu.com/question/660555328/answer/2014646584986580422",
+      "root": ".AnswerItem .RichContent-inner",
+      "title": ".QuestionHeader-title",
+      "min_chars": 500
+    },
+    {
+      "id": "csdn-pattern",
+      "site": "CSDN",
+      "url": "https://blog.csdn.net/kt1776133839/article/details/89441068",
+      "root": "#article_content",
+      "title": "#articleContentId",
+      "min_chars": 300
+    },
+    {
+      "id": "juejin-closure",
+      "site": "掘金",
+      "url": "https://juejin.cn/post/7520983959587045428",
+      "root": "#article-root",
+      "title": ".article-title",
+      "exclude_text": ["代码解读", "复制代码"],
+      "min_chars": 1000
+    },
+    {
+      "id": "cnblogs-decorator",
+      "site": "博客园",
+      "url": "https://www.cnblogs.com/tobyqin/p/python-decorator.html",
+      "root": "#cnblogs_post_body",
+      "title": "#cb_post_title_url",
+      "min_chars": 1000
+    },
+    {
+      "id": "github-readme",
+      "site": "GitHub README",
+      "url": "https://github.com/mozilla/readability",
+      "root": "article.markdown-body",
+      "title": "article.markdown-body h1",
+      "exclude_text": ["Notifications", "Latest commit", "Folders and files", "Copy code to clipboard"],
+      "min_chars": 1000
+    },
+    {
+      "id": "vue-guide",
+      "site": "Vue 技术文档",
+      "url": "https://cn.vuejs.org/guide/essentials/reactivity-fundamentals.html",
+      "root": "main .vp-doc, main .vt-doc",
+      "title": "h1",
+      "min_chars": 1000
+    },
+    {
+      "id": "mdn-table",
+      "site": "MDN 技术文档",
+      "url": "https://developer.mozilla.org/zh-CN/docs/Web/HTML/Reference/Elements/table",
+      "root": "main#content .reference-layout__body",
+      "title": "h1",
+      "min_chars": 1000
+    },
+    {
+      "id": "xinhua-news",
+      "site": "新华网新闻",
+      "url": "https://www.news.cn/tech/20250501/f2bcfc9ff53047c38bc67f23a5445560/c.html",
+      "root": "#detail, .main-aticle, .main-article",
+      "title": "h1",
+      "min_chars": 200
+    },
+    {
+      "id": "gov-guideline",
+      "site": "政府公告",
+      "url": "https://app.www.gov.cn/govdata/gov/202510/11/538227/article.html",
+      "root": "#articleins",
+      "title": "h1.articletit",
+      "min_chars": 1000
+    },
+    {
+      "id": "ndrc-policy",
+      "site": "发改委政策解读",
+      "url": "https://www.ndrc.gov.cn/xxgk/jd/jd/202508/t20250826_1400078.html",
+      "root": ".TRS_Editor, .TRS_UEDITOR, .article-content",
+      "title": ".article_title",
+      "min_chars": 1000
+    }
+  ]
+}

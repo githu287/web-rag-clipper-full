@@ -129,4 +129,14 @@ test("星号形式的装饰列表会规范为 Markdown 列表", function () {
   assert.equal(extractor.normalizeStructuredText("* 第一项\n* 第二项"), "- 第一项\n- 第二项");
 });
 
+test("嵌套 Markdown 示例保持更长的围栏及代码缩进", function () {
+  const text = "````markdown\n```js\n  const value = 1;\n```\n````\n\n正文";
+  assert.equal(extractor.normalizeStructuredText(text), text);
+});
+
+test("图片为主的短文章报告文字识别边界", function () {
+  assert(extractor.buildQualityWarnings({ imageCount: 4, sourceTextLength: 120, extractedCharCount: 220 }).includes("image_heavy"));
+  assert(!extractor.buildQualityWarnings({ imageCount: 4, sourceTextLength: 1200, extractedCharCount: 1400 }).includes("image_heavy"));
+});
+
 console.log("extractor tests passed");

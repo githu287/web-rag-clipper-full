@@ -192,7 +192,7 @@ Worker 会初始化 Milvus，恢复上次意外中断且未确认的任务，并
 
 自动提取最多等待约 3 秒让内容稳定，不会主动滚动、点击展开或翻页。提取可见、可访问的 HTTP(S) iframe，合并结果时标注内嵌来源并去重，文档仍绑定顶层网页 URL。最多探测 64 个框架并处理其中 12 个（含顶层）；跨域需要浏览器授予对应站点权限，权限受限或数量超限会显示诊断提醒。
 
-四种方式共享 50 万字符上限，保存前均可编辑。同一规范化 URL 再次保存会更新已有文档，选区与区域不会自动创建多个独立摘录。图片仅保留替代说明；不下载图片、不执行 OCR。支持部分开放 Shadow DOM 与插槽；关闭的组件、浏览器内部页、扩展商店页、未登录/未购买的正文、PDF/Canvas、虚拟列表及未加载的后续内容仍有边界。当前基于合成页面验证通用能力，尚未完成主流网站逐站兼容率测量，详见 [剪藏能力与验收](CLIPPING_COMPATIBILITY.md)。
+四种方式共享 50 万字符上限，保存前均可编辑。同一规范化 URL 再次保存会更新已有文档，选区与区域不会自动创建多个独立摘录。图片仅保留替代说明；不下载图片、不执行 OCR，图片为主的短文章会提醒。支持部分开放 Shadow DOM 与插槽；关闭的组件、浏览器内部页、扩展商店页、未登录/未购买的正文、PDF/Canvas、虚拟列表及未加载的后续内容仍有边界。0.8.1 已完成 [13 个公开网页样本实测](SITE_AUDIT_2026-10-28.md) 并修复正文范围、标题和代码保真问题；知乎/CSDN 样本受访问限制，没有据此宣称全站兼容。能力说明见 [剪藏能力与验收](CLIPPING_COMPATIBILITY.md)。
 
 ## API 概览
 
@@ -314,6 +314,14 @@ node extension/tests/page-capture.test.js
 ```
 
 需要已安装支持扩展调试接口的 Chrome；报告及截图默认存放于被 Git 忽略的 `.venv/runtime/capture-browser/`。该检查通过扩展页面驱动真实 content script，覆盖跨域 iframe、延迟渲染与区域交互；不等于原生 Side Panel 容器及工具栏入口验收。
+
+按需实测公开网页样本（不登录、不处理验证码、不调用后端，结果受网站及网络环境影响）：
+
+```powershell
+.venv/Scripts/python.exe scripts/audit_capture_sites.py
+```
+
+样本定义在 `extension/tests/site-samples.json`，默认报告和网页快照写入忽略目录 `.venv/runtime/site-audit/`。线上检查不影响 CI；CI 使用 11 份原创 DOM 模式 fixture 重现已修复的缺陷。
 
 ## Retrieval 评测
 

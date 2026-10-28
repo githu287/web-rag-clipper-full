@@ -1336,6 +1336,7 @@ function renderExtractionDiagnostics(trimmedLength) {
     truncated: "超长内容已截断",
     content_unsettled: "页面仍在变化，可能需要重新提取",
     frames_incomplete: "部分内嵌页面受权限或数量限制，未完整提取",
+    image_heavy: "页面以图片为主，当前仅保存说明文字，未识别图片中的文字",
   };
   const warnings = Array.isArray(diagnostics.quality_warnings)
     ? diagnostics.quality_warnings.map(function (item) { return warningLabels[item] || item; })

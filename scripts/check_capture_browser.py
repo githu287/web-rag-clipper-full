@@ -194,6 +194,38 @@ def main() -> None:
                 wait_js(driver, "captureError !== null")
                 assert "页面已变化" in driver.evaluate("captureError")
                 done("Navigation during extraction rejects stale content")
+
+                # Original fixtures preserve observed site DOM patterns. Route
+                # only these exact synthetic URLs; no live site traffic in CI.
+                fixtures = json.loads((ROOT / "extension/tests/site-fixtures.json").read_text(encoding="utf-8"))["cases"]
+                # Deny every other request during synthetic-site checks,
+                # including unexpected assets or redirects to a live origin.
+                source.route("**/*", lambda route: route.abort())
+                for case in fixtures:
+                    fixture_html = "<!doctype html><meta charset='utf-8'><title>Local site-pattern fixture</title>" + case["html"].replace("{{padding}}", "<p>" + PARAGRAPH + "</p>")
+                    def fixture_route(route, _request, data=fixture_html):
+                        route.fulfill(status=200, content_type="text/html; charset=utf-8", body=data)
+                    source.route(case["url"], fixture_route)
+                    source.goto(case["url"])
+                    source.wait_for_load_state("networkidle")
+                    tab = driver.evaluate("async url=>(await chrome.tabs.query({})).find(t=>t.url===url).id", source.url)
+                    begin(tab, "article")
+                    wait_js(driver, "captureResult !== null || captureError !== null")
+                    if case.get("error"):
+                        assert case["error"] in (driver.evaluate("captureError") or ""), case["id"]
+                    else:
+                        result = driver.evaluate("captureResult")
+                        assert result, (case["id"], driver.evaluate("captureError"))
+                        for expected in case.get("contains", []):
+                            assert expected in result["raw_text"], (case["id"], "missing", expected)
+                        for excluded in case.get("excludes", []):
+                            assert excluded not in result["raw_text"], (case["id"], "noise", excluded)
+                        if case.get("profile"):
+                            assert result["diagnostics"]["site_profile"] == case["profile"], case["id"]
+                        if case.get("warning"):
+                            assert case["warning"] in result["diagnostics"]["quality_warnings"], case["id"]
+                    source.unroute(case["url"], fixture_route)
+                done(f"Site-pattern regressions: {len(fixtures)} original fixtures passed without live site requests")
                 report["passed"] = True
             finally:
                 context.close()

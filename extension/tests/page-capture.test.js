@@ -30,6 +30,7 @@ const page = { url: "https://example.com/article", title: "Top page" };
   let requested = [];
   let navigate = false;
   let hang = false;
+  let blockedTop = false;
   global.chrome = {
     runtime: {},
     scripting: { executeScript: async () => Object.keys(frames).map(frameId => ({ frameId: Number(frameId) })) },
@@ -41,7 +42,7 @@ const page = { url: "https://example.com/article", title: "Top page" };
         if (message.type === "WEB_CLIP_CANCEL") { cancelled.push(id); callback({ ok: true }); }
         if (message.type === "WEB_CLIP_CAPTURE_V4") {
           requested.push(id);
-          if (!hang) callback(result(id, id === 0 ? text : "内嵌正文").response);
+          if (!hang) callback(blockedTop && id === 0 ? { ok: false, error: "当前页面显示访问限制" } : result(id, id === 0 ? text : "内嵌正文").response);
         }
       },
     },
@@ -63,5 +64,7 @@ const page = { url: "https://example.com/article", title: "Top page" };
   requested = [];
   const partial = await capture.capture(9, { mode: "article" });
   assert(partial.diagnostics.quality_warnings.includes("frames_incomplete"));
+  blockedTop = true;
+  await assert.rejects(capture.capture(9, { mode: "article" }), /访问限制/, "an accessible child must not hide a top-level access error");
   console.log("page capture filtering, deduplication, limits, cancellation and navigation tests passed");
 })().catch(error => { console.error(error); process.exitCode = 1; });

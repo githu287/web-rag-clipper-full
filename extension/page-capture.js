@@ -140,6 +140,7 @@
         }
       } else {
         const settled = await Promise.allSettled(requests);
+        if (settled[0] && settled[0].status === "rejected" && /访问限制/.test(settled[0].reason.message || "")) throw settled[0].reason;
         results = settled.filter(function (item) { return item.status === "fulfilled"; }).map(function (item) { return item.value; });
         if (settled.some(function (item) { return item.status === "rejected"; })) limited = true;
       }

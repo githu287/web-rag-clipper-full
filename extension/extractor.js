@@ -6,7 +6,7 @@
   if (typeof module === "object" && module.exports) module.exports = api;
   if (root) root.webRagPageExtractor = api;
 })(typeof globalThis !== "undefined" ? globalThis : this, function () {
-  const VERSION = "1.5.0";
+  const VERSION = "1.5.1";
   const MIN_MEANINGFUL_CHARS = 180;
   const MAX_EXTRACTED_CHARS = 500000;
 
@@ -21,6 +21,7 @@
     ".markdown-body",
     ".theme-doc-markdown",
     ".vp-doc",
+    ".vt-doc",
     ".s-prose",
     ".js-post-body",
     ".story-body",
@@ -39,7 +40,8 @@
 
   const HARD_REMOVE_SELECTOR = [
     "script", "style", "noscript", "template", "nav",
-    "iframe", "button", "svg", "canvas", "dialog",
+    "iframe", "button", "svg", "canvas", "dialog", "clipboard-copy",
+    ".zeroclipboard-container", ".code-block-extension-header",
     "interactive-example", "mdn-live-sample-result",
     "[role='navigation']", "[role='banner']", "[role='dialog']",
   ].join(", ");
@@ -51,6 +53,50 @@
     "FIGCAPTION", "FIGURE", "FOOTER", "HEADER", "HR", "MAIN", "P",
     "SECTION",
   ]);
+
+  // Narrow, DOM-checked profiles avoid selecting large application shells over
+  // known article bodies. Missing/hidden roots always fall back to heuristics.
+  const SITE_PROFILES = [
+    { id: "github-readme", hosts: ["github.com"], root: "article.markdown-body", title: "article.markdown-body h1" },
+    { id: "wechat", hosts: ["mp.weixin.qq.com"], root: "#js_content", title: "#activity-name" },
+    { id: "cnblogs", hosts: ["www.cnblogs.com", "cnblogs.com"], root: "#cnblogs_post_body", title: "#cb_post_title_url" },
+    { id: "juejin", hosts: ["juejin.cn"], root: "#article-root .markdown-body, #article-root", title: "h1.article-title" },
+    { id: "csdn", hosts: ["blog.csdn.net"], root: "#article_content", title: "#articleContentId" },
+    { id: "zhihu-article", hosts: ["zhuanlan.zhihu.com"], root: ".Post-RichTextContainer, .Post-RichText", title: ".Post-Title" },
+    { id: "xinhua", hosts: ["www.news.cn", "news.cn"], root: "#detail", title: "h1" },
+    { id: "ndrc", hosts: ["www.ndrc.gov.cn", "ndrc.gov.cn"], root: ".TRS_Editor, .TRS_UEDITOR", title: ".article_title" },
+  ];
+
+  function findSiteRoot(doc) {
+    let host;
+    try { host = new URL(doc.URL).hostname; } catch (_error) { return null; }
+    const profile = SITE_PROFILES.find(function (item) { return item.hosts.includes(host); });
+    if (!profile) return null;
+    const roots = Array.from(doc.querySelectorAll(profile.root)).filter(function (element) {
+      return !isEffectivelyHidden(element, doc.defaultView) &&
+        ((element.textContent || "").trim() || element.querySelector("img"));
+    });
+    if (!roots.length) return null;
+    roots.sort(function (a, b) { return (b.textContent || "").length - (a.textContent || "").length; });
+    const title = Array.from(doc.querySelectorAll(profile.title)).find(function (element) {
+      return !isEffectivelyHidden(element, doc.defaultView);
+    });
+    return { element: roots[0], profile: profile.id, title: title && (title.textContent || "").replace(/\s+/g, " ").trim() };
+  }
+
+  function hasAccessBarrier(doc) {
+    const text = String(doc.body && doc.body.innerText || doc.body && doc.body.textContent || "").trim();
+    // Treat only a small, unmistakable error response as a barrier. An article
+    // discussing HTTP errors or quoting these strings is legitimate content.
+    if (!text || text.length > 1600) return false;
+    if (!doc.querySelector("article") && text.length <= 400 && /^(?:403\s+Forbidden|Access\s+Denied|Forbidden)(?:\s|$)/i.test(text)) return true;
+    try {
+      const payload = JSON.parse(text);
+      if (payload && payload.error && Number(payload.error.code) === 40362 &&
+          /请求存在异常|限制本次访问/.test(payload.error.message || "")) return true;
+    } catch (_error) {}
+    return false;
+  }
 
   function isNoiseName(value) {
     const normalized = String(value || "")
@@ -99,12 +145,21 @@
     const lines = source.split("\n");
     const output = [];
     let inCodeFence = false;
+    let fenceLength = 0;
+    let fenceIndent = "";
     let previousBlank = true;
     for (const originalLine of lines) {
       let line = originalLine;
-      if (line.trim().startsWith("```")) {
-        line = inCodeFence ? "```" : line.trim();
-        inCodeFence = !inCodeFence;
+      const fence = line.trim().match(/^(`{3,})(.*)$/);
+      if (!inCodeFence && fence) {
+        fenceIndent = (line.match(/^\s*/) || [""])[0];
+        line = line.trimEnd();
+        inCodeFence = true;
+        fenceLength = fence[1].length;
+      } else if (inCodeFence && fence && fence[1].length >= fenceLength && !fence[2].trim()) {
+        line = fenceIndent + "`".repeat(fenceLength);
+        inCodeFence = false;
+        fenceLength = 0;
       } else if (inCodeFence) {
         line = line.replace(/[ \t]+$/g, "");
       } else {
@@ -171,7 +226,7 @@
       codeBlockCount: element.querySelectorAll("pre").length,
       inlineCodeCount,
       emphasisCount: element.querySelectorAll("strong,b,em,i,del,s").length,
-      tableCount: element.querySelectorAll("table").length,
+      tableCount: Array.from(element.querySelectorAll("table")).filter(function (table) { return !table.closest("pre"); }).length,
     };
   }
 
@@ -263,10 +318,13 @@
       const hidden = !isShadowCodeExample(source) && isElementHidden(source, doc && doc.defaultView);
       const meaningfulTableButton = source.tagName === "BUTTON" && source.closest && source.closest("td,th");
       const hardSelector = explicit
-        ? "script,style,noscript,template,iframe,svg,canvas,dialog,input,textarea,select,[role='dialog'],[data-web-rag-picker]"
+        ? "script,style,noscript,template,iframe,svg,canvas,dialog,input,textarea,select,clipboard-copy,.zeroclipboard-container,.code-block-extension-header,[role='dialog'],[data-web-rag-picker]"
         : HARD_REMOVE_SELECTOR + ",input,textarea,select,[data-web-rag-picker]";
       const hardNoise = source.matches && source.matches(hardSelector) && !meaningfulTableButton;
-      const namedNoise = !explicit && isNoiseElement(source);
+      // Syntax highlighters use classes such as hljs-comment/comment for actual
+      // source code. Applying page-comment cleanup here silently deletes code.
+      const inCode = source.closest && source.closest("pre,code");
+      const namedNoise = !explicit && !inCode && isNoiseElement(source);
       const semanticNoise = !explicit && shouldRemoveSemanticContainer(source, rootElement);
       if (!hidden && !hardNoise && !namedNoise && !semanticNoise) return;
       marked.add(target);
@@ -334,6 +392,16 @@
   }
 
   function selectRoot(doc) {
+    const site = findSiteRoot(doc);
+    if (site) {
+      const candidate = prepareCandidate(site.element, doc);
+      candidate.candidateCount = 1;
+      candidate.fallback = false;
+      candidate.expandedFrom = null;
+      candidate.siteProfile = site.profile;
+      candidate.articleTitle = site.title;
+      return candidate;
+    }
     const candidates = [];
     const seen = new Set();
     CANDIDATE_SELECTORS.forEach(function (selector) {
@@ -374,17 +442,20 @@
     if (tag === "BR") return "\n";
     if (tag === "HR") return "\n\n---\n\n";
     if (tag === "PRE") {
-      const code = String(node.textContent || "").replace(/^\n+|\n+$/g, "");
+      const codeNode = Array.from(node.children || []).find(function (child) { return child.tagName === "CODE"; }) || node;
+      const code = serializeCodeText(codeNode).replace(/^\n+|\n+$/g, "");
       let language = "";
-      let ancestor = node;
-      for (let depth = 0; ancestor && depth < 3 && !language; depth += 1) {
+      let ancestor = codeNode;
+      for (let depth = 0; ancestor && depth < 4 && !language; depth += 1) {
         const classes = String(ancestor.className || "");
         const match = classes.match(/(?:^|\s)language-([a-z0-9_+-]+)/i) ||
           classes.match(/(?:^|\s)brush:\s*([a-z0-9_+-]+)/i);
         language = match ? normalizeCodeLanguage(match[1]) : "";
         ancestor = ancestor.parentElement;
       }
-      return code ? `\n\n\`\`\`${language}\n${code}\n\`\`\`\n\n` : "";
+      const longestRun = (code.match(/`+/g) || []).reduce(function (longest, run) { return Math.max(longest, run.length); }, 0);
+      const fence = "`".repeat(Math.max(3, longestRun + 1));
+      return code ? `\n\n${fence}${language}\n${code}\n${fence}\n\n` : "";
     }
     if (/^H[1-6]$/.test(tag)) {
       const level = Number(tag.slice(1));
@@ -454,6 +525,22 @@
     }).join("");
   }
 
+  function serializeCodeText(node) {
+    const numberedLines = node.querySelectorAll && node.querySelectorAll("td.hljs-ln-code");
+    if (numberedLines && numberedLines.length) {
+      return Array.from(numberedLines).map(function (line) { return line.textContent || ""; }).join("\n");
+    }
+    function walk(current) {
+      if (current.nodeType === 3) return current.nodeValue || "";
+      if (current.nodeType !== 1) return "";
+      if (current.tagName === "BR") return "\n";
+      if (current.matches(".hljs-ln-numbers,.code-block-extension-header,button,clipboard-copy,.zeroclipboard-container")) return "";
+      const text = Array.from(current.childNodes || []).map(walk).join("");
+      return /^(DIV|P|TR)$/.test(current.tagName) && text && !text.endsWith("\n") ? text + "\n" : text;
+    }
+    return walk(node);
+  }
+
   function normalizeCodeLanguage(language) {
     return String(language || "").toLowerCase();
   }
@@ -482,8 +569,10 @@
     }).join("").trim();
     const indent = "  ".repeat(depth);
     const prefix = ordered ? `${index}. ` : "- ";
-    const continuationIndent = "  ".repeat(depth + 1);
-    const line = content.replace(/\n+/g, "\n" + continuationIndent);
+    const continuationIndent = " ".repeat(indent.length + prefix.length);
+    // Every newline matters inside a fenced example. Collapsing newline runs
+    // here removed source-code blank lines in Vue's numbered list examples.
+    const line = content.replace(/\n/g, "\n" + continuationIndent);
     return `\n${indent}${prefix}${line}` + nestedLists.map(function (nested) {
       return serializeList(nested, context, depth + 1);
     }).join("");
@@ -574,6 +663,7 @@
     if (details.extractedCharCount < MIN_MEANINGFUL_CHARS) warnings.push("short_content");
     if (details.extractedCharCount >= 1000 && details.headingCount === 0) warnings.push("missing_headings");
     if (details.truncated) warnings.push("truncated");
+    if (details.imageCount >= 3 && details.sourceTextLength < 500) warnings.push("image_heavy");
     return warnings;
   }
 
@@ -605,6 +695,7 @@
   }
 
   function extract(doc, options) {
+    if (hasAccessBarrier(doc)) throw new Error("当前页面显示访问限制，请在网页中完成登录或验证、确认正文可见后再提取");
     options = options || {};
     const mode = options.mode || "article";
     if (!["article", "page", "selection", "region"].includes(mode)) throw new Error("不支持的剪藏方式");
@@ -670,6 +761,13 @@
     let text = normalizeStructuredText(mode === "region"
       ? serializeNode(cleaned.clone, serializationContext)
       : serializeChildren(cleaned.clone, serializationContext));
+    if (selected.articleTitle) {
+      const titleKey = selected.articleTitle.replace(/\s+/g, "");
+      const hasTitle = text.split("\n").some(function (line) {
+        return line.replace(/^#{1,6}\s+/, "").replace(/[\s*`]/g, "") === titleKey;
+      });
+      if (!hasTitle) text = "# " + selected.articleTitle + "\n\n" + text;
+    }
     let truncated = false;
     if (text.length > MAX_EXTRACTED_CHARS) {
       text = text.slice(0, MAX_EXTRACTED_CHARS).trimEnd();
@@ -678,14 +776,17 @@
     const qualityWarnings = buildQualityWarnings({
       fallback: selected.fallback,
       extractedCharCount: text.length,
-      headingCount: selected.metrics.headingCount || 0,
+      headingCount: (selected.metrics.headingCount || 0) + (selected.articleTitle && !cleaned.clone.querySelector("h1") ? 1 : 0),
       truncated,
+      imageCount: cleaned.clone.querySelectorAll("img").length,
+      sourceTextLength: selected.metrics.textLength || 0,
     });
     return {
       text,
       diagnostics: {
         extractor_version: VERSION,
         mode,
+        site_profile: selected.siteProfile || null,
         strategy: selected.strategy || describeElement(selected.element),
         expanded_from: selected.expandedFrom,
         candidate_count: selected.candidateCount,
@@ -696,13 +797,14 @@
         hidden_removed_node_count: cleaned.hiddenRemovedNodes,
         noise_removed_node_count: cleaned.noiseRemovedNodes,
         shadow_root_count: cleaned.shadowRootCount,
-        heading_count: selected.metrics.headingCount || 0,
+        heading_count: (selected.metrics.headingCount || 0) + (selected.articleTitle && !cleaned.clone.querySelector("h1") ? 1 : 0),
         paragraph_count: selected.metrics.paragraphCount || 0,
         list_item_count: selected.metrics.listItemCount || 0,
         code_block_count: selected.metrics.codeBlockCount || 0,
         inline_code_count: serializationContext.inlineCodeCount,
         emphasis_count: serializationContext.emphasisCount,
         table_count: selected.metrics.tableCount || 0,
+        image_count: cleaned.clone.querySelectorAll("img").length,
         link_count: serializationContext.linkCount,
         preserved_link_count: serializationContext.preservedLinkCount,
         link_density: Number(linkDensity(selected.metrics).toFixed(3)),
@@ -722,6 +824,7 @@
     formatInlineCode,
     isElementHidden,
     isNoiseName,
+    hasAccessBarrier,
     normalizeStructuredText,
     normalizeLinkDestination,
     scoreCandidateMetrics,

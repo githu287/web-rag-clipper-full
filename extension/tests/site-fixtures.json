@@ -1,0 +1,85 @@
+{
+  "description": "Original synthetic fixtures reproducing observed site DOM patterns, not copies of third-party articles. URLs are intercepted locally by the browser regression runner.",
+  "cases": [
+    {
+      "id": "github-readme-scope",
+      "url": "https://github.com/clipper-fixture/project",
+      "html": "<main id='js-repo-pjax-container'><div><h2>仓库文件列表</h2><p>仓库控件噪声REPO_NOISE应被排除。</p>{{padding}}<table><tr><td>unrelated.js</td></tr></table></div><article class='markdown-body'><h1>项目使用说明README_TITLE</h1><p>这是说明文件的正文，讲解安装方法、使用方式、配置参数以及调试步骤。README_BODY</p><pre>npm install example\nnode example.js</pre><clipboard-copy aria-label='Copy code to clipboard'></clipboard-copy></article><div>{{padding}}</div></main>",
+      "contains": ["README_TITLE", "README_BODY", "npm install example\nnode example.js"],
+      "excludes": ["REPO_NOISE", "unrelated.js", "Copy code to clipboard"],
+      "profile": "github-readme"
+    },
+    {
+      "id": "cnblogs-code-lines",
+      "url": "https://www.cnblogs.com/clipper-fixture/p/code.html",
+      "html": "<h1 class='postTitle'><a id='cb_post_title_url'>博客正文标题BLOG_TITLE</a></h1><div id='cnblogs_post_body'><p>这篇文章解释代码中的函数与返回值。BLOG_BODY</p><pre><code class='language-python'><table class='hljs-ln'><tr><td class='hljs-ln-numbers'>1</td><td class='hljs-ln-code'><span class='hljs-keyword'>def</span> compute():</td></tr><tr><td class='hljs-ln-numbers'>2</td><td class='hljs-ln-code'>    <span class='hljs-comment'># KEEP_COMMENT</span></td></tr><tr><td class='hljs-ln-numbers'>3</td><td class='hljs-ln-code'>    return 527</td></tr></table></code></pre></div><div id='blog-comments-placeholder'>COMMENT_NOISE</div>",
+      "contains": ["# 博客正文标题BLOG_TITLE", "BLOG_BODY", "```python\ndef compute():\n    # KEEP_COMMENT\n    return 527\n```"],
+      "excludes": ["COMMENT_NOISE"],
+      "profile": "cnblogs"
+    },
+    {
+      "id": "juejin-code-toolbar",
+      "url": "https://juejin.cn/post/123456789",
+      "html": "<article class='article'><h1 class='article-title'>技术文章标题JUEJIN_TITLE</h1><div id='article-root'><div class='markdown-body'><p>文章解释作用域、闭包以及如何保留局部状态。JUEJIN_BODY</p><pre><div class='code-block-extension-header'>js 代码解读 复制代码</div><code class='language-js'><span class='code-block-extension-codeLine'>function counter() {</span>\n<span class='code-block-extension-codeLine'>  <span class='hljs-comment'>// KEEP_CLOSURE_COMMENT</span></span>\n<span class='code-block-extension-codeLine'>  return 819;</span>\n<span class='code-block-extension-codeLine'>}</span></code></pre></div></div></article>",
+      "contains": ["JUEJIN_TITLE", "JUEJIN_BODY", "```js\nfunction counter() {\n  // KEEP_CLOSURE_COMMENT\n  return 819;\n}\n```"],
+      "excludes": ["代码解读", "复制代码"],
+      "profile": "juejin"
+    },
+    {
+      "id": "wechat-short-image-article",
+      "url": "https://mp.weixin.qq.com/s/clipper-fixture",
+      "html": "<h1 id='activity-name'>图片文章标题WECHAT_TITLE</h1><div id='js_content'><p>图片中的信息尚未转成文字。WECHAT_BODY</p><img data-src='https://example.invalid/a.png' alt='活动流程'><img data-src='https://example.invalid/b.png' alt='时间安排'><img data-src='https://example.invalid/c.png' alt='联系方式'></div><div>上一篇NOISE_PREVIOUS 下一篇NOISE_NEXT</div>",
+      "contains": ["WECHAT_TITLE", "WECHAT_BODY", "活动流程"],
+      "excludes": ["NOISE_PREVIOUS", "NOISE_NEXT"],
+      "profile": "wechat",
+      "warning": "image_heavy"
+    },
+    {
+      "id": "xinhua-outside-title",
+      "url": "https://www.news.cn/tech/20260101/fixture/c.html",
+      "html": "<div class='header'><h1>新闻标题NEWS_TITLE</h1><div>字号分享NOISE_TOOLS</div></div><div class='main'><div id='detail'><p>新闻正文说明展览安排以及后续计划。NEWS_BODY</p>{{padding}}</div><div class='related'>推荐NOISE_RELATED</div></div>",
+      "contains": ["# 新闻标题NEWS_TITLE", "NEWS_BODY"],
+      "excludes": ["NOISE_TOOLS", "NOISE_RELATED"],
+      "profile": "xinhua"
+    },
+    {
+      "id": "ndrc-outside-title",
+      "url": "https://www.ndrc.gov.cn/xxgk/jd/jd/202601/t20260101_fixture.html",
+      "html": "<div class='article_l'><h2 class='article_title'>政策解读标题POLICY_TITLE</h2><div class='shezhi'>打印NOISE_PRINT</div><div class='TRS_Editor'><p>解读文章解释实施路径与配套措施。POLICY_BODY</p>{{padding}}</div></div>",
+      "contains": ["# 政策解读标题POLICY_TITLE", "POLICY_BODY"],
+      "excludes": ["NOISE_PRINT"],
+      "profile": "ndrc"
+    },
+    {
+      "id": "zhihu-access-barrier",
+      "url": "https://zhuanlan.zhihu.com/p/123456789",
+      "html": "<pre>{\"error\":{\"message\":\"您当前请求存在异常，暂时限制本次访问。\",\"code\":40362}}</pre>",
+      "error": "访问限制"
+    },
+    {
+      "id": "csdn-waf-barrier",
+      "url": "https://blog.csdn.net/clipper-fixture/article/details/123456789",
+      "html": "<h1>403 Forbidden</h1><p>WAF</p>",
+      "error": "访问限制"
+    },
+    {
+      "id": "barrier-words-in-real-article",
+      "url": "https://example.com/security-guide",
+      "html": "<article><h1>403 Forbidden 安全系统使用说明</h1><p>遇到403 Forbidden或者Access Denied字样时，请向管理员确认访问权限。本文解释这些报错的含义，不是当前页面的报错。</p><pre><code>{\"error\":{\"code\":40362}}</code></pre></article>",
+      "contains": ["403 Forbidden", "Access Denied", "安全系统使用说明"]
+    },
+    {
+      "id": "code-in-ordered-list",
+      "url": "https://example.com/list-code-guide",
+      "html": "<article><h1>列表代码示例</h1>{{padding}}<ol><li><p>第一步</p><pre><code class='language-python'>value = 1\n\n# blank line preserved\n  return value</code></pre></li><li>第二步</li></ol></article>",
+      "contains": ["1. 第一步", "   ```python\n   value = 1\n\n   # blank line preserved\n     return value\n   ```", "2. 第二步"]
+    },
+    {
+      "id": "generic-code-br-and-comments",
+      "url": "https://example.com/code-guide",
+      "html": "<article><h1>换行代码与注释测试</h1>{{padding}}<pre><code class='language-js'>const value = 1;<br><span class='comment'>// COMMENT_STAYS</span><br>  console.log(value);</code></pre></article>",
+      "contains": ["```js\nconst value = 1;\n// COMMENT_STAYS\n  console.log(value);\n```"],
+      "excludes": []
+    }
+  ]
+}

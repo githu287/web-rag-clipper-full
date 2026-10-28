@@ -48,6 +48,7 @@
 
 - `background.js` 管理 Side Panel 行为和 Tab URL 变化通知。
 - `extractor.js` 提供 article/page/selection/region 四种模式。智能正文对常见容器评分；无有效候选时在清理后的惰性 DOM 副本上尝试本地 Readability，最后降级到 body。候选准备上限 48，Readability 解析上限 30000 节点。
+- 0.8.1 在智能正文模式先按真实域名与可见 DOM 验证少量站点范围，并单独补正文标题；找不到规则时仍走通用算法。代码高亮的 comment 节点不套用评论区清理，行号表按代码列恢复原行，保留列表代码空行、结构缩进和更长 Markdown 围栏。图片为主的短文章有诊断；已识别的短 403/WAF 与知乎受限 JSON 中止捕获，不影响讨论这些错误的普通文章。实测方法和限制见 `SITE_AUDIT_2026-10-28.md`。
 - 提取器按模式清噪，把标题、列表、引用、代码、表格和图片替代说明序列化为结构化文本。显式整页/选区/区域保留导航等文字；所有模式排除脚本及输入框值。选区在原节点上判断 CSS 隐藏后复制，开放 Shadow DOM 按渲染插槽展开，避免重复读取 light DOM。
 - `capture-content.js` 负责最多 3 秒的内容稳定等待、可见 iframe 元数据及可取消的区域选择。区域高亮放在独立组件中，点击不会打开页面链接；不主动滚动、翻页、展开或发起网络请求。
 - `page-capture.js` 由 Side Panel 与 Popup 共用，注入本地打包的 Readability/extractor/capture-content/content，按 frameId 定向通信。通过父页面可见框架 URL 筛选可访问子框架（最多探测 64、提取 12，含顶层），并行提取、去重、标注内嵌来源，合并后统一限制为 500000 字符。权限不足可降级到顶层，并显示诊断。

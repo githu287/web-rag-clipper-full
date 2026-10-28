@@ -151,6 +151,9 @@
     // independent deadline in the web page so a picker cannot stay forever.
     const deadline = setTimeout(function () { controller.abort(); }, mode === "region" ? 60000 : 12000);
     try {
+      if (webRagPageExtractor.hasAccessBarrier(document)) {
+        throw new Error("当前页面显示访问限制，请在网页中完成登录或验证、确认正文可见后再提取");
+      }
       let waiting = {};
       let root;
       if (mode === "region") root = await pickRegion(controller.signal);
