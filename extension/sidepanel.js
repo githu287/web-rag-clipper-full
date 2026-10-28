@@ -35,6 +35,7 @@ const els = {
   clipModeHint: document.getElementById("clip-mode-hint"),
   clipCaptureCancel: document.getElementById("clip-capture-cancel"),
   clipAutoScroll: document.getElementById("clip-auto-scroll"),
+  clipImageOcr: document.getElementById("clip-image-ocr"),
   clipJob: document.getElementById("clip-job"),
   clipJobStage: document.getElementById("clip-job-stage"),
   clipJobProgress: document.getElementById("clip-job-progress"),
@@ -1104,6 +1105,7 @@ function renderClipView() {
   els.clipBtn.disabled = clipBusy || jobIsActive;
   els.clipMode.disabled = clipBusy || jobIsActive;
   els.clipAutoScroll.disabled = clipBusy || jobIsActive || !["article", "page"].includes(els.clipMode.value || "article");
+  els.clipImageOcr.disabled = clipBusy || jobIsActive;
   els.clipCaptureCancel.hidden = !(clipBusy && clipBusyAction === "extract");
   renderClipJob();
   els.clipPreview.hidden = !clipDraft;
@@ -1124,7 +1126,9 @@ function renderClipView() {
   els.gotoChatBtn.hidden = !hasDoc;
   if (clipBusy) {
     const isSubmitting = clipBusyAction === "save";
-    const extracting = clipScrollProgress
+    const extracting = clipScrollProgress && clipScrollProgress.phase === "ocr"
+      ? "正在识别图片：" + clipScrollProgress.current + "/" + clipScrollProgress.total + "，可取消"
+      : clipScrollProgress
       ? "正在加载并采集：" + clipScrollProgress.steps + "/20 次滚动 · 已采集 " + clipScrollProgress.collected_chars.toLocaleString("zh-CN") + " 字 · " + Math.floor(clipScrollProgress.elapsed_ms / 1000) + " 秒"
       : els.clipMode.value === "region" ? "请在网页中点击要剪藏的区域，Esc 可取消…" : "正在等待页面内容并提取…";
     setStatus(els.clipStatus, isSubmitting ? "正在提交入库任务…" : extracting, null);
@@ -1341,7 +1345,15 @@ function renderExtractionDiagnostics(trimmedLength) {
     truncated: "超长内容已截断",
     content_unsettled: "页面仍在变化，可能需要重新提取",
     frames_incomplete: "部分内嵌页面受权限或数量限制，未完整提取",
-    image_heavy: "页面以图片为主，当前仅保存说明文字，未识别图片中的文字",
+    image_heavy: "页面以图片为主，尚未识别出图片正文，可勾选图片文字识别后重试",
+    ocr_image_limit: "图片超过 8 张，仅处理前 8 张，可分区域继续剪藏",
+    ocr_byte_limit: "图片总量达到 24 MiB，后续图片未识别",
+    ocr_time_limit: "图片识别达到 2 分钟，后续图片未识别",
+    ocr_failed: "部分图片读取或识别失败，可能需要登录、防盗链或超出限制",
+    ocr_unavailable: "本地 OCR 未安装或执行失败，请检查后端日志与 backend/requirements-ocr.txt 依赖",
+    ocr_review: "部分识别结果需核对（低置信度、缩放、动画首帧或截断）",
+    ocr_no_images: "所选内容中未找到可读取的图片",
+    ocr_unsupported_source: "部分图片来源不支持（如内嵌图片或临时地址）",
     scroll_incomplete: "已达到自动加载限制或页面无法继续滚动，内容可能不完整",
     scroll_overlap_uncertain: "部分滚动片段无法可靠对齐，请检查重复或遗漏",
     scroll_other_containers: "页面还有其他滚动区域，本次只处理主要区域",
@@ -1366,6 +1378,7 @@ function renderExtractionDiagnostics(trimmedLength) {
       (Number(diagnostics.preserved_link_count) || 0) + " 链接",
   ];
   if (shadowRootCount > 0) parts.push("读取 " + shadowRootCount.toLocaleString("zh-CN") + " 个组件内容区");
+  if (diagnostics.ocr_enabled) parts.push("图片识别：" + diagnostics.ocr_recognized + " 张有文字 / " + diagnostics.ocr_empty + " 张未发现文字 / " + diagnostics.ocr_failed + " 张失败；候选 " + diagnostics.ocr_candidates + " 张，请核对结果");
   if (diagnostics.included_frame_count) parts.push("包含 " + diagnostics.included_frame_count + " 个内嵌页面");
   if (diagnostics.scroll_enabled) parts.push("自动加载：" + diagnostics.scroll_steps + " 次滚动 / " + diagnostics.scroll_snapshots + " 个片段" +
     (diagnostics.scroll_stop_reason === "bottom_stable" ? "，已到达当前底部并暂时稳定" : "，已停止，请检查完整性"));
@@ -1847,6 +1860,7 @@ async function extractCurrentPage() {
     mode: els.clipMode.value || "article",
     signal: controller && controller.signal,
     autoScroll: !!els.clipAutoScroll.checked,
+    collectImages: !!els.clipImageOcr.checked,
     onProgress: function (progress) {
       if (controller && !controller.signal.aborted && clipCaptureController === controller && token === clipExtractionToken) {
         clipScrollProgress = progress;
@@ -1877,7 +1891,21 @@ async function prepareClipPreview() {
   clipScrollProgress = null;
   renderClipView();
   try {
-    const page = await extractCurrentPage();
+    let page = await extractCurrentPage();
+    const guard = async function () {
+      if (controller.signal.aborted) throw new Error("已取消提取");
+      const identity = webRagApiClient.getPlugin();
+      if (token !== clipExtractionToken || currentTabId !== extractionTabId || identity.pluginId !== plugin.pluginId || identity.pluginSecret !== plugin.pluginSecret) throw new Error("页面或工作空间已变化，请重新提取");
+      const latest = await chrome.tabs.get(extractionTabId);
+      const after = webRagApiClient.getPlugin();
+      if (controller.signal.aborted || token !== clipExtractionToken || currentTabId !== extractionTabId || after.pluginId !== plugin.pluginId || after.pluginSecret !== plugin.pluginSecret) throw new Error("页面或工作空间已变化，请重新提取");
+      if (!latest || !isSameNormalizedWebUrl(latest.url, page.url)) throw new Error("页面已变化，请重新提取");
+    };
+    if (els.clipImageOcr.checked) page = await webRagImageOcr.enrich(page, {
+      signal: controller.signal, guard, recognize: webRagApiClient.ocr.image,
+      onProgress: function (progress) { if (clipCaptureController === controller && token === clipExtractionToken) { clipScrollProgress = progress; renderClipView(); } },
+    });
+    await guard();
     if (controller.signal.aborted || token !== clipExtractionToken || currentTabId !== extractionTabId ||
         webRagApiClient.getPlugin().pluginId !== plugin.pluginId) {
       return;

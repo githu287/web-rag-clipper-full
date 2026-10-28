@@ -121,6 +121,36 @@ async function expectApiError(promise, status, code, messagePattern) {
 }
 
 (async function run() {
+  // Binary OCR reuses authentication, preserves MIME, and can cancel while
+  // waiting for either headers or the JSON body without retrying.
+  {
+    const { api, calls } = respondingWith(makeResponse(200, { text: "图片正文" }));
+    const blob = { type: "image/png" };
+    assert.equal((await api.ocr.image(blob, new AbortController().signal)).text, "图片正文");
+    assert.equal(calls[0].init.body, blob);
+    assert.equal(calls[0].init.headers["Content-Type"], "image/png");
+    assert.equal(calls[0].init.headers["X-Plugin-Secret"], "secret-a");
+  }
+  for (const duringBody of [false, true]) {
+    let capturedSignal, calls = 0;
+    const api = loadApiClient(async (_url, init) => {
+      calls++; capturedSignal = init.signal;
+      if (!duringBody) return new Promise(() => {});
+      return { status: 200, ok: true, json: () => new Promise(() => {}) };
+    });
+    api.setPluginDetails({ pluginId: "plugin-a", pluginSecret: "secret-a" });
+    const controller = new AbortController();
+    const result = api.ocr.image({ type: "image/png" }, controller.signal);
+    await settle();
+    controller.abort();
+    await expectApiError(result, 0, "CANCELLED", /取消/);
+    assert.equal(capturedSignal.aborted, true);
+    assert.equal(calls, 1);
+  }
+  {
+    const { api } = respondingWith(makeResponse(503, { detail: { code: "OCR_UNAVAILABLE", message: "本地 OCR 未安装" } }));
+    await expectApiError(api.ocr.image({ type: "image/png" }, new AbortController().signal), 503, "HTTP", /未安装/);
+  }
   // ---------------------------------------------------------------- 成功路径
   {
     const { api, calls } = respondingWith(makeResponse(200, { ok: true }));

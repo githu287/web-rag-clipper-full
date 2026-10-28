@@ -62,6 +62,7 @@
     const start = Date.now();
     const accumulator = webRagSnapshotMerge.create(webRagPageExtractor.MAX_EXTRACTED_CHARS);
     const warnings = new Set();
+    const images = new Map();
     if (chosen.multiple) warnings.add("scroll_other_containers");
     let latest;
     let merged;
@@ -78,7 +79,8 @@
     document.addEventListener("keydown", onKey, true);
     function snapshot() {
       check(signal, url);
-      latest = webRagPageExtractor.extract(document, { mode: options.mode });
+      latest = webRagPageExtractor.extract(document, { mode: options.mode, collectImages: !!options.collectImages });
+      for (const image of latest.images || []) if (images.size < 33 && !images.has(image.url)) images.set(image.url, image);
       for (const warning of latest.diagnostics.quality_warnings || []) warnings.add(warning);
       merged = accumulator.add(latest.text);
       options.progress({ phase: "scroll", steps, max_steps: maxSteps, elapsed_ms: Date.now() - start,
@@ -114,7 +116,7 @@
       const framesAfter = Array.from(document.querySelectorAll("iframe,frame"));
       if (framesAfter.length > framesBefore.length || framesAfter.some(function (frame) { return !framesBefore.includes(frame.src); })) warnings.add("scroll_new_frames");
       if (merged.truncated || reason === "size_limit") warnings.add("truncated");
-      return { text: merged.text, diagnostics: Object.assign({}, latest.diagnostics, {
+      return { text: merged.text, images: Array.from(images.values()), diagnostics: Object.assign({}, latest.diagnostics, {
         extracted_char_count: merged.text.length, quality_warnings: Array.from(warnings), truncated: merged.truncated || latest.diagnostics.truncated,
         scroll_enabled: true, scroll_steps: Math.min(steps, maxSteps), scroll_stop_reason: reason,
         scroll_snapshots: merged.snapshots, scroll_elapsed_ms: Date.now() - start,

@@ -50,6 +50,7 @@
 - `extractor.js` 提供 article/page/selection/region 四种模式。智能正文对常见容器评分；无有效候选时在清理后的惰性 DOM 副本上尝试本地 Readability，最后降级到 body。候选准备上限 48，Readability 解析上限 30000 节点。
 - 0.8.1 在智能正文模式先按真实域名与可见 DOM 验证少量站点范围，并单独补正文标题；找不到规则时仍走通用算法。代码高亮的 comment 节点不套用评论区清理，行号表按代码列恢复原行，保留列表代码空行、结构缩进和更长 Markdown 围栏。图片为主的短文章有诊断；已识别的短 403/WAF 与知乎受限 JSON 中止捕获，不影响讨论这些错误的普通文章。实测方法和限制见 `SITE_AUDIT_2026-10-28.md`。
 - 提取器按模式清噪，把标题、列表、引用、代码、表格和图片替代说明序列化为结构化文本。显式整页/选区/区域保留导航等文字；所有模式排除脚本及输入框值。选区在原节点上判断 CSS 隐藏后复制，开放 Shadow DOM 按渲染插槽展开，避免重复读取 light DOM。
+- 0.10.0 可选图片 OCR：清理后的正文副本携带原图 currentSrc/懒加载地址，滚动时累积；`image-ocr.js` 在扩展上下文有界读取图片，不向图片站点发送身份凭证。`POST /ocr/image → OcrService → 独立 CPU 子进程` 复用双凭证认证，后端不接收 URL、不落盘、不写数据库。限 8 图/2 分钟，单图 6 MiB/2000 万像素/40 秒，长图分片；取消或断开终止子进程。结果附入预览，确认后沿用普通剪藏链路，详见 `IMAGE_OCR.md`。
 - `capture-content.js` 负责最多 3 秒的内容稳定等待、可见 iframe 元数据及可取消的区域选择。区域高亮放在独立组件中，点击不会打开页面链接。0.9.0 在顶层的正文/整页模式可显式开启自动滚动；不点击展开或翻页、不自行抓取接口。
 - `scroll-capture.js` 选择文档或主要滚动容器，最多 20 次/25 秒预算采样，保存并恢复坐标/滚动样式，时间/次数/字符限制及无法对齐等情况产生诊断。`snapshot-merge.js` 按相邻窗口的稳定前缀和后缀/前缀重叠有序合并，保留虚拟窗口旧内容和代码块。详细边界见 `SCROLL_CAPTURE.md`。
 - `page-capture.js` 由 Side Panel 与 Popup 共用，注入 URL 规则、本地打包的 Readability/extractor、快照合并、滚动及消息入口，按 frameId 定向通信。通过父页面可见框架 URL 筛选可访问子框架（最多探测 64、提取 12，含顶层），并行提取、去重、标注内嵌来源，合并后统一限制为 500000 字符。权限不足可降级到顶层，并显示诊断。可选滚动只在顶层执行；进度按 Tab/frame/request ID 过滤，取消等待清理，普通锚点变化与 SPA 路由使用统一 URL 规则区分。
@@ -273,7 +274,7 @@ Workspace 删除要求 `confirm=true` 且提交名称与当前名称完全一致
 
 ## 9. API 与异常边界
 
-当前共有 24 个操作：Plugin 9、Document 8、Clip 2、Job 2、Ingest 1、RAG 2。其中 `POST /plugins/register` 与 `GET /plugins/model-providers` 不要求 Plugin Header。
+当前共有 25 个操作：Plugin 9、Document 8、Clip 2、Job 2、Ingest 1、RAG 2、OCR 1。其中 `POST /plugins/register` 与 `GET /plugins/model-providers` 不要求 Plugin Header。
 
 | 状态码 | 典型场景 |
 |---:|---|
@@ -290,13 +291,15 @@ Workspace 删除要求 `confirm=true` 且提交名称与当前名称完全一致
 | 502 | Embedding 或 LLM 上游调用异常 |
 | 503 | MySQL/Milvus 操作异常、异步入库队列不可用 |
 
-错误响应体统一为 `{"detail", "type"}`，`type` 是后端异常类名；只有异步入库任务族返回 `{"detail", "code"}`（`INGEST_JOB_NOT_FOUND` / `INGEST_JOB_CONFLICT` / `INGEST_QUEUE_UNAVAILABLE`）。扩展端 `api-client.js` 的 `classifyResponse` 按状态码 + `type` + `detail` 分类成 `ApiRequestError`；`code` 目前只在一处被读到——`isApiKeyNotConfiguredError` 用它把 IngestJob 族的 409 排除掉，UI 尚未按 `code` 分流。整张「异常类 → 状态码 → 响应体形状」映射由 `backend/tests/test_error_contract.py` 逐条实跑钉住，新增或调整 handler 必须同步登记该表和上面的状态码表。
+可选 OCR 的路由内错误另采用 FastAPI `detail: {code, message}`，由 `backend/tests/test_ocr.py` 验证：413 图片字节超限，415 格式/像素非法，429 正忙，503 未安装/执行失败，504 超时，499 客户端取消；身份错误继续走下述全局 handler。客户端读取嵌套 message，不将 OCR 失败误认为模型 Key 未配置。
+
+全局业务异常 handler 返回 `{"detail", "type"}`，`type` 是后端异常类名；异步入库任务族返回 `{"detail", "code"}`（`INGEST_JOB_NOT_FOUND` / `INGEST_JOB_CONFLICT` / `INGEST_QUEUE_UNAVAILABLE`）。扩展 `classifyResponse` 按状态码、type 和 detail 分类为 `ApiRequestError`，OCR 的嵌套 message 也在此读取。全局 handler 映射由 `backend/tests/test_error_contract.py` 逐条实跑，新增或调整 handler 必须同步登记该表和状态码表；OCR 路由的专用错误由独立测试覆盖。
 
 ## 10. 测试、可观测性与维护状态
 
 主测试集覆盖 Router、Service、Repository、DTO、安全工具、URL 规范化、异步队列/Worker、Workspace 隔离和评测计算。具体数量以当前 pytest 输出为准。根目录 conftest.py 禁止测试加载个人 `.env`；可靠性回归使用真实 SQLite Repository 与外部服务替身。扩展另有 Node.js 回归测试。
 
-`scripts/check.py all` 是本地与 GitHub Actions 的统一入口；可分别选择 backend/extension/datasets。CI 在 push、PR、手动触发时以 Python 3.11、Node.js 24 运行 Linux/Windows 矩阵，只授予 contents:read，不需要业务 Secrets 或外部服务。扩展脚本先做语法检查，再自动发现全部 `*.test.js`；数据检查只验证公开占位数据格式，不执行真实评测。真实服务故障恢复与浏览器端到端尚未接入 CI。
+`scripts/check.py all` 是本地与 GitHub Actions 的统一入口，可分别选择 backend/extension/datasets。CI 以 Python 3.11、Node.js 24 运行 Linux/Windows 矩阵和真实本地 OCR 样本；独立 Linux Chromium 任务验证扩展提取、滚动及 OCR 预览，只授予 contents:read，不需要业务 Secrets 或数据库服务。扩展自动发现全部 `*.test.js`；数据检查只验证公开占位格式。真实服务故障恢复和完整入库/问答端到端尚未接入 CI。
 
 日志记录操作类型、Document ID 和候选数量等诊断信息；安全代码避免记录 Plugin Secret 与 API Key 明文。项目目前没有统一 metrics/tracing、结构化审计日志或请求 ID 中间件。
 
@@ -306,7 +309,7 @@ Workspace 删除要求 `confirm=true` 且提交名称与当前名称完全一致
 
 - 网页和文件 ingest 已异步化；当前恢复策略假定只运行一个 Worker 进程。
 - RAG 的同步数据库、向量检索、Embedding 和 LLM 调用通过 `asyncio.to_thread` 执行，避免阻塞 API 事件循环；旧同步入库兼容路径仍不适合作为高并发入口。
-- 网页提取基于当前已加载的 DOM；支持部分开放 Shadow DOM/插槽和有权限访问的可见 HTTP(S) iframe。关闭的组件、重定向后无法匹配的框架、分页、虚拟列表、登录墙及超出等待窗口的 SPA 仍需专项适配。PDF/图片 OCR/音视频不在本阶段范围。
+- 网页提取支持部分开放 Shadow DOM/插槽和有权限的可见 HTTP(S) iframe；可选有界滚动和本地图片 OCR。关闭组件、受限框架、分页、复杂虚拟列表、登录墙及超出等待窗口的 SPA 仍需适配。OCR 有数量/资源/版式与准确率边界；PDF 文件、Canvas、音视频仍未接入。
 - 向量维度或 Collection Schema 改动不能仅改环境变量，必须重建 Collection 并全量重新 ingest。
 - 若启用公网访问，需要补齐 CORS、TLS、限流、Secret 轮换、审计和更严格的部署配置。
 - 新解析器应实现 `DocumentParser` Protocol，新存储或数据库适配应实现对应 Protocol。

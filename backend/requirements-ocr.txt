@@ -1,0 +1,5 @@
+# Optional local CPU OCR. Models are bundled in this wheel (no runtime downloads).
+# Python 3.11 is the project's supported runtime.
+rapidocr-onnxruntime==1.4.4
+onnxruntime>=1.23.2,<2
+Pillow>=12.1.1,<13

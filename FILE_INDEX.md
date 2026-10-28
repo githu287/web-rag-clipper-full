@@ -13,6 +13,9 @@
 | `scripts/check_capture_browser.py` | 无后端/凭证的真实 Chrome/Chromium 扩展提取、跨域 iframe、延迟渲染与区域交互测试 |
 | `scripts/check_scroll_capture_browser.py` | 无后端的滚动/虚拟列表/上限/恢复回归与使用合成身份的侧栏 UI 组件检查 |
 | `SCROLL_CAPTURE.md` | 可选自动加载剪藏的操作、预算、合并、恢复与验证边界 |
+| `IMAGE_OCR.md` | 可选本地图片 OCR 的安装、限制、隐私、错误契约和验证 |
+| `scripts/check_ocr.py` | 真实 CPU 模型的中英文、长图分段边界和重复行检查 |
+| `scripts/check_ocr_browser.py` | 真实扩展→生产 OCR 路由→本地模型→可编辑预览，使用临时身份不写库 |
 | `CLIPPING_COMPATIBILITY.md` | 四种剪藏方式、依赖来源、真实浏览器验证和网站适配边界 |
 | `SITE_AUDIT_2026-10-28.md` | 13 个公开网页的实测结果、代码保真修复、访问受限与图片边界 |
 | `scripts/audit_capture_sites.py` | 按需在线样本审计，记录可见块/源码保留、标题、噪声、状态与耗时；运行数据默认不入库 |
@@ -32,7 +35,11 @@
 | `backend/main.py` | FastAPI 工厂、模块级 `app`、Milvus lifespan、Router 与全局异常处理器 |
 | `backend/api/__init__.py` | API 包标记 |
 | `backend/api/deps.py` | 从双请求头解析当前 Workspace |
-| `backend/api/routers/__init__.py` | Router 子包标记；文件内按 prefix 列出当前 6 个路由器 |
+| `backend/api/routers/__init__.py` | Router 子包标记；按 prefix 列出当前 7 个路由器 |
+| `backend/api/routers/ocr.py` | 双凭证认证、有界图片流读取、断开取消与 OCR 响应 |
+| `backend/services/ocr.py` | 本地识别子进程编排、并发上限、超时/取消终止 |
+| `backend/ocr_worker.py` | 有界图片解码、长图分段、本地模型调用与结果过滤 |
+| `backend/requirements-ocr.txt` | Python 3.11 的可选 OCR 依赖；模型随固定 wheel 安装 |
 | `backend/api/routers/plugins.py` | Workspace 注册、详情、改名、多服务商模型配置与删除 |
 | `backend/api/routers/documents.py` | 文档列表/详情、创建、上传、ingest 与删除 |
 | `backend/api/routers/clips.py` | 网页正文剪藏：同步入库与异步提交（提交前校验 Key 配置与 Workspace 配额） |
@@ -127,6 +134,7 @@
 | 文件 | 覆盖重点 |
 |---|---|
 | `backend/tests/test_chunker.py` | Chunk 大小、重叠、顺序和配置边界 |
+| `backend/tests/test_ocr.py` | OCR 认证、输入限制、错误契约、子进程生命周期与切片边界 |
 | `backend/tests/test_text_parser.py` | UTF-8/BOM、扩展名和异常 |
 | `backend/tests/test_file_storage.py` | 保存/删除、幂等与路径穿越 |
 | `backend/tests/test_embedding_client.py` | 批处理、维度、异常、Key 隔离与缓存淘汰 |
@@ -178,6 +186,9 @@
 | `extension/capture-content.js` | 内容稳定等待、可见框架描述、区域高亮选择与清理 |
 | `extension/scroll-capture.js` | 受控滚动采样、进度、停止条件及坐标/样式恢复 |
 | `extension/snapshot-merge.js` | 按相邻窗口重叠有序合并，保留合法重复和代码围栏 |
+| `extension/image-ocr.js` | 图片有界读取、身份/取消保护、顺序识别与预览补充 |
+| `extension/tests/image-ocr.test.js` | 图片数量/大小、凭证隔离、取消、身份变化与部分失败 |
+| `extension/tests/fixtures/ocr/` | 原创中英文与长图 PNG，用于真实 OCR 验证，无真实文章原文 |
 | `extension/tests/snapshot-merge.test.js` | 增量/虚拟窗口合并、重复、无重叠提醒、代码及长度上限回归 |
 | `extension/vendor/readability/` | 本地打包的 Mozilla Readability 0.6.0、来源/完整性摘要及许可证 |
 | `extension/tests/page-capture.test.js` | 框架筛选、去重、长度、导航、受限提示及取消回归 |

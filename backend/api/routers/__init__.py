@@ -8,6 +8,7 @@ api.routers 子包：FastAPI 路由器集合。
 - /ingest    页面 chunk 入库编排
 - /jobs      异步 ingest 任务状态查询与重试
 - /rag       检索与问答
+- /ocr       可选本地图片文字识别（不入库）
 
 各 Router 通过 main.py 的 create_app() 中 app.include_router(...) 注册。
 """

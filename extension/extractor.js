@@ -6,7 +6,7 @@
   if (typeof module === "object" && module.exports) module.exports = api;
   if (root) root.webRagPageExtractor = api;
 })(typeof globalThis !== "undefined" ? globalThis : this, function () {
-  const VERSION = "1.5.1";
+  const VERSION = "1.6.0";
   const MIN_MEANINGFUL_CHARS = 180;
   const MAX_EXTRACTED_CHARS = 500000;
 
@@ -269,6 +269,17 @@
         return cloned;
       }
       const target = source.cloneNode(false);
+      if (source.tagName === "IMG") {
+        // Freeze the original responsive/lazy source before detaching. Never
+        // let a page-supplied data-web-rag attribute override this value.
+        const lazy = source.getAttribute("data-src") || source.getAttribute("data-original") || source.getAttribute("data-lazy-src");
+        const raw = source.naturalWidth > 32 && source.currentSrc ? source.currentSrc : lazy || source.currentSrc || source.getAttribute("src");
+        target.removeAttribute("data-web-rag-image");
+        try {
+          const url = new URL(raw || "", source.baseURI);
+          if (raw && /^https?:$/.test(url.protocol) && url.href.length <= 8192) target.setAttribute("data-web-rag-image", url.href);
+        } catch (_error) {}
+      }
       pairs.push({ source, target });
 
       if (source.shadowRoot) {
@@ -752,6 +763,17 @@
       };
     }
     const cleaned = selected.cleaned;
+    const imageNodes = (cleaned.clone.matches && cleaned.clone.matches("img") ? [cleaned.clone] : [])
+      .concat(Array.from(cleaned.clone.querySelectorAll("img")));
+    const images = [];
+    if (options.collectImages) {
+      for (const image of imageNodes) {
+        const url = image.getAttribute("data-web-rag-image");
+        if (url && !images.some(function (item) { return item.url === url; }) && images.length < 33) {
+          images.push({ url, alt: String(image.getAttribute("alt") || "").slice(0, 160) });
+        }
+      }
+    }
     const serializationContext = {
       linkCount: 0,
       preservedLinkCount: 0,
@@ -781,8 +803,10 @@
       imageCount: cleaned.clone.querySelectorAll("img").length,
       sourceTextLength: selected.metrics.textLength || 0,
     });
+    if (options.collectImages && imageNodes.some(function (image) { return !image.getAttribute("data-web-rag-image"); })) qualityWarnings.push("ocr_unsupported_source");
     return {
       text,
+      images,
       diagnostics: {
         extractor_version: VERSION,
         mode,

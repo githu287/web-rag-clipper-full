@@ -808,3 +808,9 @@ def get_workspace_delete_service() -> WorkspaceDeleteService:
         document_repository=get_document_repository(),
         document_delete_service=get_document_delete_service(),
     )
+
+
+@lru_cache(maxsize=1)
+def get_ocr_service():
+    from ..services.ocr import OcrService
+    return OcrService()

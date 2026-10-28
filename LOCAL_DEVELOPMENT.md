@@ -17,6 +17,8 @@ python -m venv .venv
 
 已有 `.venv` 时先复用。依赖清单固定 `setuptools==80.9.0`，用于兼容 pymilvus 的 `pkg_resources`。仅首次部署时从 `.env.example` 创建个人 `.env`，按本机服务填写配置；不要覆盖现有文件。Compose 默认 MySQL 端口为 `33066`，Redis 为 `16379`。
 
+如需图片文字识别，另执行 `.venv/Scripts/python.exe -m pip install -r backend/requirements-ocr.txt` 后重启 API。模型随依赖安装，运行时不下载，不需要额外 API Key；刷新扩展后勾选“识别图片中的文字”。操作与限制见 [图片 OCR](IMAGE_OCR.md)。
+
 `APP_MASTER_KEY` 必须为 UTF-8 编码后恰好 32 字节；已有数据库务必保留原主密钥，否则已加密模型凭证无法解密。模型 API Key 在扩展设置页填写，不需放入旧版 `BAILIAN_API_KEY`。个人配置、上传文件及私有评测数据均不提交 Git。
 
 ## 启动和升级

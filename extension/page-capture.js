@@ -41,6 +41,7 @@
     const main = results.find(function (item) { return item.frameId === 0 && item.response && item.response.ok; });
     const ordered = (main ? [main] : []).concat(results.filter(function (item) { return item !== main; }));
     const parts = [];
+    const images = new Map();
     const seen = [];
     let length = 0;
     let includedFrames = 0;
@@ -50,6 +51,7 @@
     for (const item of ordered) {
       const response = item.response;
       if (!response || !response.ok) continue;
+      for (const image of response.images || []) if (images.size < 33 && !images.has(image.url)) images.set(image.url, image);
       const text = String(response.raw_text || "").trim();
       if (!text) continue;
       const fingerprint = text.replace(/\s+/g, " ");
@@ -68,10 +70,10 @@
     }
     if (truncated) warnings.add("truncated");
     const rawText = parts.join("").trim();
-    if (!rawText) throw new Error(mode === "selection" ? "请先在网页中选中文字，再提取" : "网页正文为空，请等待页面加载或切换剪藏方式");
+    if (!rawText && !images.size) throw new Error(mode === "selection" ? "请先在网页中选中文字，再提取" : "网页正文为空，请等待页面加载或切换剪藏方式");
     Object.assign(diagnostics, { mode, included_frame_count: includedFrames,
       extracted_char_count: rawText.length, truncated, quality_warnings: Array.from(warnings) });
-    return { url: page.url, title: page.title || "", raw_text: rawText, diagnostics };
+    return { url: page.url, title: page.title || "", raw_text: rawText, images: Array.from(images.values()), diagnostics };
   }
 
   async function capture(tabId, options) {
@@ -135,9 +137,9 @@
         capturedIds.push(frame.frameId);
         const response = await message(tabId, frame.frameId,
           { type: "WEB_CLIP_CAPTURE_V4", options: { mode, requestId, autoScroll: autoScroll && frame.frameId === 0,
-            scrollLimits: options.scrollLimits } }, mode === "region" ? 60000 : autoScroll ? 40000 : 10000, signal);
+            scrollLimits: options.scrollLimits, collectImages: !!options.collectImages } }, mode === "region" ? 60000 : autoScroll ? 40000 : 10000, signal);
         if (!response || !response.ok) throw new Error(response && response.error || "页面内容提取失败");
-        if ((mode === "selection" || mode === "region") && !String(response.raw_text || "").trim()) throw new Error("所选内容为空");
+        if ((mode === "selection" || mode === "region") && !String(response.raw_text || "").trim() && !(response.images || []).length) throw new Error("所选内容为空");
         return { frameId: frame.frameId, response };
       });
       let results;

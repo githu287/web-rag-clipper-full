@@ -31,6 +31,7 @@ function isApiKeyNotConfiguredError(data) {
 }
 
 function parseErrorMessage(data, fallback) {
+  if (data && data.detail && typeof data.detail.message === "string") return data.detail.message;
   if (data && typeof data.detail === "string") return data.detail;
   if (data && Array.isArray(data.detail) && data.detail.length > 0) {
     const first = data.detail[0];
@@ -264,6 +265,15 @@ const webRagApiClient = (() => {
   async function fetchWithDeadline(path, init, classifyOptions, timeoutMs) {
     const controller = new AbortController();
     let timeoutId;
+    const externalSignal = init.signal;
+    let onAbort;
+    const cancellation = new Promise((_resolve, reject) => {
+      onAbort = () => { controller.abort(); reject(new ApiRequestError(0, "CANCELLED", "已取消提取")); };
+      if (externalSignal) {
+        externalSignal.addEventListener("abort", onAbort, { once: true });
+        if (externalSignal.aborted) onAbort();
+      }
+    });
     const timeoutError = () => new ApiRequestError(0, "TIMEOUT", "请求等待超时，服务端可能仍在处理；请先检查结果再重试");
     const deadline = new Promise((_resolve, reject) => {
       timeoutId = setTimeout(() => {
@@ -272,7 +282,8 @@ const webRagApiClient = (() => {
       }, timeoutMs);
     });
     try {
-      return await Promise.race([deadline, (async () => {
+      return await Promise.race([deadline, cancellation, (async () => {
+        if (externalSignal && externalSignal.aborted) throw new ApiRequestError(0, "CANCELLED", "已取消提取");
         const response = await fetch(API_BASE_URL + path, Object.assign({}, init, { signal: controller.signal }));
         if (controller.signal.aborted) throw timeoutError();
         return classifyResponse(response, Object.assign({}, classifyOptions, { signal: controller.signal }));
@@ -285,6 +296,7 @@ const webRagApiClient = (() => {
       throw new ApiRequestError(0, "NETWORK", "网络连接失败，请重试");
     } finally {
       clearTimeout(timeoutId);
+      if (externalSignal) externalSignal.removeEventListener("abort", onAbort);
     }
   }
 
@@ -306,6 +318,14 @@ const webRagApiClient = (() => {
     clearPlugin: clearPlugin,
     setUnauthenticatedHandler: setUnauthenticatedHandler,
     request: request,
+    ocr: {
+      async image(blob, signal) {
+        const result = await fetchWithDeadline("/ocr/image", {
+          method: "POST", headers: applyAuth({ "Content-Type": blob.type || "application/octet-stream" }), body: blob, signal,
+        }, { identity: { pluginId, pluginSecret }, failureLabel: "图片识别" }, 45000);
+        return result.data;
+      },
+    },
     plugins: {
       // POST /plugins/register：创建插件 workspace（无需凭证）
       async register(pluginName) {

@@ -38,6 +38,7 @@ from .api.routers import ingest as ingest_router_module
 from .api.routers import jobs as jobs_router_module
 from .api.routers import plugins as plugins_router_module
 from .api.routers import rag as rag_router_module
+from .api.routers import ocr as ocr_router_module
 from .clients.embedding import EmbeddingClientError
 from .clients.llm import LLMClientError
 from .core.di import close_model_clients, get_milvus_initializer
@@ -148,6 +149,7 @@ def create_app() -> FastAPI:
     app.include_router(documents_router_module.router)
     app.include_router(clips_router_module.router)
     app.include_router(jobs_router_module.router)
+    app.include_router(ocr_router_module.router)
     app.include_router(plugins_router_module.router)  # Phase 3.5 Step 2-D：Plugin Workspace 身份体系
 
     return app

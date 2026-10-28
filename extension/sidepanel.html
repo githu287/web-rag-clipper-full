@@ -99,6 +99,11 @@
           <span>加载更多后提取</span>
         </label>
         <div class="hint" id="clip-auto-scroll-hint">可用于智能正文和整页内容。最多滚动 20 次、25 秒，完成后恢复阅读位置；加载仍未结束时会提醒。</div>
+        <label class="clip-scroll-option" for="clip-image-ocr">
+          <input type="checkbox" id="clip-image-ocr" aria-describedby="clip-image-ocr-hint">
+          <span>识别图片中的文字</span>
+        </label>
+        <div class="hint" id="clip-image-ocr-hint">将所选内容中的图片交给本项目后端本地识别，最多 8 张、2 分钟。结果附在预览末尾，请核对后保存。</div>
         <div class="hint">同一网页再次保存会更新已有文档，请先检查预览。</div>
         <button type="button" class="clip-btn" id="clip-btn">提取并预览</button>
         <button type="button" class="btn-secondary" id="clip-capture-cancel" hidden>取消提取</button>
@@ -271,6 +276,7 @@
   <script src="api-client.js"></script>
   <script src="clip-detect.js"></script>
   <script src="page-capture.js"></script>
+  <script src="image-ocr.js"></script>
   <script src="sidepanel.js"></script>
 </body>
 </html>

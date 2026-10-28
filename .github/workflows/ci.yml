@@ -35,10 +35,13 @@ jobs:
           cache-dependency-path: |
             requirements-dev.txt
             backend/requirements.txt
+            backend/requirements-ocr.txt
       - name: Install development dependencies
-        run: python -m pip install -r requirements-dev.txt
+        run: python -m pip install -r requirements-dev.txt -r backend/requirements-ocr.txt
       - name: Run backend regression tests and validate public datasets
         run: python scripts/check.py backend datasets
+      - name: Verify real local OCR models including long-image seams
+        run: python scripts/check_ocr.py
 
   extension:
     name: Extension (${{ matrix.os }})
@@ -74,10 +77,12 @@ jobs:
         with:
           python-version: '3.11'
       - name: Install isolated browser test dependency
-        run: python -m pip install playwright==1.64.1
+        run: python -m pip install playwright==1.64.1 -r requirements-dev.txt -r backend/requirements-ocr.txt
       - name: Install Chromium and system libraries
         run: python -m playwright install --with-deps chromium
       - name: Exercise real unpacked extension on local fixtures
         run: python scripts/check_capture_browser.py --channel chromium
       - name: Exercise bounded scrolling and virtual-list capture
         run: python scripts/check_scroll_capture_browser.py --channel chromium
+      - name: Exercise real extension and local OCR preview without database writes
+        run: python scripts/check_ocr_browser.py --channel chromium

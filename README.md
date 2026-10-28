@@ -2,7 +2,7 @@
 
 Web RAG Clipper 是一个本地优先、以网页剪藏为核心的个人知识库 RAG 系统。Chrome/Edge 扩展负责提取网页正文、管理知识库和发起问答；FastAPI 后端负责异步入库、切块、向量化、检索与回答生成。
 
-项目的首要场景是“浏览网页时剪藏，稍后基于已剪藏内容提问”。文本和 Markdown 上传是辅助能力，PDF、DOCX 与 OCR 暂不作为当前重点。
+项目的首要场景是“浏览网页时剪藏，稍后基于已剪藏内容提问”。文本和 Markdown 上传是辅助能力；图片文字可选用本地 OCR，PDF、DOCX 尚未接入。
 
 当前仓库已经打通以下链路：
 
@@ -194,11 +194,11 @@ Worker 会初始化 Milvus，恢复上次意外中断且未确认的任务，并
 
 提取可见、可访问的 HTTP(S) iframe，合并结果时标注内嵌来源并去重，文档仍绑定顶层网页 URL。自动滚动只处理顶层页面的主要区域，子框架沿用普通提取；滚动中新加载的框架可能遗漏并会提示。最多探测 64 个框架并处理其中 12 个（含顶层）；跨域需要浏览器授予对应站点权限，权限受限或数量超限会显示诊断提醒。
 
-四种方式共享 50 万字符上限，保存前均可编辑。同一规范化 URL 再次保存会更新已有文档，选区与区域不会自动创建多个独立摘录。图片仅保留替代说明；不下载图片、不执行 OCR，图片为主的短文章会提醒。支持部分开放 Shadow DOM 与插槽；关闭的组件、浏览器内部页、扩展商店页、未登录/未购买的正文、PDF/Canvas、虚拟列表及未加载的后续内容仍有边界。0.8.1 已完成 [13 个公开网页样本实测](SITE_AUDIT_2026-10-28.md) 并修复正文范围、标题和代码保真问题；知乎/CSDN 样本受访问限制，没有据此宣称全站兼容。能力说明见 [剪藏能力与验收](CLIPPING_COMPATIBILITY.md)。
+四种方式共享 50 万字符上限，保存前均可编辑。同一规范化 URL 再次保存会更新已有文档，选区与区域不会自动创建多个独立摘录。0.10.0 新增默认关闭的“识别图片中的文字”：安装 `backend/requirements-ocr.txt` 后重启 API，即可本地识别所选范围的中英文图片，结果附在预览末尾；最多 8 张/2 分钟，识别错误与未完成部分有提示，详见 [图片 OCR](IMAGE_OCR.md)。关闭 OCR 时仅保留图片说明。支持部分开放 Shadow DOM 与插槽；关闭的组件、浏览器内部页、扩展商店页、未登录/未购买的正文、PDF/Canvas、复杂虚拟列表及未加载的后续内容仍有边界。0.8.1 已完成 [13 个公开网页样本实测](SITE_AUDIT_2026-10-28.md) 并修复正文范围、标题和代码保真问题；知乎/CSDN 样本受访问限制，没有据此宣称全站兼容。能力说明见 [剪藏能力与验收](CLIPPING_COMPATIBILITY.md)。
 
 ## API 概览
 
-仓库当前注册 24 个操作。`POST /plugins/register` 和 `GET /plugins/model-providers` 无需认证；其余操作都要求 `X-Plugin-ID` 和 `X-Plugin-Secret`。
+仓库当前注册 25 个操作。`POST /plugins/register` 和 `GET /plugins/model-providers` 无需认证；其余操作都要求 `X-Plugin-ID` 和 `X-Plugin-Secret`。
 
 | 方法 | 路径 | 用途 |
 |---|---|---|
@@ -221,6 +221,7 @@ Worker 会初始化 Milvus，恢复上次意外中断且未确认的任务，并
 | DELETE | `/documents/{document_id}` | 幂等删除文档及关联资源 |
 | POST | `/clips` | 剪藏网页正文；同 Workspace 同规范化 URL 可原位重试/更新 |
 | POST | `/clips/async` | 创建网页剪藏任务并立即返回 `202` |
+| POST | `/ocr/image` | 本地识别原始图片字节，返回文字，不入库、不接受远程 URL |
 | GET | `/jobs/{job_id}` | 查询当前 Workspace 任务进度与结果 |
 | POST | `/jobs/{job_id}/retry` | 重试未超过上限的失败任务 |
 | POST | `/ingest/page` | 向当前 Workspace 的已有文档写入 chunks，校验归属并更新文档状态 |
@@ -282,7 +283,7 @@ MySQL 是文档状态和归属的权威来源；Milvus 只保存向量检索所�
 
 也可选择 `backend`、`extension`、`datasets` 中一项或多项。扩展检查包含脚本语法检查，并自动发现 `extension/tests/*.test.js`；任一步失败都会返回非零退出码。
 
-`.github/workflows/ci.yml` 在 push、PR 和手动触发时，在 Linux/Windows 上运行后端及扩展检查；Python 使用 3.11、Node 使用 24，Python 依赖按两份 requirements 缓存。工作流只读仓库，不需要 Secrets，不启动 MySQL/Redis/Milvus，不执行收费模型请求。评测步骤允许公开数据中的运行时 ID 占位符，仅校验 150 条数据格式，不代表检索质量评测。真实服务故障恢复与浏览器端到端验证仍需单独执行。
+`.github/workflows/ci.yml` 在 push、PR 和手动触发时，在 Linux/Windows 上运行后端、扩展与真实本地 OCR 样本检查；Python 使用 3.11、Node 使用 24，Python 依赖按 requirements 缓存。Linux Chromium 另执行真实扩展提取、滚动及 OCR 预览流程。工作流只读仓库，不需要 Secrets，不启动 MySQL/Redis/Milvus，不执行收费模型请求。评测步骤仅校验 150 条公开占位数据格式，不代表检索质量评测。真实服务故障恢复与完整入库/问答端到端验证仍需单独执行。
 
 当前已接入的主测试集：
 
