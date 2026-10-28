@@ -21,6 +21,7 @@
 | `CLIPPING_COMPATIBILITY.md` | 四种剪藏方式、依赖来源、真实浏览器验证和网站适配边界 |
 | `SITE_AUDIT_2026-10-28.md` | 13 个公开网页的实测结果、代码保真修复、访问受限与图片边界 |
 | `REAL_SITE_ACCEPTANCE_2026-10-28.md` | 0.11.1 真实公开网页、分页版本对照、OCR 入库/问答及测试数据清理验收 |
+| `GALLERY_PAGINATION_2026-10-28.md` | 0.11.2 可见数字页码、图集正文范围与真实五页上限验收 |
 | `scripts/audit_capture_sites.py` | 按需在线样本审计，记录可见块/源码保留、标题、噪声、状态与耗时；运行数据默认不入库 |
 | `scripts/audit_pagination_sites.py` | 按需真实分页审计，独立比较逐页正文/标题/主图并检查原页和临时页记录；支持旧版扩展对照 |
 | `extension/tests/pagination-sites.json` | 真实分页公开 URL、参考正文范围和隐藏/JS 翻页边界；与合成本地样本分开 |

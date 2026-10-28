@@ -6,6 +6,7 @@
   if (root) root.webRagPagination = api;
 })(typeof globalThis !== "undefined" ? globalThis : this, function () {
   const PAGE_KEYS = new Set(["page", "pageno", "page_no", "page_num", "pageindex", "pagenum", "pg"]);
+  const PAGER = ".pagination,.pager,.pages,.page-links,.pagebar,.page_n,#page,[aria-label*='分页'],[aria-label*='pagination' i]";
   function key(value) {
     return globalThis.webRagUrlUtils ? webRagUrlUtils.normalizeWebUrl(value) : new URL(value).href;
   }
@@ -78,11 +79,34 @@
     const heading = Array.from(doc.querySelectorAll("article h1,main h1,h1")).find(visible);
     metadata.heading = heading ? heading.textContent.trim().slice(0, 512) : "";
     const strong = Array.from(doc.querySelectorAll("a[rel~='next' i],link[rel~='next' i],a[aria-label*='下一页'],a[aria-label*='next page' i]")).slice(0, 160);
-    const links = Array.from(new Set(strong.concat(Array.from(doc.querySelectorAll("a[href]")).slice(0, 1000))));
+    const numeric = Array.from(doc.querySelectorAll(PAGER)).slice(0, 40).flatMap(function (pager) {
+      return Array.from(pager.querySelectorAll("a[href]")).slice(0, 160);
+    }).slice(0, 160);
+    const links = Array.from(new Set(strong.concat(numeric, Array.from(doc.querySelectorAll("a[href]")).slice(0, 1000))));
+    const currentPages = new Map();
+    function numericNext(link, label) {
+      if (!/^[1-9]\d{0,3}$/.test(label)) return false;
+      const pager = link.closest(PAGER);
+      if (!pager) return false;
+      if (!currentPages.has(pager)) {
+        const numbers = new Set();
+        for (const anchor of Array.from(pager.querySelectorAll("a[href]")).slice(0, 160)) {
+          if (!visible(anchor) || anchor.closest(PAGER) !== pager || anchor.closest("[inert],.disabled,[aria-disabled='true']")) continue;
+          const text = String(anchor.textContent || "").trim(), raw = anchor.getAttribute("href");
+          if (!/^[1-9]\d{0,3}$/.test(text) || !raw || /^\s*(?:#|javascript:)/i.test(raw)) continue;
+          try { if (key(new URL(raw, doc.baseURI).href) === key(doc.URL)) numbers.add(Number(text)); } catch (_error) {}
+        }
+        currentPages.set(pager, numbers.size === 1 ? Array.from(numbers)[0] : null);
+      }
+      const current = currentPages.get(pager);
+      // Require an explicit visible current-page link in the same pager. The
+      // destination must independently pass nextURL's sequential URL checks.
+      return current !== null && Number(label) === current + 1;
+    }
     const targets = new Set();
     const excluded = new Set();
     let unsupported = false;
-    for (const link of links.slice(0, 1160)) {
+    for (const link of links.slice(0, 1320)) {
       if (!visible(link) || link.getAttribute("aria-disabled") === "true" || link.closest("[inert],.disabled,[aria-disabled='true']")) continue;
       if (link.closest("aside,[role='complementary'],[id*='comment' i],[class*='comment' i],.related,.recommend")) continue;
       const label = String(link.getAttribute("aria-label") || link.textContent || "").trim().replace(/\s+/g, " ");
@@ -91,8 +115,8 @@
         try { excluded.add(key(new URL(link.getAttribute("href"), doc.baseURI).href)); } catch (_error) {}
         continue;
       }
-      if (!rel && !/^(?:下一页|下页|后页|next(?: page)?|[»›>→])\s*[»›>→]{0,3}$/i.test(label)) continue;
-      if (!rel && /^(?:next|[»›>→])$/i.test(label) && !link.closest(".pagination,.pager,.pages,.page-links,.pagebar,#page,[aria-label*='分页'],[aria-label*='pagination' i]")) continue;
+      if (!rel && !/^(?:下一页|下页|后页|next(?: page)?|[»›>→])\s*[»›>→]{0,3}$/i.test(label) && !numericNext(link, label)) continue;
+      if (!rel && /^(?:next|[»›>→])$/i.test(label) && !link.closest(PAGER)) continue;
       const raw = link.getAttribute("href");
       if (!raw || /^\s*(?:#|javascript:)/i.test(raw)) { unsupported = true; continue; }
       let target;

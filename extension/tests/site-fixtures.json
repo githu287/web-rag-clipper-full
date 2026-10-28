@@ -84,7 +84,7 @@
     {
       "id": "people-photo-outside-title",
       "url": "http://pic.people.com.cn/n1/2026/0101/c1234-123456-2.html",
-      "html": "<h1>图片新闻标题PHOTO_TITLE【2】</h1><div id='picG'><img alt='PRIMARY_PHOTO' width='700' height='450'><p>图片说明PHOTO_CAPTION</p><div class='page_n'>PAGER_NOISE</div></div><div class='content clear'><p>图片新闻正文PHOTO_BODY</p>{{padding}}</div>",
+      "html": "<div>HEADER_NOISE{{padding}}</div><h1>图片新闻标题PHOTO_TITLE【2】</h1><div id='picG'><img alt='PRIMARY_PHOTO' width='700' height='450'><p>图片说明PHOTO_CAPTION</p><div class='page_n'>PAGER_NOISE</div></div><div class='content clear'><p>图片新闻正文PHOTO_BODY</p>{{padding}}</div><div>COPYRIGHT_NOISE{{padding}}</div>",
       "contains": [
         "# 图片新闻标题PHOTO_TITLE【2】",
         "PHOTO_BODY",
@@ -92,8 +92,9 @@
         "PRIMARY_PHOTO"
       ],
       "excludes": [
-        "PAGER_NOISE"
-      ]
+        "PAGER_NOISE", "HEADER_NOISE", "COPYRIGHT_NOISE"
+      ],
+      "profile": "people-photo"
     }
   ]
 }

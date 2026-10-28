@@ -14,18 +14,18 @@
       "url": "http://pic.people.com.cn/n1/2026/0308/c1016-40677491-2.html",
       "root": ".pic_content",
       "image_root": "#picG",
-      "expected_pages": 1,
-      "expected_stop": "complete",
-      "boundary": "Published next-page anchor is hidden by the site; gallery navigation uses JS controls. This is not a complete gallery capture."
+      "expected_pages": 5,
+      "expected_stop": "page_limit",
+      "boundary": "Visible numeric page links permit capture from page 2 through page 6; five-page cap stops before the full 11-page gallery. Hidden or JS-only links remain unsupported."
     },
     {
       "id": "people-archive-hidden-next",
       "url": "http://lianghui.people.com.cn/2016npc/n1/2016/0305/c402194-28173982-2.html",
       "root": ".content.clear",
       "image_root": "#picG",
-      "expected_pages": 1,
-      "expected_stop": "complete",
-      "boundary": "Published next-page anchor is hidden; record current-page content only, not all 12 gallery pages."
+      "expected_pages": 5,
+      "expected_stop": "page_limit",
+      "boundary": "Visible numeric page links permit capture from page 2 through page 6; five-page cap stops before the full 12-page gallery. Hidden or JS-only links remain unsupported."
     },
     {
       "id": "vue-next-chapter-negative",

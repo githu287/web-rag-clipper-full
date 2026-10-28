@@ -77,6 +77,21 @@ def main():
                 links += '<link rel="canonical" href="/story?case=canonical&amp;page=1">'
             if case == "square-title":
                 title = "分页文章测试" + ("【" + str(number) + "】" if number > 1 else "")
+            if case.startswith("numeric"):
+                links = ""
+                current = "/story?" + urlencode({"case": case, "page": number})
+                current_link = f'<a href="{html.escape(current)}">{number}</a>'
+                next_link = f'<a href="{html.escape(target)}">{number + 1}</a>' if number < total else ""
+                if case == "numeric-missing-current": current_link = ""
+                if case == "numeric-hidden-current": current_link = current_link.replace("<a ", '<a hidden ')
+                if case == "numeric-label-mismatch": next_link = next_link.replace(f'>{number+1}<', f'>{number+2}<')
+                if case == "numeric-hidden": next_link = next_link.replace("<a ", '<a hidden ')
+                if case == "numeric-disabled": next_link = next_link.replace("<a ", '<a aria-disabled="true" ')
+                if case == "numeric-conflict": next_link += f'<a href="?case={case}&pg={number+1}">{number+1}</a>'
+                if case == "numeric-current-conflict": current_link += f'<a href="{html.escape(current)}">{number+3}</a>'
+                if case == "numeric-foreign": next_link = f'<a href="https://example.invalid/story?page={number+1}">{number+1}</a>'
+                if case == "numeric-unscoped": pager = current_link + next_link
+                else: pager = f'<nav class="page_n">{current_link}{next_link}<a href="{html.escape(target)}" hidden>下一页</a></nav>'
             if case == "suffix":
                 target = "/article_" + str(number + 1) + ".html?" + urlencode({"case": case, "page": number + 1})
                 # Suffix pagination keeps non-pagination query values unchanged.
@@ -170,7 +185,7 @@ def main():
                 assert combined["raw_text"].count("分页来源（第 ") == 3
                 done("Three real rendered pages merge in order with sources and images, retaining original URL and scroll position")
 
-                for case in ["plain-next","canonical","square-title"]:
+                for case in ["plain-next","canonical","square-title","numeric"]:
                     tab=navigate(case);begin(tab);value=result()
                     assert value["diagnostics"]["pagination_page_count"]==3,(case,value)
                 source.goto(base+"/article.html?case=suffix")
@@ -178,6 +193,21 @@ def main():
                 begin(tab);value=result()
                 assert value["diagnostics"]["pagination_page_count"]==3,value
                 done("Unknown pager classes, canonical identity and article_2.html suffix pages are supported")
+
+                source.goto(base+"/story?case=numeric&page=2")
+                tab=driver.evaluate("async url=>(await chrome.tabs.query({})).find(t=>t.url===url).id",source.url)
+                before=len(requests);begin(tab);value=result()
+                assert value["diagnostics"]["pagination_page_count"]==2 and value["url"]==source.url,value
+                assert not any(item["page"]==1 and item["path"]=="/story" for item in requests[before:])
+                for case, expected in [("numeric-missing-current","complete"),("numeric-hidden-current","complete"),
+                    ("numeric-label-mismatch","complete"),("numeric-hidden","complete"),("numeric-disabled","complete"),
+                    ("numeric-unscoped","complete"),("numeric-current-conflict","complete"),
+                    ("numeric-foreign","unsupported"),("numeric-conflict","ambiguous")]:
+                    tab=navigate(case);before=len(requests);begin(tab);value=result()
+                    assert value["diagnostics"]["pagination_page_count"]==1,(case,value)
+                    assert value["diagnostics"]["pagination_stop_reason"]==expected,(case,value)
+                    assert not any(item["page"]>1 for item in requests[before:]),case
+                done("Visible numeric pagers follow consecutive pages from a middle page; missing, hidden, disabled, conflicting, foreign and unscoped hints are rejected")
 
                 source.goto(base+"/story?case=normal&page=2")
                 tab=driver.evaluate("async url=>(await chrome.tabs.query({})).find(t=>t.url===url).id",source.url)

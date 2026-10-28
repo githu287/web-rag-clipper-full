@@ -6,7 +6,7 @@
   if (typeof module === "object" && module.exports) module.exports = api;
   if (root) root.webRagPageExtractor = api;
 })(typeof globalThis !== "undefined" ? globalThis : this, function () {
-  const VERSION = "1.6.1";
+  const VERSION = "1.6.2";
   const MIN_MEANINGFUL_CHARS = 180;
   const MAX_EXTRACTED_CHARS = 500000;
 
@@ -65,13 +65,14 @@
     { id: "zhihu-article", hosts: ["zhuanlan.zhihu.com"], root: ".Post-RichTextContainer, .Post-RichText", title: ".Post-Title" },
     { id: "xinhua", hosts: ["www.news.cn", "news.cn"], root: "#detail", title: "h1" },
     { id: "ndrc", hosts: ["www.ndrc.gov.cn", "ndrc.gov.cn"], root: ".TRS_Editor, .TRS_UEDITOR", title: ".article_title" },
+    { id: "people-photo", hosts: ["pic.people.com.cn", "lianghui.people.com.cn"], root: ".content.clear", title: "h1", require: "#picG" },
   ];
 
   function findSiteRoot(doc) {
     let host;
     try { host = new URL(doc.URL).hostname; } catch (_error) { return null; }
     const profile = SITE_PROFILES.find(function (item) { return item.hosts.includes(host); });
-    if (!profile) return null;
+    if (!profile || profile.require && !doc.querySelector(profile.require)) return null;
     const roots = Array.from(doc.querySelectorAll(profile.root)).filter(function (element) {
       return !isEffectivelyHidden(element, doc.defaultView) &&
         ((element.textContent || "").trim() || element.querySelector("img"));
@@ -751,13 +752,13 @@
       // Observed People.cn photo articles keep the visible H1 outside the
       // content container (and Readability can omit it). Keep that title while
       // retaining the generic body-selection/cleaning behavior.
-      if (!selected.articleTitle && doc.querySelector("#picG")) {
+      if (doc.querySelector("#picG")) {
         try {
           if (["bj.people.com.cn", "pic.people.com.cn", "lianghui.people.com.cn"].includes(new URL(doc.URL).hostname)) {
             const heading = Array.from(doc.querySelectorAll("h1")).find(function (node) {
               return !isEffectivelyHidden(node, doc.defaultView) && (node.textContent || "").trim();
             });
-            if (heading) selected.articleTitle = heading.textContent.replace(/\s+/g, " ").trim().slice(0, 512);
+            if (heading && !selected.articleTitle) selected.articleTitle = heading.textContent.replace(/\s+/g, " ").trim().slice(0, 512);
             const photo = doc.querySelector("#picG");
             if (selected.element && !selected.element.contains(photo) && !isEffectivelyHidden(photo, doc.defaultView)) {
               const supplement = cleanClone(photo, doc);
