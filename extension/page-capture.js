@@ -8,7 +8,7 @@
 })(typeof globalThis !== "undefined" ? globalThis : this, function () {
   const MAX_CHARS = 500000;
   const MAX_FRAMES = 12;
-  const FILES = ["url-utils.js", "vendor/readability/Readability.js", "extractor.js", "snapshot-merge.js", "scroll-capture.js", "capture-content.js", "content.js"];
+  const FILES = ["url-utils.js", "pagination.js", "vendor/readability/Readability.js", "extractor.js", "snapshot-merge.js", "scroll-capture.js", "capture-content.js", "content.js"];
 
   function samePage(left, right) {
     if (globalThis.webRagUrlUtils) {
@@ -73,7 +73,8 @@
     if (!rawText && !images.size) throw new Error(mode === "selection" ? "请先在网页中选中文字，再提取" : "网页正文为空，请等待页面加载或切换剪藏方式");
     Object.assign(diagnostics, { mode, included_frame_count: includedFrames,
       extracted_char_count: rawText.length, truncated, quality_warnings: Array.from(warnings) });
-    return { url: page.url, title: page.title || "", raw_text: rawText, images: Array.from(images.values()), diagnostics };
+    return { url: page.url, title: page.title || "", raw_text: rawText, images: Array.from(images.values()),
+      pagination: main && main.response.pagination || null, diagnostics };
   }
 
   async function capture(tabId, options) {
@@ -137,7 +138,8 @@
         capturedIds.push(frame.frameId);
         const response = await message(tabId, frame.frameId,
           { type: "WEB_CLIP_CAPTURE_V4", options: { mode, requestId, autoScroll: autoScroll && frame.frameId === 0,
-            scrollLimits: options.scrollLimits, collectImages: !!options.collectImages } }, mode === "region" ? 60000 : autoScroll ? 40000 : 10000, signal);
+            scrollLimits: options.scrollLimits, collectImages: !!options.collectImages,
+            collectPagination: !!options.collectPagination && frame.frameId === 0 } }, mode === "region" ? 60000 : autoScroll ? 40000 : 10000, signal);
         if (!response || !response.ok) throw new Error(response && response.error || "页面内容提取失败");
         if ((mode === "selection" || mode === "region") && !String(response.raw_text || "").trim() && !(response.images || []).length) throw new Error("所选内容为空");
         return { frameId: frame.frameId, response };

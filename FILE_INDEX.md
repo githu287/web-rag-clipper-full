@@ -14,6 +14,8 @@
 | `scripts/check_scroll_capture_browser.py` | 无后端的滚动/虚拟列表/上限/恢复回归与使用合成身份的侧栏 UI 组件检查 |
 | `SCROLL_CAPTURE.md` | 可选自动加载剪藏的操作、预算、合并、恢复与验证边界 |
 | `IMAGE_OCR.md` | 可选本地图片 OCR 的安装、限制、隐私、错误契约和验证 |
+| `PAGINATION_CAPTURE.md` | 可选分页合并的链接规则、预算、临时标签页生命周期与验证边界 |
+| `scripts/check_pagination_browser.py` | 无后端分页真实扩展回归；侧栏使用合成身份与 OCR 替身 |
 | `scripts/check_ocr.py` | 真实 CPU 模型的中英文、长图分段边界和重复行检查 |
 | `scripts/check_ocr_browser.py` | 真实扩展→生产 OCR 路由→本地模型→可编辑预览，使用临时身份不写库 |
 | `CLIPPING_COMPATIBILITY.md` | 四种剪藏方式、依赖来源、真实浏览器验证和网站适配边界 |
@@ -187,6 +189,11 @@
 | `extension/scroll-capture.js` | 受控滚动采样、进度、停止条件及坐标/样式恢复 |
 | `extension/snapshot-merge.js` | 按相邻窗口重叠有序合并，保留合法重复和代码围栏 |
 | `extension/image-ocr.js` | 图片有界读取、身份/取消保护、顺序识别与预览补充 |
+| `extension/pagination.js` | 纯分页 URL/文章身份规则及 DOM 下一页元数据 |
+| `extension/pagination-capture.js` | 分页预算、临时标签页调用、顺序合并与取消/导航保护 |
+| `extension/pagination-tabs.js` | 后台 port 所有权、临时页创建/清理及工作线程恢复 |
+| `extension/tests/pagination.test.js` | 分页同源/页码/文章身份、合并、上限、取消与错误回归 |
+| `extension/tests/pagination-tabs.test.js` | 临时页所有权、断开、延迟创建、接管和工作线程恢复 |
 | `extension/tests/image-ocr.test.js` | 图片数量/大小、凭证隔离、取消、身份变化与部分失败 |
 | `extension/tests/fixtures/ocr/` | 原创中英文与长图 PNG，用于真实 OCR 验证，无真实文章原文 |
 | `extension/tests/snapshot-merge.test.js` | 增量/虚拟窗口合并、重复、无重叠提醒、代码及长度上限回归 |

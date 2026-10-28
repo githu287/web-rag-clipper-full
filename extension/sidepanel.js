@@ -36,6 +36,7 @@ const els = {
   clipCaptureCancel: document.getElementById("clip-capture-cancel"),
   clipAutoScroll: document.getElementById("clip-auto-scroll"),
   clipImageOcr: document.getElementById("clip-image-ocr"),
+  clipPagination: document.getElementById("clip-pagination"),
   clipJob: document.getElementById("clip-job"),
   clipJobStage: document.getElementById("clip-job-stage"),
   clipJobProgress: document.getElementById("clip-job-progress"),
@@ -1106,6 +1107,7 @@ function renderClipView() {
   els.clipMode.disabled = clipBusy || jobIsActive;
   els.clipAutoScroll.disabled = clipBusy || jobIsActive || !["article", "page"].includes(els.clipMode.value || "article");
   els.clipImageOcr.disabled = clipBusy || jobIsActive;
+  els.clipPagination.disabled = clipBusy || jobIsActive || els.clipMode.value !== "article";
   els.clipCaptureCancel.hidden = !(clipBusy && clipBusyAction === "extract");
   renderClipJob();
   els.clipPreview.hidden = !clipDraft;
@@ -1128,6 +1130,8 @@ function renderClipView() {
     const isSubmitting = clipBusyAction === "save";
     const extracting = clipScrollProgress && clipScrollProgress.phase === "ocr"
       ? "正在识别图片：" + clipScrollProgress.current + "/" + clipScrollProgress.total + "，可取消"
+      : clipScrollProgress && clipScrollProgress.phase === "pagination"
+      ? "正在读取分页：第 " + clipScrollProgress.current + " 页 / 最多 " + clipScrollProgress.max_pages + " 页，已采集 " + clipScrollProgress.collected + " 页"
       : clipScrollProgress
       ? "正在加载并采集：" + clipScrollProgress.steps + "/20 次滚动 · 已采集 " + clipScrollProgress.collected_chars.toLocaleString("zh-CN") + " 字 · " + Math.floor(clipScrollProgress.elapsed_ms / 1000) + " 秒"
       : els.clipMode.value === "region" ? "请在网页中点击要剪藏的区域，Esc 可取消…" : "正在等待页面内容并提取…";
@@ -1358,6 +1362,8 @@ function renderExtractionDiagnostics(trimmedLength) {
     scroll_overlap_uncertain: "部分滚动片段无法可靠对齐，请检查重复或遗漏",
     scroll_other_containers: "页面还有其他滚动区域，本次只处理主要区域",
     scroll_new_frames: "新加载的内嵌页面可能遗漏，建议单独打开剪藏",
+    pagination_none: "未找到可自动跟进的下一页，本次仅保留当前页",
+    pagination_incomplete: "分页合并已停止，内容可能不完整，请检查停止原因和来源",
   };
   const warnings = Array.isArray(diagnostics.quality_warnings)
     ? diagnostics.quality_warnings.map(function (item) { return warningLabels[item] || item; })
@@ -1369,9 +1375,9 @@ function renderExtractionDiagnostics(trimmedLength) {
   const parts = [
     "剪藏方式：" + ({ article: "智能正文", page: "整页可读内容", selection: "选中文字", region: "指定区域" }[diagnostics.mode] || "智能正文"),
     (diagnostics.fallback ? "降级区域：" : "正文区域：") + strategy,
-    diagnostics.scroll_enabled ? "累计采集 " + trimmedLength.toLocaleString("zh-CN") + " 字" : "原始 " + sourceCount.toLocaleString("zh-CN") + " 字 → 提取 " + trimmedLength.toLocaleString("zh-CN") + " 字",
-    "清理 " + removedCount.toLocaleString("zh-CN") + " 个节点（隐藏 " + hiddenCount.toLocaleString("zh-CN") + "）",
-    (diagnostics.scroll_enabled ? "末次片段结构：" : "结构：") + (Number(diagnostics.heading_count) || 0) + " 标题 / " +
+    diagnostics.scroll_enabled || diagnostics.pagination_enabled ? "累计采集 " + trimmedLength.toLocaleString("zh-CN") + " 字" : "原始 " + sourceCount.toLocaleString("zh-CN") + " 字 → 提取 " + trimmedLength.toLocaleString("zh-CN") + " 字",
+    (diagnostics.pagination_enabled ? "起始页清理 " : "清理 ") + removedCount.toLocaleString("zh-CN") + " 个节点（隐藏 " + hiddenCount.toLocaleString("zh-CN") + "）",
+    (diagnostics.pagination_enabled ? "起始页结构：" : diagnostics.scroll_enabled ? "末次片段结构：" : "结构：") + (Number(diagnostics.heading_count) || 0) + " 标题 / " +
       (Number(diagnostics.paragraph_count) || 0) + " 段落 / " +
       (Number(diagnostics.code_block_count) || 0) + " 代码块 / " +
       (Number(diagnostics.inline_code_count) || 0) + " 行内代码 / " +
@@ -1379,6 +1385,11 @@ function renderExtractionDiagnostics(trimmedLength) {
   ];
   if (shadowRootCount > 0) parts.push("读取 " + shadowRootCount.toLocaleString("zh-CN") + " 个组件内容区");
   if (diagnostics.ocr_enabled) parts.push("图片识别：" + diagnostics.ocr_recognized + " 张有文字 / " + diagnostics.ocr_empty + " 张未发现文字 / " + diagnostics.ocr_failed + " 张失败；候选 " + diagnostics.ocr_candidates + " 张，请核对结果");
+  if (diagnostics.pagination_enabled) parts.push("分页：" + diagnostics.pagination_page_count + " 页，" + ({
+    complete: "未再发现下一页", unsupported: "下一页链接不符合支持规则", ambiguous: "存在多个不同的下一页",
+    loop: "链接循环", page_limit: "达到页数上限", time_limit: "达到读取时间上限", size_limit: "达到字符上限",
+    different_article: "后续标题或文章身份不一致", repeated_content: "后续页面内容重复", interrupted: "后台标签页被接管或连接中断", page_failed: "后续页面读取失败或受限",
+  }[diagnostics.pagination_stop_reason] || diagnostics.pagination_stop_reason));
   if (diagnostics.included_frame_count) parts.push("包含 " + diagnostics.included_frame_count + " 个内嵌页面");
   if (diagnostics.scroll_enabled) parts.push("自动加载：" + diagnostics.scroll_steps + " 次滚动 / " + diagnostics.scroll_snapshots + " 个片段" +
     (diagnostics.scroll_stop_reason === "bottom_stable" ? "，已到达当前底部并暂时稳定" : "，已停止，请检查完整性"));
@@ -1861,6 +1872,7 @@ async function extractCurrentPage() {
     signal: controller && controller.signal,
     autoScroll: !!els.clipAutoScroll.checked,
     collectImages: !!els.clipImageOcr.checked,
+    collectPagination: !!els.clipPagination.checked && els.clipMode.value === "article",
     onProgress: function (progress) {
       if (controller && !controller.signal.aborted && clipCaptureController === controller && token === clipExtractionToken) {
         clipScrollProgress = progress;
@@ -1901,6 +1913,10 @@ async function prepareClipPreview() {
       if (controller.signal.aborted || token !== clipExtractionToken || currentTabId !== extractionTabId || after.pluginId !== plugin.pluginId || after.pluginSecret !== plugin.pluginSecret) throw new Error("页面或工作空间已变化，请重新提取");
       if (!latest || !isSameNormalizedWebUrl(latest.url, page.url)) throw new Error("页面已变化，请重新提取");
     };
+    if (els.clipPagination.checked && els.clipMode.value === "article") page = await webRagPaginationCapture.expand(extractionTabId, page, {
+      signal: controller.signal, guard, collectImages: !!els.clipImageOcr.checked,
+      onProgress: function (progress) { if (clipCaptureController === controller && token === clipExtractionToken) { clipScrollProgress = progress; renderClipView(); } },
+    });
     if (els.clipImageOcr.checked) page = await webRagImageOcr.enrich(page, {
       signal: controller.signal, guard, recognize: webRagApiClient.ocr.image,
       onProgress: function (progress) { if (clipCaptureController === controller && token === clipExtractionToken) { clipScrollProgress = progress; renderClipView(); } },

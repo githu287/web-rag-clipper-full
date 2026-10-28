@@ -3,7 +3,7 @@
 // 禁止：发送任何业务请求（/clips /rag/* /plugins/register）；保存/解密凭证。
 "use strict";
 
-importScripts("config.js", "url-utils.js", "session-store.js");
+importScripts("config.js", "url-utils.js", "session-store.js", "pagination.js", "pagination-tabs.js");
 
 // STORAGE_KEYS 已在 config.js 全局声明，禁止重复声明（避免 SW 解析失败）。
 
