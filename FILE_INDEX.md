@@ -16,6 +16,7 @@
 | `IMAGE_OCR.md` | 可选本地图片 OCR 的安装、限制、隐私、错误契约和验证 |
 | `PAGINATION_CAPTURE.md` | 可选分页合并的链接规则、预算、临时标签页生命周期与验证边界 |
 | `COLLAPSED_CONTENT.md` | 原生折叠正文分段、ARIA 隐藏正文提醒、真实样本和大型 README 保真待查项 |
+| `README_FIDELITY_2026-10-29.md` | 0.12.1 代码空白/Unicode 与列表顺序修复、真实大型 README 普通及滚动验收 |
 | `scripts/audit_collapsed_site.py` | 按需只读检查公开网页前若干原生折叠块和原网页开闭状态，不调用后端/模型 |
 | `scripts/check_pagination_browser.py` | 无后端分页真实扩展回归；侧栏使用合成身份与 OCR 替身 |
 | `scripts/check_ocr.py` | 真实 CPU 模型的中英文、长图分段边界和重复行检查 |
@@ -206,7 +207,7 @@
 | `extension/vendor/readability/` | 本地打包的 Mozilla Readability 0.6.0、来源/完整性摘要及许可证 |
 | `extension/tests/page-capture.test.js` | 框架筛选、去重、长度、导航、受限提示及取消回归 |
 | `extension/tests/capture-driver.html` | 浏览器测试的扩展上下文入口，不存储 Workspace 凭证 |
-| `extension/tests/site-samples.json` | 线上公开网页样本、参照正文与标题选择器，以及噪声检查项 |
+| `extension/tests/site-samples.json` | 14 个线上公开网页样本、参照正文与标题选择器，以及噪声检查项 |
 | `extension/tests/site-fixtures.json` | 12 份原创 DOM 模式回归样本，复现站点问题且不复制原文；由真实浏览器 CI 执行 |
 | `extension/content.js` | 提取消息入口、降级处理和 SPA URL 监听 |
 | `extension/api-client.js` | Plugin Header、JSON/multipart 请求与错误分类 |

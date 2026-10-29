@@ -50,6 +50,8 @@ FastAPI
 
 0.12.0 改进 [折叠正文与完整性提示](COLLAPSED_CONTENT.md)：保留原生折叠摘要/正文分段，对明确尚未展开的 ARIA 正文提示在原网页展开后重新提取；不自动点击按钮。包含真实折叠样本验证及大型 README 的已知保真待查项。
 
+0.12.1 修复上述 [大型 README 保真问题](README_FIDELITY_2026-10-29.md)：保留代码连续空行、Unicode 连接字符和行尾空白，恢复子列表与后续段落顺序。真实样本代码由 42/47 提升到 47/47，普通与滚动提取均通过。
+
 ## 技术栈
 
 | 领域 | 实现 |
@@ -335,7 +337,7 @@ node extension/tests/page-capture.test.js
 .venv/Scripts/python.exe scripts/audit_capture_sites.py
 ```
 
-样本定义在 `extension/tests/site-samples.json`，默认报告和网页快照写入忽略目录 `.venv/runtime/site-audit/`。线上检查不影响 CI；CI 使用 11 份原创 DOM 模式 fixture 重现已修复的缺陷。
+样本定义在 `extension/tests/site-samples.json`（现有 14 个公开页面），默认报告和网页快照写入忽略目录 `.venv/runtime/site-audit/`。线上检查不影响 CI；CI 使用 12 份原创 DOM 模式 fixture，以及独立的格式/交互回归重现已修复缺陷。
 
 可用 `scripts/audit_capture_sites.py --auto-scroll --only github-readme vue-guide` 单独验证开启自动加载后的公开样本。滚动采集原理、停止条件和本机测试见 [自动加载验收](SCROLL_CAPTURE.md)。
 

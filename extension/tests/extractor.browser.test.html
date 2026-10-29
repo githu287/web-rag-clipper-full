@@ -186,6 +186,25 @@
     assert(imageDetails.diagnostics.included_collapsed_count === 1, "仅图片折叠块应计数，清理后为空的折叠块不计数");
     assert(imageDetails.diagnostics.quality_warnings.includes("collapsed_content_included"), "图片折叠块应提示核对");
 
+    document.body.innerHTML = `<article><h1>列表与源码保真</h1><p>${fill("已有正文。", 50)}</p><ol><li><p><strong>LIST_HEADER</strong>:</p><ul><li>FIRST_CHILD<ul><li>DEEP_CHILD</li></ul></li></ul><p>AFTER_FIRST_LIST <a href="https://example.com/guide">LINK_LABEL</a></p><ul><li>SECOND_CHILD</li></ul><p>FINAL_PARAGRAPH</p></li><li>SIBLING_ITEM</li></ol><pre><code class="language-text"></code></pre></article>`;
+    const literalCode = "first  \n\n\n\tvalue" + String.fromCodePoint(0xa0,0x200b,0x200c,0x200d,0xfeff) + "🤦🏻‍♂️\n\n\nlast\t";
+    document.querySelector("pre code").textContent = literalCode;
+    const sourceHtml = document.querySelector("article").innerHTML;
+    const fidelity = webRagPageExtractor.extract(document);
+    const sequence = ["LIST_HEADER", "FIRST_CHILD", "DEEP_CHILD", "AFTER_FIRST_LIST", "SECOND_CHILD", "FINAL_PARAGRAPH", "SIBLING_ITEM"].map(t=>fidelity.text.indexOf(t));
+    assert(sequence.every((position,index)=>position>=0&&(index===0||position>sequence[index-1])), "子列表与前后段落应保持原始顺序");
+    assert(fidelity.text.includes("   - FIRST_CHILD\n\n     - DEEP_CHILD"), "有序父列表下的子列表应按父标记宽度缩进");
+    assert(fidelity.text.includes("   AFTER_FIRST_LIST [LINK_LABEL](<https://example.com/guide>)"), "列表续段应保留缩进与链接");
+    assert(fidelity.text.includes("```text\n" + literalCode + "\n```"), "真实 DOM 代码应保留空行、缩进、Unicode 和行尾空白");
+    assert(document.querySelector("article").innerHTML===sourceHtml, "保真处理不能修改原 DOM");
+
+    document.body.innerHTML = `<article><h1>列表首项代码</h1><p>${fill("已有正文。", 50)}</p><ul><li><pre><code class="language-text"></code></pre><p>AFTER_CODE</p></li></ul></article>`;
+    document.querySelector("pre code").textContent = literalCode;
+    const codeFirst = webRagPageExtractor.extract(document).text;
+    const nestedCode = literalCode.split("\n").map(line=>line ? "  " + line : line).join("\n");
+    assert(codeFirst.includes("-\n\n  ```text\n" + nestedCode + "\n  ```"), "列表以代码开头时仍保留完整源码和独立围栏");
+    assert(codeFirst.indexOf("AFTER_CODE") > codeFirst.indexOf("last"), "代码后续段落不能前移");
+
     document.body.innerHTML = `<pre id="test-result">${failures.length === 0
       ? "EXTRACTOR_BROWSER_TESTS_PASSED"
       : "EXTRACTOR_BROWSER_TESTS_FAILED\n" + failures.join("\n")}</pre>`;

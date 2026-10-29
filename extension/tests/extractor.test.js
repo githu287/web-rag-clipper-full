@@ -51,14 +51,14 @@ test("代码块内保留缩进，正文空白被规范化", function () {
   const input = "  标题   文本  \n\n\n```\n  const x = 1;  \n    return x;\n```\n\n正文   内容  ";
   assert.equal(
     extractor.normalizeStructuredText(input),
-    "标题 文本\n\n```\n  const x = 1;\n    return x;\n```\n\n正文 内容",
+    "标题 文本\n\n```\n  const x = 1;  \n    return x;\n```\n\n正文 内容",
   );
 });
 
 test("代码围栏保留语言标识", function () {
   assert.equal(
     extractor.normalizeStructuredText("```vue\n  const value = 1;  \n```"),
-    "```vue\n  const value = 1;\n```",
+    "```vue\n  const value = 1;  \n```",
   );
 });
 
@@ -137,6 +137,19 @@ test("嵌套 Markdown 示例保持更长的围栏及代码缩进", function () {
 test("图片为主的短文章报告文字识别边界", function () {
   assert(extractor.buildQualityWarnings({ imageCount: 4, sourceTextLength: 120, extractedCharCount: 220 }).includes("image_heavy"));
   assert(!extractor.buildQualityWarnings({ imageCount: 4, sourceTextLength: 1200, extractedCharCount: 1400 }).includes("image_heavy"));
+});
+
+test("代码保留连续空行、Unicode 连接字符和行尾空白", function () {
+  const joiner = String.fromCodePoint(0x200d);
+  const special = String.fromCodePoint(0xa0, 0x200b, 0x200c, 0xfeff);
+  const text = "```text\nfirst  \n\n\n\tvalue" + special + "🤦🏻" + joiner + "♂️\n\n\nlast\t\n```";
+  assert.equal(extractor.normalizeStructuredText(text), text);
+  assert.equal(extractor.normalizeStructuredText("正文\n\n\n\n后文"), "正文\n\n后文");
+  assert.equal(extractor.normalizeStructuredText("🤦🏻" + joiner + "♂️"), "🤦🏻" + joiner + "♂️");
+});
+
+test("列表续段和星号子列表保留缩进", function () {
+  assert.equal(extractor.normalizeStructuredText("1. 标题\n\n   * 子项\n\n   后续说明"), "1. 标题\n\n   - 子项\n\n   后续说明");
 });
 
 console.log("extractor tests passed");

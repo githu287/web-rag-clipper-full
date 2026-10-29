@@ -2,6 +2,14 @@
   "description": "Public page samples for opt-in live capture audits. Access restrictions are recorded separately from extraction defects; these samples do not establish a site-wide compatibility rate.",
   "samples": [
     {
+      "id": "github-yt-dlp",
+      "site": "GitHub 大型 README",
+      "url": "https://github.com/yt-dlp/yt-dlp",
+      "root": "article.markdown-body",
+      "title": "article.markdown-body h1",
+      "min_chars": 10000
+    },
+    {
       "id": "wechat-science",
       "site": "微信公众号",
       "url": "https://mp.weixin.qq.com/s/v8g0jI-c49RsihsaPBgeRQ",

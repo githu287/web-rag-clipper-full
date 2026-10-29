@@ -1,6 +1,6 @@
 # 网页剪藏能力与验证
 
-2026-10-29 更新，扩展 0.12.0。四种模式于 0.8.0 加入，0.8.1 完成 [13 个公开页面实测](SITE_AUDIT_2026-10-28.md)，0.9.0 加入 [可选自动加载](SCROLL_CAPTURE.md)，0.10.0 加入 [可选本地图片 OCR](IMAGE_OCR.md)，0.11.0 加入 [可选分页文章合并](PAGINATION_CAPTURE.md)。0.11.1 完成 [真实分页、OCR 入库和问答验收](REAL_SITE_ACCEPTANCE_2026-10-28.md)，0.11.2 补充 [可见数字页码图集识别与验收](GALLERY_PAGINATION_2026-10-28.md)，0.11.3 扩展明确的无链接当前页标记，0.12.0 增加 [折叠正文结构与完整性提示](COLLAPSED_CONTENT.md)。不宣称全网覆盖率。
+2026-10-29 更新，扩展 0.12.1。四种模式于 0.8.0 加入，0.8.1 完成 [13 个公开页面实测](SITE_AUDIT_2026-10-28.md)，0.9.0 加入 [可选自动加载](SCROLL_CAPTURE.md)，0.10.0 加入 [可选本地图片 OCR](IMAGE_OCR.md)，0.11.0 加入 [可选分页文章合并](PAGINATION_CAPTURE.md)。0.11.1 完成 [真实分页、OCR 入库和问答验收](REAL_SITE_ACCEPTANCE_2026-10-28.md)，0.11.2 补充 [可见数字页码图集识别与验收](GALLERY_PAGINATION_2026-10-28.md)，0.11.3 扩展明确的无链接当前页标记，0.12.0 增加 [折叠正文结构与完整性提示](COLLAPSED_CONTENT.md)，0.12.1 修复 [大型 README 代码与列表保真](README_FIDELITY_2026-10-29.md)。不宣称全网覆盖率。
 
 ## 已实现
 

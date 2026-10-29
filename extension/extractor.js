@@ -6,7 +6,7 @@
   if (typeof module === "object" && module.exports) module.exports = api;
   if (root) root.webRagPageExtractor = api;
 })(typeof globalThis !== "undefined" ? globalThis : this, function () {
-  const VERSION = "1.7.0";
+  const VERSION = "1.7.1";
   const MIN_MEANINGFUL_CHARS = 180;
   const MAX_EXTRACTED_CHARS = 500000;
 
@@ -140,9 +140,7 @@
   }
 
   function normalizeStructuredText(value) {
-    const source = String(value || "")
-      .replace(/\r\n?/g, "\n")
-      .replace(/[\u00a0\u200b\u200c\u200d\ufeff]/g, " ");
+    const source = String(value || "").replace(/\r\n?/g, "\n");
     const lines = source.split("\n");
     const output = [];
     let inCodeFence = false;
@@ -161,20 +159,23 @@
         line = fenceIndent + "`".repeat(fenceLength);
         inCodeFence = false;
         fenceLength = 0;
-      } else if (inCodeFence) {
-        line = line.replace(/[ \t]+$/g, "");
-      } else {
-        line = line.replace(/^\s*\*\s+/, "- ");
+      } else if (!inCodeFence) {
+        // Code payloads must retain blank lines, Unicode joiners, NBSP and
+        // trailing whitespace. Normalize only the surrounding prose.
+        line = line.replace(/[\u00a0\u200b\ufeff]/g, " ");
+        line = line.replace(/^([ \t]*)\*\s+/, "$1- ");
         const nestedList = line.match(/^(\s+)((?:[-+*]|\d+\.)\s+.*)$/);
         if (nestedList) {
           line = nestedList[1].replace(/\t/g, "  ") + nestedList[2].replace(/[ \t\f\v]+/g, " ").trimEnd();
         } else {
+          const indent = (line.match(/^[ \t]*/) || [""])[0].replace(/\t/g, "  ");
           line = line.replace(/[ \t\f\v]+/g, " ").trim();
+          if (line && indent.length >= 2) line = indent + line;
         }
       }
       const blank = line.length === 0;
       if (!inCodeFence && line.trim() === "*") continue;
-      if (blank && previousBlank) continue;
+      if (blank && previousBlank && !inCodeFence) continue;
       output.push(line);
       previousBlank = blank;
     }
@@ -489,8 +490,8 @@
       }).join("\n");
       return `\n\n${quote}\n\n`;
     }
-    if (tag === "UL" || tag === "OL") return serializeList(node, context, 0);
-    if (tag === "LI") return serializeListItem(node, context, 0, 1, false);
+    if (tag === "UL" || tag === "OL") return serializeList(node, context, "");
+    if (tag === "LI") return serializeListItem(node, context, "", 1, false);
     if (tag === "TABLE") {
       return serializeTable(node, context);
     }
@@ -567,33 +568,44 @@
     return String(value || "").replace(/(^|[^`])(<\/?[a-z][^>\n]*>)(?!`)/gi, "$1`$2`");
   }
 
-  function serializeList(list, context, depth) {
+  function serializeList(list, context, indent) {
     const ordered = list.tagName === "OL";
     return Array.from(list.children || []).filter(function (child) {
       return child.tagName === "LI";
     }).map(function (item, index) {
-      return serializeListItem(item, context, depth, index + 1, ordered);
+      return serializeListItem(item, context, indent, index + 1, ordered);
     }).join("");
   }
 
-  function serializeListItem(item, context, depth, index, ordered) {
-    const nestedLists = [];
-    const content = Array.from(item.childNodes || []).map(function (child) {
-      if (child.nodeType === 1 && (child.tagName === "UL" || child.tagName === "OL")) {
-        nestedLists.push(child);
-        return "";
-      }
-      return serializeNode(child, context);
-    }).join("").trim();
-    const indent = "  ".repeat(depth);
+  function serializeListItem(item, context, indent, index, ordered) {
     const prefix = ordered ? `${index}. ` : "- ";
-    const continuationIndent = " ".repeat(indent.length + prefix.length);
-    // Every newline matters inside a fenced example. Collapsing newline runs
-    // here removed source-code blank lines in Vue's numbered list examples.
-    const line = content.replace(/\n/g, "\n" + continuationIndent);
-    return `\n${indent}${prefix}${line}` + nestedLists.map(function (nested) {
-      return serializeList(nested, context, depth + 1);
-    }).join("");
+    const continuationIndent = indent + " ".repeat(prefix.length);
+    let output = "", pending = "", started = false;
+    function flush() {
+      const content = pending.trim();
+      pending = "";
+      if (!content) return;
+      const line = content.split("\n").map(function (part, index) {
+        return index > 0 && part ? continuationIndent + part : part;
+      }).join("\n");
+      if (!started && /^`{3,}[a-z0-9_+-]*\n/i.test(content)) {
+        output += "\n" + indent + prefix.trimEnd() + "\n\n" + continuationIndent + line;
+      } else {
+        output += started ? "\n\n" + continuationIndent + line : "\n" + indent + prefix + line;
+      }
+      started = true;
+    }
+    Array.from(item.childNodes || []).forEach(function (child) {
+      if (child.nodeType === 1 && (child.tagName === "UL" || child.tagName === "OL")) {
+        flush();
+        if (!started) { output += "\n" + indent + prefix.trimEnd(); started = true; }
+        output += "\n" + serializeList(child, context, continuationIndent);
+      } else {
+        pending += serializeNode(child, context);
+      }
+    });
+    flush();
+    return output;
   }
 
   function serializeTable(table, context) {
