@@ -92,6 +92,7 @@ def main() -> None:
     parser.add_argument("--only", nargs="*", help="Sample IDs to run")
     parser.add_argument("--artifacts", type=Path, default=ROOT / ".venv/runtime/site-audit")
     parser.add_argument("--channel", default="chrome")
+    parser.add_argument("--extension-dir", type=Path, default=ROOT / "extension", help="Unpacked extension directory, including an older Git snapshot for comparison")
     parser.add_argument("--auto-scroll", action="store_true", help="Opt in to bounded scrolling before capture")
     args = parser.parse_args()
     args.artifacts.mkdir(parents=True, exist_ok=True)
@@ -104,7 +105,7 @@ def main() -> None:
 
     def save():
         report = {"date": datetime.now(timezone(timedelta(hours=8))).isoformat(),
-            "extension_version": json.loads((ROOT / "extension/manifest.json").read_text(encoding="utf-8"))["version"],
+            "extension_version": json.loads((args.extension_dir / "manifest.json").read_text(encoding="utf-8"))["version"],
             "auto_scroll": args.auto_scroll,
             "method": "Real extension capture; public pages in a fresh headless Chrome profile. No login or challenge bypass. Coverage compares rendered reference DOM blocks only; not unseen content.",
             "results": results}
@@ -116,7 +117,7 @@ def main() -> None:
             args=["--enable-unsafe-extension-debugging"])
         try:
             cdp = context.browser.new_browser_cdp_session()
-            extension = cdp.send("Extensions.loadUnpacked", {"path": str(ROOT / "extension")})["id"]
+            extension = cdp.send("Extensions.loadUnpacked", {"path": str(args.extension_dir.resolve())})["id"]
             driver = context.new_page()
             driver.goto(f"chrome-extension://{extension}/tests/capture-driver.html")
             for sample in samples:

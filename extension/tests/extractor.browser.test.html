@@ -180,6 +180,12 @@
     const tableRegion = webRagPageExtractor.extract(document, { mode: "region", root: document.querySelector("table") });
     assert(tableRegion.text.includes("| 标题A | 标题B |\n| --- | --- |"), "指定整张表格时仍须保留表格结构");
 
+    document.body.innerHTML = `<article><h1>图片折叠块</h1><p>${fill("已有正文。", 50)}</p><details><summary>图片摘要</summary><img alt="折叠图片说明"></details><details><summary>空折叠块</summary><p hidden>隐藏正文</p></details></article>`;
+    const imageDetails = webRagPageExtractor.extract(document);
+    assert(imageDetails.text.includes("图片摘要\n\n[图片：折叠图片说明]"), "仅图片的折叠正文仍须保留摘要分隔");
+    assert(imageDetails.diagnostics.included_collapsed_count === 1, "仅图片折叠块应计数，清理后为空的折叠块不计数");
+    assert(imageDetails.diagnostics.quality_warnings.includes("collapsed_content_included"), "图片折叠块应提示核对");
+
     document.body.innerHTML = `<pre id="test-result">${failures.length === 0
       ? "EXTRACTOR_BROWSER_TESTS_PASSED"
       : "EXTRACTOR_BROWSER_TESTS_FAILED\n" + failures.join("\n")}</pre>`;

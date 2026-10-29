@@ -48,6 +48,8 @@ FastAPI
 
 0.11.3 补充 [无链接当前页标记](PAGINATION_CAPTURE.md)：支持 `aria-current="page"` 及明确 current/active 数字标记，增加标签与 URL 页码核对，沿用 5 页上限与可编辑预览。
 
+0.12.0 改进 [折叠正文与完整性提示](COLLAPSED_CONTENT.md)：保留原生折叠摘要/正文分段，对明确尚未展开的 ARIA 正文提示在原网页展开后重新提取；不自动点击按钮。包含真实折叠样本验证及大型 README 的已知保真待查项。
+
 ## 技术栈
 
 | 领域 | 实现 |

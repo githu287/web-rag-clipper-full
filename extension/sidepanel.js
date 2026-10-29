@@ -1348,6 +1348,8 @@ function renderExtractionDiagnostics(trimmedLength) {
     missing_headings: "长正文未识别到标题结构",
     truncated: "超长内容已截断",
     content_unsettled: "页面仍在变化，可能需要重新提取",
+    collapsed_content_included: "已包含原生折叠块中已加载的正文，请核对预览",
+    collapsed_content_pending: "正文仍有未展开区域，请在原网页展开全文后重新提取",
     frames_incomplete: "部分内嵌页面受权限或数量限制，未完整提取",
     image_heavy: "页面以图片为主，尚未识别出图片正文，可勾选图片文字识别后重试",
     ocr_image_limit: "图片超过 8 张，仅处理前 8 张，可分区域继续剪藏",

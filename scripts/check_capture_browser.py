@@ -53,6 +53,23 @@ def main() -> None:
                 body = f'<article><p>隐藏页面禁止混入HIDDEN915。{PARAGRAPH}</p></article>'
             elif self.path == "/dynamic":
                 body = f'''<main>正在加载</main><script>setTimeout(() => {{document.querySelector('main').innerHTML = '<article><h1>延迟正文</h1><p>动态唯一标记DYNAMIC742。{PARAGRAPH}</p></article>';}}, 1600);</script>'''
+            elif self.path == "/collapsed":
+                body = f'''<article><h1>折叠正文测试</h1><p>{PARAGRAPH}</p>
+                  <details id="native"><summary>折叠摘要</summary><span>原生折叠正文NATIVE_BODY</span><p hidden>隐藏内容NATIVE_HIDDEN</p></details>
+                  <details open><summary>已展开摘要</summary><span>已展开正文OPEN_BODY</span></details>
+                  <details hidden><summary>隐藏摘要</summary><span>隐藏折叠块HIDDEN_DETAILS</span></details>
+                  <div style="max-height:20px;overflow:hidden"><p>CSS已加载正文CSS_BODY。{PARAGRAPH}</p></div>
+                  <button id="expand" aria-expanded="false" aria-controls="remaining" onclick="window.captureClicks++;document.querySelector('#remaining').hidden=false;this.setAttribute('aria-expanded','true')">展开全文</button>
+                  <button aria-expanded="false" aria-controls="remaining">显示更多</button>
+                  <div id="remaining" hidden><p>手动展开正文MANUAL_BODY。{PARAGRAPH}</p></div>
+                  <button aria-expanded="false" aria-controls="visible-more">显示更多</button><p id="visible-more">已经完整显示VISIBLE_BODY</p>
+                  <button aria-expanded="false" aria-controls="absent">显示更多</button>
+                  <button disabled aria-expanded="false" aria-controls="disabled-body">显示更多</button><p id="disabled-body" hidden>禁用内容DISABLED_BODY</p>
+                  <form><button aria-expanded="false" aria-controls="form-body">显示更多</button><p id="form-body" hidden>表单内容FORM_BODY</p></form>
+                  <button aria-expanded="false" aria-controls="unrelated">购买商品</button><div id="unrelated" hidden>不相关内容OTHER_BODY</div>
+                  <div class="comments"><button aria-expanded="false" aria-controls="comment-body">显示更多</button><p id="comment-body" hidden>隐藏评论COMMENT_BODY</p></div>
+                  </article><aside><button aria-expanded="false" aria-controls="side-body">显示更多</button><div id="side-body" hidden>侧栏SIDE_BODY</div></aside>
+                  <script>window.captureClicks=0;window.captureToggles=0;document.querySelector('#native').addEventListener('toggle',()=>window.captureToggles++);</script>'''
             else:
                 body = f'''<nav>整页导航唯一标记NAV123</nav><article><h1>测试文章</h1>
                 <p id="first">正文唯一标记BODY318。{PARAGRAPH}</p>
@@ -134,6 +151,51 @@ def main() -> None:
                 assert "NAV123" in whole["raw_text"] and "RELATED456" in whole["raw_text"]
                 assert "PRIVATE999" not in whole["raw_text"] and "HIDDEN123" not in whole["raw_text"]
                 done("Article/page modes differ correctly; hidden nodes and form values excluded")
+
+                tab = navigate("/collapsed")
+                original_html=source.content()
+                for mode in ["article", "page"]:
+                    collapsed=capture(tab,mode)
+                    assert "折叠摘要\n\n原生折叠正文NATIVE_BODY" in collapsed["raw_text"],collapsed
+                    assert "OPEN_BODY" in collapsed["raw_text"] and "CSS_BODY" in collapsed["raw_text"]
+                    assert all(text not in collapsed["raw_text"] for text in ["MANUAL_BODY","NATIVE_HIDDEN","HIDDEN_DETAILS","OTHER_BODY","COMMENT_BODY","SIDE_BODY","DISABLED_BODY","FORM_BODY"])
+                    assert collapsed["diagnostics"]["included_collapsed_count"]==1,collapsed
+                    assert collapsed["diagnostics"]["pending_collapsed_count"]==1,collapsed
+                    assert "collapsed_content_included" in collapsed["diagnostics"]["quality_warnings"]
+                    assert "collapsed_content_pending" in collapsed["diagnostics"]["quality_warnings"]
+                assert source.content()==original_html and source.url==base+"/collapsed"
+                assert source.evaluate("captureClicks===0 && captureToggles===0 && !document.querySelector('#native').open")
+                panel=context.new_page()
+                panel.set_viewport_size({"width":420,"height":1100})
+                panel.goto(f"chrome-extension://{extension_id}/sidepanel.html")
+                panel.locator("#view-welcome").wait_for(state="visible")
+                panel.evaluate("""async data=>{
+                  webRagApiClient.getPlugin=()=>({pluginId:'collapsed-ui-fixture',pluginName:'折叠正文测试',apiKeyConfigured:false});
+                  currentTabId=data.tab;binding={pluginId:'collapsed-ui-fixture',pageUrl:data.url,pageTitle:'折叠正文测试',mode:'current',stale:false};
+                  await sessionStore.setTabBinding(data.tab,binding);renderAppView();switchView('clip');
+                }""",{"tab":tab,"url":source.url})
+                panel.locator("#clip-btn").click()
+                wait_js(panel,"!clipBusy && clipDraft!==null")
+                diagnostics=panel.locator("#clip-preview-diagnostics").inner_text()
+                assert "已包含原生折叠块" in diagnostics and "请在原网页展开全文" in diagnostics,diagnostics
+                assert "NATIVE_BODY" in panel.locator("#clip-preview-text").input_value()
+                panel.screenshot(path=str(args.artifacts/"collapsed-preview.png"))
+                source.locator("#expand").click()
+                source.locator("#native > summary").click()
+                expanded=capture(tab,"article")
+                assert "MANUAL_BODY" in expanded["raw_text"]
+                assert expanded["diagnostics"]["pending_collapsed_count"]==0,expanded
+                assert expanded["diagnostics"]["included_collapsed_count"]==0,expanded
+                assert "collapsed_content_pending" not in expanded["diagnostics"]["quality_warnings"]
+                assert source.evaluate("captureClicks===1 && document.querySelector('#native').open")
+                panel.locator("#clip-btn").click()
+                wait_js(panel,"!clipBusy && clipDraft && clipDraft.raw_text.includes('MANUAL_BODY')")
+                assert "请在原网页展开全文" not in panel.locator("#clip-preview-diagnostics").inner_text()
+                panel.close()
+                done("Collapsed native text and summary boundaries preserved; pending ARIA content warned once, hidden/noise excluded, no automatic clicks/toggles; manual expansion clears warnings")
+                done("Actual extension preview shows actionable collapsed-content warnings and clears them after manual expansion (synthetic identity, no backend writes)")
+
+                tab = navigate("/article")
 
                 source.evaluate("""() => {const range=document.createRange(); range.selectNodeContents(document.querySelector('#pick')); const s=getSelection();s.removeAllRanges();s.addRange(range);}""")
                 selected = capture(tab, "selection")

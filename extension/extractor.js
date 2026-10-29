@@ -6,7 +6,7 @@
   if (typeof module === "object" && module.exports) module.exports = api;
   if (root) root.webRagPageExtractor = api;
 })(typeof globalThis !== "undefined" ? globalThis : this, function () {
-  const VERSION = "1.6.2";
+  const VERSION = "1.7.0";
   const MIN_MEANINGFUL_CHARS = 180;
   const MAX_EXTRACTED_CHARS = 500000;
 
@@ -51,7 +51,7 @@
   const BLOCK_TAGS = new Set([
     "ADDRESS", "ARTICLE", "ASIDE", "BLOCKQUOTE", "DIV", "DL", "FIELDSET",
     "FIGCAPTION", "FIGURE", "FOOTER", "HEADER", "HR", "MAIN", "P",
-    "SECTION",
+    "SECTION", "DETAILS", "SUMMARY",
   ]);
 
   // Narrow, DOM-checked profiles avoid selecting large application shells over
@@ -685,6 +685,36 @@
     return warnings;
   }
 
+  function pendingCollapsedCount(root, doc) {
+    if (!root || !root.querySelectorAll) return 0;
+    const selector = "button[aria-expanded='false'][aria-controls],[role='button'][aria-expanded='false'][aria-controls],a[aria-expanded='false'][aria-controls]";
+    const controls = (root.matches && root.matches(selector) ? [root] : [])
+      .concat(Array.from(root.querySelectorAll(selector))).slice(0, 160);
+    const targets = new Set();
+    for (const control of controls) {
+      if (isEffectivelyHidden(control, doc.defaultView) || control.closest("form,aside,nav,[disabled],[aria-disabled='true'],[role='navigation'],[role='complementary']")) continue;
+      let noise = false, ancestor = control;
+      while (ancestor && ancestor !== root.parentElement) {
+        if (isNoiseElement(ancestor)) noise = true;
+        if (ancestor.tagName === "DETAILS" && !ancestor.open) {
+          const summary = Array.from(ancestor.children).find(function (node) { return node.tagName === "SUMMARY"; });
+          if (!summary || !summary.contains(control)) noise = true;
+        }
+        ancestor = ancestor.parentElement;
+      }
+      if (noise) continue;
+      const label = String(control.getAttribute("aria-label") || control.textContent || "").trim().replace(/\s+/g, " ");
+      if (!/^(?:展开(?:全文|更多|正文)|显示更多|阅读全文|继续阅读|read more|show more|expand(?: all| content)?)\s*[»›>↓]{0,2}$/i.test(label)) continue;
+      const scope = control.getRootNode();
+      for (const id of String(control.getAttribute("aria-controls") || "").trim().split(/\s+/).slice(0, 8)) {
+        const target = scope.getElementById && scope.getElementById(id);
+        if (!target || !root.contains(target) || target.contains(control)) continue;
+        if (isEffectivelyHidden(target, doc.defaultView)) targets.add(target);
+      }
+    }
+    return targets.size;
+  }
+
   function readabilityCandidate(doc, fallback) {
     const Reader = typeof globalThis !== "undefined" && globalThis.Readability;
     if (typeof Reader !== "function" || !fallback.element) return null;
@@ -835,6 +865,17 @@
       imageCount: cleaned.clone.querySelectorAll("img").length,
       sourceTextLength: selected.metrics.textLength || 0,
     });
+    const closedDetails = (cleaned.clone.matches && cleaned.clone.matches("details:not([open])") ? [cleaned.clone] : [])
+      .concat(Array.from(cleaned.clone.querySelectorAll("details:not([open])")));
+    const includedCollapsedCount = closedDetails.filter(function (details) {
+      const summary = Array.from(details.children).find(function (node) { return node.tagName === "SUMMARY"; });
+      return Array.from(details.childNodes).some(function (node) {
+        return node !== summary && ((node.textContent || "").trim() || (node.matches && node.matches("img")) || (node.querySelector && node.querySelector("img")));
+      });
+    }).length;
+    const pendingCollapsed = mode === "selection" ? 0 : pendingCollapsedCount(selected.element, doc);
+    if (includedCollapsedCount) qualityWarnings.push("collapsed_content_included");
+    if (pendingCollapsed) qualityWarnings.push("collapsed_content_pending");
     if (options.collectImages && imageNodes.some(function (image) { return !image.getAttribute("data-web-rag-image"); })) qualityWarnings.push("ocr_unsupported_source");
     return {
       text,
@@ -861,6 +902,8 @@
         emphasis_count: serializationContext.emphasisCount,
         table_count: selected.metrics.tableCount || 0,
         image_count: cleaned.clone.querySelectorAll("img").length,
+        included_collapsed_count: includedCollapsedCount,
+        pending_collapsed_count: pendingCollapsed,
         link_count: serializationContext.linkCount,
         preserved_link_count: serializationContext.preservedLinkCount,
         link_density: Number(linkDensity(selected.metrics).toFixed(3)),

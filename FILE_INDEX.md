@@ -15,6 +15,8 @@
 | `SCROLL_CAPTURE.md` | 可选自动加载剪藏的操作、预算、合并、恢复与验证边界 |
 | `IMAGE_OCR.md` | 可选本地图片 OCR 的安装、限制、隐私、错误契约和验证 |
 | `PAGINATION_CAPTURE.md` | 可选分页合并的链接规则、预算、临时标签页生命周期与验证边界 |
+| `COLLAPSED_CONTENT.md` | 原生折叠正文分段、ARIA 隐藏正文提醒、真实样本和大型 README 保真待查项 |
+| `scripts/audit_collapsed_site.py` | 按需只读检查公开网页前若干原生折叠块和原网页开闭状态，不调用后端/模型 |
 | `scripts/check_pagination_browser.py` | 无后端分页真实扩展回归；侧栏使用合成身份与 OCR 替身 |
 | `scripts/check_ocr.py` | 真实 CPU 模型的中英文、长图分段边界和重复行检查 |
 | `scripts/check_ocr_browser.py` | 真实扩展→生产 OCR 路由→本地模型→可编辑预览，使用临时身份不写库 |
@@ -22,7 +24,7 @@
 | `SITE_AUDIT_2026-10-28.md` | 13 个公开网页的实测结果、代码保真修复、访问受限与图片边界 |
 | `REAL_SITE_ACCEPTANCE_2026-10-28.md` | 0.11.1 真实公开网页、分页版本对照、OCR 入库/问答及测试数据清理验收 |
 | `GALLERY_PAGINATION_2026-10-28.md` | 0.11.2 可见数字页码、图集正文范围与真实五页上限验收 |
-| `scripts/audit_capture_sites.py` | 按需在线样本审计，记录可见块/源码保留、标题、噪声、状态与耗时；运行数据默认不入库 |
+| `scripts/audit_capture_sites.py` | 按需在线样本审计，记录可见块/源码保留、标题、噪声、状态与耗时；支持旧版扩展目录对照，运行数据默认不入库 |
 | `scripts/audit_pagination_sites.py` | 按需真实分页审计，独立比较逐页正文/标题/主图并检查原页和临时页记录；支持旧版扩展对照 |
 | `extension/tests/pagination-sites.json` | 真实分页公开 URL、参考正文范围和隐藏/JS 翻页边界；与合成本地样本分开 |
 | `ARCHITECTURE.md` | 当前实现的分层、数据流、隔离与一致性设计 |
