@@ -21,7 +21,8 @@
     "questions": [
       {"query": "讲述者被选派到哪家医院实习？请引用原文。", "expected": {"required": [["北京首钢医院"]]}, "require_asr_citation": true},
       {"query": "毕业后在哪里、什么系统工作？请引用原文。", "expected": {"required": [["拉萨"], ["基层医疗卫生"]]}, "require_asr_citation": true},
-      {"query": "他的手机号码是多少？", "expected": {"required": [["无法", "未提供", "未提及"]]}}
+      {"query": "他的手机号码是多少？", "expected": {"required": [["无法", "未提供", "未提及"]]}},
+      {"query": "请分别回答：被选派到哪家医院实习？他的手机号码是多少？", "expected": {"required": [["首钢"], ["无法"]]}, "require_asr_citation": true}
     ]
   },
   {
@@ -32,7 +33,8 @@
     "questions": [
       {"query": "仅按这段2020年历史访谈，嘉宾姓名和职务是什么？请引用原文。", "expected": {"required": [["蔡清华"], ["副局长"]]}, "require_asr_citation": true},
       {"query": "这段历史访谈提到的退款比例、申请企业数量和退款总额是多少？请引用原文，不提供现行政策建议。", "expected": {"required": [["80%", "百分之八十"], ["19", "十九"], ["170", "一百七十"]]}, "require_asr_citation": true},
-      {"query": "仅按这段历史访谈，旅行社当时可以经营跨省跨境团队旅游吗？请引用原文，不提供现行政策建议。", "expected": {"required": [["不得", "不能", "不允许", "不可以"]]}, "require_asr_citation": true}
+      {"query": "仅按这段历史访谈，旅行社当时可以经营跨省跨境团队旅游吗？请引用原文，不提供现行政策建议。", "expected": {"required": [["不得", "不能", "不允许", "不可以"]]}, "require_asr_citation": true},
+      {"query": "仅按这段历史访谈，正式文件发布前网吧、娱乐场所可以恢复经营吗？旅行社可以开展跨省跨境团队游吗？请引用原文，不提供现行政策建议。", "expected": {"required": [["网吧"], ["旅行社"], ["不得", "不可以"]]}, "require_asr_citation": true}
     ]
   },
   {
@@ -44,7 +46,9 @@
     "questions": [
       {"query": "视频中点击编辑之后，还要点击哪个按钮？只回答这一点并引用原文。", "expected": {"required": [["工具"]]}, "require_asr_citation": true},
       {"query": "视频列出了哪些冻结方式？请引用原文。", "expected": {"required": [["首行"], ["首列"], ["当前位置"]]}, "require_asr_citation": true},
-      {"query": "视频要求输入的管理员密码是多少？", "expected": {"required": [["无法", "未提及", "未提供"]]}}
+      {"query": "视频要求输入的管理员密码是多少？", "expected": {"required": [["无法", "未提及", "未提供"]]}},
+      {"query": "请分别回答：第一步先点击哪个按钮？之后点击哪个按钮？有哪些冻结方式？每问单独回答并引用原文。", "expected": {"required": [["编辑"], ["工具"], ["首行"], ["首列"], ["当前位置"]]}, "require_asr_citation": true},
+      {"query": "请分别回答：点击编辑之后要点击哪个按钮？视频要求的管理员密码是多少？", "expected": {"required": [["工具"], ["无法"]]}, "require_asr_citation": true}
     ]
   }
 ]

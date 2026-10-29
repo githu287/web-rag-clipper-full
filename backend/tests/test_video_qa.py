@@ -47,6 +47,25 @@ def test_direct_questions_and_followups_need_no_embeddings_or_ingestion(service)
         assert list(session.scalars(select(Document))) == []
 
 
+def test_partial_grounding_returns_only_surviving_sources_without_persisting_drafts(service):
+    from backend.clients.video import CloudVideoClient, UNSUPPORTED_ANSWER
+    job = completed(service)
+    before = service.repo.get("a", job.id).result
+    client = CloudVideoClient()
+    draft = {"answers": [{"question": "浇水？", "answer": "土壤湿润时不要继续浇水。[片段1]"},
+                         {"question": "放在哪里？", "answer": "放在烈日下。[片段2]"}]}
+    decision = {"checks": [{"id": 1, "reason": "原文支持", "supported": True}, {"id": 2, "reason": "地点错误", "supported": False}]}
+    client.generate = Mock(side_effect=[(json.dumps(draft), {"total_tokens": 20}), (json.dumps(decision), {"total_tokens": 5})])
+    service._cloud_client = client
+    response = service.ask("a", job.id, {"query": "土壤湿润时浇水吗？放在哪里？"})
+    assert response["answer"].endswith(UNSUPPORTED_ANSWER) and "烈日" not in response["answer"]
+    assert [s["label"] for s in response["sources"]] == ["片段 1"]
+    assert "逐项核对" in response["basis"] and response["usage"]["total_tokens"] == 25
+    assert service.repo.get("a", job.id).result == before
+    with service.repo.sessions() as session:
+        assert list(session.scalars(select(Document))) == []
+
+
 @pytest.mark.parametrize("citation", ["[片段1]", "[片段 1]", "[片段\t1]", "[片段\n1]"])
 def test_sources_accept_optional_space_in_real_model_citations(service, citation):
     job = completed(service)

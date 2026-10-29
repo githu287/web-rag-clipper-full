@@ -94,7 +94,9 @@ class VideoSummaryService:
             basis = "云端ASR原文与AI视频总结，未重新分析原视频" if sentences else "AI 视频总结，未重新分析原视频"
             if usage.get("retrieval_calls"):
                 basis += "；已先按摘要检索最多3个片段，未命中不能判定全片不存在相关内容"
-            if usage.get("verification_rejected"):
+            if usage.get("verification_partial"):
+                basis += "；已逐项核对引用，仅展示通过核对的结论，其余项标记无法确认；核对仍可能误判"
+            elif usage.get("verification_rejected"):
                 basis += "；引用不足以支持草稿结论，已停止展示该结论"
             elif usage.get("verification_calls"):
                 basis += "；已用云端核对引用，仍可能误判，请核对原文"
