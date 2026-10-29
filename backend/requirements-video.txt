@@ -1,0 +1,3 @@
+# Media preprocessing only; every AI call is made to the cloud.
+imageio-ffmpeg==0.6.0
+yt-dlp==2026.10.26

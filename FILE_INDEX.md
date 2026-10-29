@@ -7,7 +7,8 @@
 | 文件 | 说明 |
 |---|---|
 | `README.md` | 项目定位、快速启动、模型配置、使用流程、测试与排障 |
-| `BACKLOG.md` | 未完成需求：暂缓的 PDF 剪藏、优先讨论的视频上传/国内平台链接云端总结 |
+| `BACKLOG.md` | 暂缓的 PDF、视频首版完成状态及后续增强待办 |
+| `VIDEO_SUMMARY.md` | 视频总结操作、云端配置、平台边界、部署、API 与真实验证记录 |
 | `LIVE_ACCEPTANCE.md` | 本机 0012 升级备份、真实模型/浏览器/故障验收及向量读取一致性修复 |
 | `.github/workflows/ci.yml` | push/PR/手动触发的 Linux/Windows 离线回归，以及 Linux Chromium 真实扩展提取测试 |
 | `scripts/check.py` | 本地与 CI 统一离线检查入口，自动发现 Node 测试并传播失败 |
@@ -21,6 +22,7 @@
 | `scripts/audit_collapsed_site.py` | 按需只读检查公开网页前若干原生折叠块和原网页开闭状态，不调用后端/模型 |
 | `scripts/check_pagination_browser.py` | 无后端分页真实扩展回归；侧栏使用合成身份与 OCR 替身 |
 | `scripts/check_ocr.py` | 真实 CPU 模型的中英文、长图分段边界和重复行检查 |
+| `scripts/check_video_browser.py` | 真实扩展/API/SQLite/FFmpeg 的视频上传、编辑、确认保存和隔离回归，云端与最终入库边界使用替身 |
 | `scripts/check_ocr_browser.py` | 真实扩展→生产 OCR 路由→本地模型→可编辑预览，使用临时身份不写库 |
 | `CLIPPING_COMPATIBILITY.md` | 四种剪藏方式、依赖来源、真实浏览器验证和网站适配边界 |
 | `SITE_AUDIT_2026-10-28.md` | 13 个公开网页的实测结果、代码保真修复、访问受限与图片边界 |
@@ -293,7 +295,23 @@
 | `evaluation/aligned*/` | 运行时 ID 对齐数据；Git 忽略 |
 | `evaluation/reports/` | 基线输出和报告；Git 忽略 |
 
-## Reliability maintenance
+## 视频模块
+
+| 文件 | 说明 |
+|---|---|
+| `alembic/versions/0013_video_summary.py`、`backend/models/video.py` | 独立视频配置和任务表 |
+| `backend/repositories/mysql/video.py` | 所有权、原子领取、租约心跳、配额、重试和空间删除写入保护 |
+| `backend/services/video_summary.py` | 加密配置、上传、预览、私有媒体目录和过期清理 |
+| `backend/services/video_media.py` | 有界 FFmpeg 探测与带音轨分段，无本地推理 |
+| `backend/services/video_links.py` | B站/抖音适配、短链验证、限制域名与固定公网 IP 下载 |
+| `backend/clients/video.py` | 云端原生音视频流式调用、用量和完整响应校验 |
+| `backend/api/routers/videos.py`、`backend/api/video_body_limit.py` | 视频 API 与 multipart 解析前的字节限制 |
+| `backend/workers/video_worker.py` | 独立视频处理入口、分段汇总、取消与清理 |
+| `backend/requirements-video.txt` | 固定媒体二进制与平台解析工具版本 |
+| `extension/video-panel.js` | 上传、链接、任务历史、编辑、下载、确认入库和异步身份保护 |
+| `backend/tests/test_video_summary.py`、`backend/tests/test_video_cloud.py` | 实际媒体、迁移、队列、隔离、清理与 SDK 协议测试 |
+
+## 可靠性测试
 
 | File | Purpose |
 |---|---|

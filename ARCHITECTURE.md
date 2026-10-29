@@ -280,7 +280,9 @@ Workspace 删除要求 `confirm=true` 且提交名称与当前名称完全一致
 
 ## 9. API 与异常边界
 
-当前共有 25 个操作：Plugin 9、Document 8、Clip 2、Job 2、Ingest 1、RAG 2、OCR 1。其中 `POST /plugins/register` 与 `GET /plugins/model-providers` 不要求 Plugin Header。
+视频总结使用独立的 `video_model_configs`（现有 AES-GCM 工具加密）与 `video_jobs`（MySQL 持久化）表，迁移为 `0013`。`videos` Router → `VideoSummaryService` → `VideoRepository`；独立 `video_worker` 原子领取任务并通过租约/心跳防止旧进程写回。素材在私有上传根目录，CPU FFmpeg 分段，`CloudVideoClient` 将带声音的视频片段发送至线上 Qwen-Omni，再汇总为预览。只有前端明确确认后才走原有 Markdown 上传/Redis 入库链路。原 Embedding 指纹和双模型凭证结构不变。平台解析、删除、过期和验证范围见 [VIDEO_SUMMARY.md](VIDEO_SUMMARY.md)。
+
+当前共有 35 个操作：Plugin 9、Document 8、Clip 2、Job 2、Ingest 1、RAG 2、OCR 1、Video 10。其中 `POST /plugins/register` 与 `GET /plugins/model-providers` 不要求 Plugin Header。
 
 | 状态码 | 典型场景 |
 |---:|---|
@@ -289,13 +291,15 @@ Workspace 删除要求 `confirm=true` 且提交名称与当前名称完全一致
 | 403 | Workspace 被禁用 |
 | 404 | 文档不存在或不属于当前 Workspace |
 | 409 | API Key 未配置、文档状态冲突、名称冲突 |
-| 413 | 上传超过 2 MiB |
+| 413 | 文本上传超过 2 MiB，或视频上传超过配置上限（默认 100 MiB） |
 | 415 | 上传类型不支持 |
 | 422 | Pydantic/FastAPI 契约校验失败 |
 | 429 | Workspace 文档数达 `MAX_DOCUMENTS_PER_WORKSPACE`，拒绝新剪藏/上传 |
 | 500 | 切分异常、AES 解密与安全配置异常、文件读写或解析 IO 失败（非输入非法所致） |
 | 502 | Embedding 或 LLM 上游调用异常 |
 | 503 | MySQL/Milvus 操作异常、异步入库队列不可用 |
+
+新增 `VideoError` 是第 21 个全局业务 handler，仍返回 `{detail,type}`：400 链接/媒体非法，404 异空间或任务不存在，409 缺少配置/状态冲突，413 大小超限，415 类型非法，422 配置格式错误，429 任务配额，502 云端视频调用失败，503 媒体依赖/配置不可用，504 云端处理超时。其 SDK、状态机和所有权边界由视频专用测试覆盖。
 
 可选 OCR 的路由内错误另采用 FastAPI `detail: {code, message}`，由 `backend/tests/test_ocr.py` 验证：413 图片字节超限，415 格式/像素非法，429 正忙，503 未安装/执行失败，504 超时，499 客户端取消；身份错误继续走下述全局 handler。客户端读取嵌套 message，不将 OCR 失败误认为模型 Key 未配置。
 

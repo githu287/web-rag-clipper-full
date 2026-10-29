@@ -20,6 +20,7 @@ from . import plugin  # noqa: F401  确保 PluginWorkspace ORM 注册到 Base.me
 from .plugin import PluginWorkspace  # noqa: F401
 from . import ingest_job  # noqa: F401
 from .ingest_job import IngestJob  # noqa: F401
+from . import video  # noqa: F401
 
 __all__ = [
     "document",

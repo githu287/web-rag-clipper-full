@@ -32,6 +32,7 @@ from fastapi.testclient import TestClient
 
 from backend.clients.embedding import EmbeddingClientError, EmbeddingConfigError
 from backend.clients.llm import LLMClientError, LLMClientRequestError
+from backend.core.video_errors import VideoError
 from backend.core.exceptions import (
     ApiKeyNotConfiguredError,
     ApiKeyValidationError,
@@ -79,6 +80,7 @@ _PROBE_MESSAGE = "契约探针错误消息"
 # type 行的期望值恒等于异常类名（handler 统一写 type(exc).__name__），显式写出来
 # 是为了让「重命名异常类」变成一次需要同时改文档的契约变更，而不是静默漂移。
 _ERROR_CONTRACT: list[tuple[type, int, str, str]] = [
+    (VideoError, 400, "type", "VideoError"),
     # ---------------------------------------- IngestJob 族（唯一使用 code 的族）
     (IngestJobNotFoundError, 404, "code", "INGEST_JOB_NOT_FOUND"),
     (IngestJobConflictError, 409, "code", "INGEST_JOB_CONFLICT"),
@@ -205,7 +207,7 @@ class ErrorContractTest(unittest.TestCase):
         registered = self._business_handlers()
         self.assertEqual(
             len(registered),
-            20,
+            21,
             "业务异常 handler 数量变化时，请同步本文件与 ARCHITECTURE.md 的状态码表",
         )
         missing = registered - {row[0] for row in _ERROR_CONTRACT}

@@ -18,10 +18,12 @@ class WorkspaceDeleteService:
         plugin_service: PluginService,
         document_repository: DocumentRepository,
         document_delete_service: DocumentDeleteService,
+        video_service=None,
     ) -> None:
         self._plugins = plugin_service
         self._documents = document_repository
         self._delete_document = document_delete_service
+        self._videos = video_service
 
     async def delete_workspace(
         self,
@@ -36,6 +38,16 @@ class WorkspaceDeleteService:
                 "workspace deletion requires confirm=true and exact plugin name"
             )
 
+        try:
+            if self._videos is not None:
+                await asyncio.to_thread(self._videos.clear_workspace, plugin_id)
+            await self._delete_contents(plugin_id, confirm, plugin_name)
+        except BaseException:
+            if self._videos is not None:
+                await asyncio.to_thread(self._videos.repo.resume_workspace, plugin_id)
+            raise
+
+    async def _delete_contents(self, plugin_id, confirm, plugin_name):
         # 始终读取第一页：每轮删除会使下一批文档前移，避免 offset 跳项。
         while True:
             documents = await asyncio.to_thread(

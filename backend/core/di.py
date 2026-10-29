@@ -807,6 +807,7 @@ def get_workspace_delete_service() -> WorkspaceDeleteService:
         plugin_service=get_plugin_service(),
         document_repository=get_document_repository(),
         document_delete_service=get_document_delete_service(),
+        video_service=get_video_service(),
     )
 
 
@@ -814,3 +815,10 @@ def get_workspace_delete_service() -> WorkspaceDeleteService:
 def get_ocr_service():
     from ..services.ocr import OcrService
     return OcrService()
+
+
+@lru_cache(maxsize=1)
+def get_video_service():
+    from ..repositories.mysql.video import VideoRepository
+    from ..services.video_summary import VideoSummaryService
+    return VideoSummaryService(VideoRepository(get_engine()), get_settings())

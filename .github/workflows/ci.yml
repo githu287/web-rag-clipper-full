@@ -36,8 +36,9 @@ jobs:
             requirements-dev.txt
             backend/requirements.txt
             backend/requirements-ocr.txt
+            backend/requirements-video.txt
       - name: Install development dependencies
-        run: python -m pip install -r requirements-dev.txt -r backend/requirements-ocr.txt
+        run: python -m pip install -r requirements-dev.txt -r backend/requirements-ocr.txt -r backend/requirements-video.txt
       - name: Run backend regression tests and validate public datasets
         run: python scripts/check.py backend datasets
       - name: Verify real local OCR models including long-image seams
@@ -77,7 +78,7 @@ jobs:
         with:
           python-version: '3.11'
       - name: Install isolated browser test dependency
-        run: python -m pip install playwright==1.64.1 -r requirements-dev.txt -r backend/requirements-ocr.txt
+        run: python -m pip install playwright==1.64.1 -r requirements-dev.txt -r backend/requirements-ocr.txt -r backend/requirements-video.txt
       - name: Install Chromium and system libraries
         run: python -m playwright install --with-deps chromium
       - name: Exercise real unpacked extension on local fixtures
@@ -88,3 +89,5 @@ jobs:
         run: python scripts/check_ocr_browser.py --channel chromium
       - name: Exercise bounded article pagination and temporary-tab cleanup
         run: python scripts/check_pagination_browser.py --channel chromium
+      - name: Exercise video upload, editable preview and Workspace isolation
+        run: python scripts/check_video_browser.py --channel chromium

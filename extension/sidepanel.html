@@ -49,7 +49,7 @@
     </header>
 
     <div class="warn-banner" id="warn-banner" hidden>
-      <span class="warn-text">⚠ 尚未配置模型服务</span>
+      <span class="warn-text">⚠ 尚未配置知识库模型服务</span>
       <button type="button" class="warn-btn" id="warn-goto-settings">去设置</button>
     </div>
 
@@ -57,8 +57,52 @@
       <button type="button" class="nav-btn" id="nav-clip">网页剪藏</button>
       <button type="button" class="nav-btn active" id="nav-chat">AI 聊天</button>
       <button type="button" class="nav-btn" id="nav-library">我的知识库</button>
+      <button type="button" class="nav-btn" id="nav-video">视频</button>
       <button type="button" class="nav-btn" id="nav-settings">设置</button>
     </nav>
+
+    <div class="view-inner" id="view-video">
+      <div class="video-scroll">
+        <div class="video-heading"><span class="video-kicker">VIDEO NOTES</span><h2>把视频，变成可回看的笔记。</h2>
+          <p>上传文件或粘贴 B站、抖音分享链接。云端分析声音和画面，总结后由你决定是否保存。</p></div>
+        <details id="video-config-details" class="video-card">
+          <summary>云端视频模型 <span id="video-config-state">读取中</span></summary>
+          <form id="video-config-form" class="video-form">
+            <p class="hint">使用百炼 Qwen-Omni，独立于聊天模型。Key 加密保存在后端；保存配置不会调用模型，首次分析才验证权限并产生用量。</p>
+            <label for="video-base-url">Chat Completions 服务地址</label>
+            <input id="video-base-url" type="url" required placeholder="从百炼控制台复制，以 /compatible-mode/v1 结尾">
+            <label for="video-model">音视频模型</label><select id="video-model"></select>
+            <label for="video-key">API Key</label><input id="video-key" type="password" autocomplete="new-password" placeholder="已配置时留空保留原 Key">
+            <div class="video-actions"><button type="submit" class="primary-btn" id="video-config-save">保存配置</button>
+              <button type="button" class="btn-secondary" id="video-config-remove">移除配置</button></div>
+          </form>
+        </details>
+        <section class="video-card video-source"><h3>添加视频</h3>
+          <p class="hint" id="video-limits">正在读取处理限制…</p>
+          <form id="video-upload-form" class="video-form">
+            <label for="video-file">本地视频文件</label><input id="video-file" type="file" accept=".mp4,.mov,.webm,.mkv,.avi">
+            <button type="submit" class="primary-btn" id="video-upload-btn">上传并总结</button>
+          </form>
+          <div class="video-divider">或使用平台链接</div>
+          <form id="video-link-form" class="video-form"><label for="video-url">视频页或分享文案</label>
+            <textarea id="video-url" rows="2" maxlength="4000" placeholder="https://www.bilibili.com/video/… 或抖音分享链接"></textarea>
+            <button type="submit" class="btn-secondary" id="video-link-btn">解析链接并总结</button></form>
+          <p class="hint">仅解析可公开访问的单个视频。登录限制、平台风控或解析失败时，请上传本地文件。不会读取浏览器登录凭证。</p>
+        </section>
+        <p id="video-status" class="video-status" role="status" aria-live="polite"></p>
+        <section class="video-history"><div class="video-section-title"><h3>最近的视频</h3><button type="button" class="btn-secondary" id="video-refresh">刷新</button></div>
+          <div id="video-jobs"></div></section>
+        <section id="video-preview" class="video-card" hidden><span class="video-kicker">SUMMARY PREVIEW</span>
+          <h3 id="video-preview-title"></h3><p class="hint" id="video-preview-meta"></p>
+          <label for="video-preview-text">总结内容（可编辑）</label><textarea id="video-preview-text" rows="16" spellcheck="false"></textarea>
+          <p class="hint">AI 总结可能遗漏或误解细节。章节时间是实际分段边界，不是逐句字幕时间。原视频不会存入知识库。</p>
+          <label class="video-confirm"><input type="checkbox" id="video-confirm"> 我已核对内容，确认将这份 AI 总结保存到知识库</label>
+          <div class="video-actions"><button type="button" class="primary-btn" id="video-save" disabled>确认保存到知识库</button>
+            <button type="button" class="btn-secondary" id="video-download">下载 Markdown</button></div>
+          <p id="video-ingest-status" role="status" aria-live="polite"></p>
+        </section>
+      </div>
+    </div>
 
     <!-- 聊天视图 -->
     <div class="view-inner active" id="view-chat">
@@ -284,6 +328,7 @@
   <script src="pagination.js"></script>
   <script src="pagination-capture.js"></script>
   <script src="image-ocr.js"></script>
+  <script src="video-panel.js"></script>
   <script src="sidepanel.js"></script>
 </body>
 </html>

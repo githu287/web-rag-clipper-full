@@ -195,6 +195,12 @@ class Settings(BaseSettings):
     ingest_queue_name: str = Field(default="web-rag:ingest", min_length=1)
     ingest_payload_ttl_seconds: int = Field(default=604800, ge=60)
     ingest_max_retries: int = Field(default=3, ge=1, le=20)
+    video_max_upload_bytes: int = Field(default=104857600, ge=1048576, le=524288000)
+    video_max_duration_seconds: int = Field(default=1800, ge=1, le=3600)
+    video_segment_seconds: int = Field(default=90, ge=10, le=120)
+    video_retention_hours: int = Field(default=24, ge=1, le=72)
+    video_result_days: int = Field(default=7, ge=1, le=30)
+    video_ffmpeg: str = Field(default="ffmpeg", min_length=1)
 
     # ---- 文件上传 / 解析 / 切分（Phase 2.10 Step 2 新增）----
     upload_dir: str = Field(

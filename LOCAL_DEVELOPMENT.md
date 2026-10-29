@@ -23,14 +23,14 @@ python -m venv .venv
 
 ## 启动和升级
 
-先停止旧 API 与 Worker，避免混用新旧数据库结构；当前只支持一个 Worker。启动 Docker Desktop 后运行：
+先停止旧 API 与 Worker，避免混用新旧数据库结构；普通入库和视频处理分别运行一个独立 Worker。启动 Docker Desktop 后运行：
 
 ```powershell
 docker compose up -d --wait --wait-timeout 180
 .venv/Scripts/python.exe -m alembic upgrade head
 ```
 
-当前 head 为 `0012`。保留已发布的远端 `0011`；`0012` 在线检查是否已存在过期字段与索引，兼容此前本地的 `0011` 变体。已有正文期限不变；历史 WEB_CLIP 正文缺失期限时按创建时间加 7 天回填，因此旧正文可能已经过期。离线 SQL 假设起点是标准远端 `0011`。迁移无法找回旧版本已丢失的正文；升级前应处理完在途任务，并按原有数据库备份流程保留备份。
+当前 head 为 `0013`（新增视频配置与任务表，见 [视频总结](VIDEO_SUMMARY.md)）。保留已发布的远端 `0011`；`0012` 在线检查是否已存在过期字段与索引，兼容此前本地的 `0011` 变体。已有正文期限不变；历史 WEB_CLIP 正文缺失期限时按创建时间加 7 天回填，因此旧正文可能已经过期。离线 SQL 假设起点是标准远端 `0011`。迁移无法找回旧版本已丢失的正文；升级前应处理完在途任务，并按原有数据库备份流程保留备份。
 
 `docker-compose.override.yml` 沿用远端固定摘要的 PGSTY MinIO 镜像；本轮未重新验证其可拉取性或真实 Milvus 读写。
 
@@ -43,6 +43,8 @@ docker compose up -d --wait --wait-timeout 180
 ```powershell
 .venv/Scripts/python.exe -m backend.workers.ingest_worker
 ```
+
+视频总结需额外安装 `.venv/Scripts/python.exe -m pip install -r backend/requirements-video.txt`，并在独立终端运行 `.venv/Scripts/python.exe -m backend.workers.video_worker`。视频模型在扩展“视频”面板配置，全部推理在线上完成。
 
 API 文档地址为 `http://localhost:18001/docs`。默认端口与 `extension/config.js`、`extension/manifest.json` 一致；更换地址时同时更新这两处。不要重复启动 Worker。
 

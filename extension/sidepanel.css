@@ -221,7 +221,41 @@ input, textarea {
   padding: 8px 10px;
   border-bottom: 1px solid var(--border);
   flex: 0 0 auto;
+  overflow-x: auto;
 }
+
+/* Video notebook: compact blue ink, quiet cards, readable source and evidence. */
+.video-scroll { overflow-y: auto; padding: 18px 14px 28px; }
+.video-heading { margin-bottom: 20px; }
+.video-kicker { display: block; font-size: 10px; font-weight: 700; letter-spacing: .14em; color: var(--primary); margin-bottom: 8px; }
+.video-heading h2 { font-size: 19px; line-height: 1.55; letter-spacing: -.4px; margin-bottom: 8px; }
+.video-heading p { color: var(--text-sub); font-size: 12px; line-height: 1.8; }
+.video-card { padding: 14px; border: 1px solid var(--border); border-radius: 10px; margin: 14px 0; background: var(--panel); }
+.video-card summary { cursor: pointer; font-weight: 600; }
+#video-config-state { color: var(--primary); font-size: 11px; margin-left: 8px; }
+.video-card h3, .video-section-title h3 { font-size: 14px; margin-bottom: 10px; overflow-wrap: anywhere; }
+.video-form { display: grid; gap: 8px; margin-top: 14px; }
+.video-form label, #video-preview > label { font-size: 12px; font-weight: 600; }
+.video-form input, .video-form select, .video-form textarea, #video-preview-text { width: 100%; min-width: 0; border: 1px solid var(--border); background: var(--bg); color: var(--text); border-radius: 6px; padding: 9px; }
+.video-form input[type=file] { font-size: 11px; padding: 8px 4px; }
+.video-form input:focus-visible, .video-form textarea:focus-visible, #video-preview-text:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+.video-card .hint, .video-history .hint { font-size: 11px; color: var(--text-sub); line-height: 1.75; margin: 7px 0; }
+.video-divider { display: flex; align-items: center; gap: 9px; color: var(--text-sub); font-size: 10px; margin-top: 18px; }
+.video-divider::before, .video-divider::after { content: ""; flex: 1; height: 1px; background: var(--border); }
+.video-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.video-actions button { min-height: 32px; font-size: 11px; }
+.video-status { line-height: 1.7; overflow-wrap: anywhere; color: var(--text-sub); margin: 10px 0; font-size: 12px; }
+.video-section-title { display: flex; justify-content: space-between; align-items: center; margin-top: 20px; }
+.video-job { border-bottom: 1px solid var(--border); padding: 14px 0; font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
+.video-job strong { font-weight: 600; }
+.video-job p { font-size: 11px; color: var(--text-sub); }
+.video-job progress { width: 100%; height: 4px; border: 0; accent-color: var(--primary); margin: 6px 0; }
+#video-preview-text { min-height: 260px; line-height: 1.8; margin: 10px 0; resize: vertical; font-size: 12px; }
+.video-confirm { display: flex; align-items: flex-start; gap: 8px; line-height: 1.7; }
+.video-confirm input { margin-top: 4px; flex: 0 0 auto; }
+#video-ingest-status { font-size: 12px; line-height: 1.7; margin-top: 12px; }
+.video-scroll .err, .video-job .err { color: var(--danger); }
+.video-scroll button:disabled { opacity: .5; cursor: default; }
 
 .nav-btn {
   flex: 1;

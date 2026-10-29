@@ -39,6 +39,9 @@ from .api.routers import jobs as jobs_router_module
 from .api.routers import plugins as plugins_router_module
 from .api.routers import rag as rag_router_module
 from .api.routers import ocr as ocr_router_module
+from .api.routers import videos as videos_router_module
+from .core.video_errors import VideoError
+from .api.video_body_limit import VideoBodyLimit
 from .clients.embedding import EmbeddingClientError
 from .clients.llm import LLMClientError
 from .core.di import close_model_clients, get_milvus_initializer
@@ -150,6 +153,13 @@ def create_app() -> FastAPI:
     app.include_router(clips_router_module.router)
     app.include_router(jobs_router_module.router)
     app.include_router(ocr_router_module.router)
+    app.include_router(videos_router_module.router)
+    from .core.di import get_settings
+    app.add_middleware(VideoBodyLimit, max_bytes=get_settings().video_max_upload_bytes)
+
+    @app.exception_handler(VideoError)
+    async def handle_video_error(request: Request, exc: VideoError):
+        return JSONResponse(status_code=exc.status, content={"detail": str(exc), "type": "VideoError"})
     app.include_router(plugins_router_module.router)  # Phase 3.5 Step 2-D：Plugin Workspace 身份体系
 
     return app

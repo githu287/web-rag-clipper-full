@@ -4,10 +4,13 @@ Web RAG Clipper 是一个本地优先、以网页剪藏为核心的个人知识�
 
 项目的首要场景是“浏览网页时剪藏，稍后基于已剪藏内容提问”。文本和 Markdown 上传是辅助能力；图片文字可选用本地 OCR，PDF、DOCX 尚未接入。
 
+0.13.0 新增[云端视频总结](VIDEO_SUMMARY.md)：本地视频上传、B站/抖音链接适配、声音与画面分析、分段总结、可编辑预览和确认后入库。需要额外安装视频依赖并启动独立视频 Worker，推理使用线上 Qwen-Omni；平台链接能否取得素材受访问限制影响。
+
 当前仓库已经打通以下链路：
 
 - Plugin Workspace 注册与双凭证认证
 - Workspace 级多模型服务配置：Embedding 与问答模型可分别选择服务商，API Key 加密保存
+- 独立加密的视频模型配置与 MySQL 视频任务；不阻塞网页入库，不自动保存 AI 总结
 - 网页正文候选评分与噪声清理，保留标题、列表、引用、代码块和表格结构
 - Side Panel 四种剪藏方式（智能正文、整页可读内容、选中文字、指定区域）、预览编辑、提取质量诊断，以及 `.txt` / `.md` / `.markdown` 文件上传
 - 网页 URL 规范化与重复识别；锚点、默认端口和常见跟踪参数不会产生新文档，哈希路由站点（`#/...`）的每个路由各算一篇
@@ -139,7 +142,7 @@ python -m pip install -r requirements-dev.txt
 alembic upgrade head
 ```
 
-当前 Alembic head 为 `0012`。保留 GitHub 已发布的 `0011`（持久化 payload 与排队扫描索引），`0012` 增加网页正文过期时间与索引。在线升级兼容远端 `0011` 和此前本地已含过期字段的 `0011`：保留已有期限；缺失期限的历史网页正文按创建时间加 7 天回填，较旧正文可能立即过期。升级时先停止 API/Worker，迁移后再启动。离线 SQL 以标准远端 `0011` 为起点。旧网页任务若正文已经丢失，无法由迁移恢复。整合决策和验证范围见 [VERSION_COMPARISON.md](VERSION_COMPARISON.md)。
+当前 Alembic head 为 `0013`，新增独立视频配置和任务表。此前的 `0012` 增加网页正文过期时间与索引，仍兼容两种历史 `0011` 结构；已有期限保留，缺失期限按创建时间加 7 天回填。升级前备份并停止 API/Worker，迁移后再启动。旧网页正文若已丢失无法恢复。视频安装与验证边界见 [VIDEO_SUMMARY.md](VIDEO_SUMMARY.md)，历史整合见 [VERSION_COMPARISON.md](VERSION_COMPARISON.md)。
 
 ### 5. 启动 API
 
@@ -156,6 +159,8 @@ python -m uvicorn backend.main:app --host 127.0.0.1 --port 18001
 ```powershell
 python -m backend.workers.ingest_worker
 ```
+
+视频总结还需要安装 `backend/requirements-video.txt` 并单独运行 `python -m backend.workers.video_worker`。普通入库和视频处理分别保持一个 Worker；详细限制见 [视频总结](VIDEO_SUMMARY.md)。
 
 Worker 会初始化 Milvus，恢复上次意外中断且未确认的任务，并每约 5 秒扫描 MySQL 排队任务、幂等补投 Redis。任务执行期间该扫描等待本次任务结束。当前按单 Worker 模式设计。
 

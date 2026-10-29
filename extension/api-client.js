@@ -318,6 +318,22 @@ const webRagApiClient = (() => {
     clearPlugin: clearPlugin,
     setUnauthenticatedHandler: setUnauthenticatedHandler,
     request: request,
+    videos: {
+      async config() { return (await request("/videos/config")).data; },
+      async setConfig(body) { return (await request("/videos/config", { method: "PUT", body })).data; },
+      async clearConfig() { await request("/videos/config", { method: "DELETE" }); },
+      async list() { return (await request("/videos")).data; },
+      async get(id) { return (await request("/videos/" + encodeURIComponent(id))).data; },
+      async link(url) { return (await request("/videos/link", { method: "POST", body: { url } })).data; },
+      async upload(file) {
+        const form = new FormData();
+        form.append("file", file);
+        return (await uploadRequest("/videos/upload", form)).data;
+      },
+      async retry(id) { return (await request("/videos/" + encodeURIComponent(id) + "/retry", { method: "POST" })).data; },
+      async cancel(id) { return (await request("/videos/" + encodeURIComponent(id) + "/cancel", { method: "POST" })).data; },
+      async delete(id) { await request("/videos/" + encodeURIComponent(id), { method: "DELETE" }); },
+    },
     ocr: {
       async image(blob, signal) {
         const result = await fetchWithDeadline("/ocr/image", {

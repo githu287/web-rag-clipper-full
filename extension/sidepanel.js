@@ -19,10 +19,12 @@ const els = {
   navChat: document.getElementById("nav-chat"),
   navLibrary: document.getElementById("nav-library"),
   navSettings: document.getElementById("nav-settings"),
+  navVideo: document.getElementById("nav-video"),
   viewChat: document.getElementById("view-chat"),
   viewClip: document.getElementById("view-clip"),
   viewSettings: document.getElementById("view-settings"),
   viewLibrary: document.getElementById("view-library"),
+  viewVideo: document.getElementById("view-video"),
   scopeCurrent: document.getElementById("scope-current"),
   scopeAll: document.getElementById("scope-all"),
   scopeDesc: document.getElementById("scope-desc"),
@@ -156,6 +158,7 @@ function setStatus(el, text, type) {
 
 // ================================================================ 视图切换
 function renderWelcomeView() {
+  if (typeof webRagVideoPanel !== "undefined") webRagVideoPanel.reset();
   els.viewWelcome.hidden = false;
   els.viewBlocked.hidden = true;
   els.viewApp.hidden = true;
@@ -163,6 +166,7 @@ function renderWelcomeView() {
 }
 
 function renderBlockedView() {
+  if (typeof webRagVideoPanel !== "undefined") webRagVideoPanel.reset();
   els.viewWelcome.hidden = true;
   els.viewBlocked.hidden = false;
   els.viewApp.hidden = true;
@@ -180,11 +184,14 @@ function renderAppView() {
 }
 
 function switchView(viewName) {
+  if (typeof webRagVideoPanel !== "undefined" && viewName !== "video") webRagVideoPanel.leave();
   currentView = viewName;
   els.viewChat.classList.toggle("active", viewName === "chat");
   els.viewClip.classList.toggle("active", viewName === "clip");
   els.viewSettings.classList.toggle("active", viewName === "settings");
   els.viewLibrary.classList.toggle("active", viewName === "library");
+  if (els.viewVideo) els.viewVideo.classList.toggle("active", viewName === "video");
+  if (viewName === "video") webRagVideoPanel.enter();
   if (viewName === "chat") {
     renderChat();
     updateScopeSelector();
@@ -202,6 +209,7 @@ function updateNav() {
   els.navChat.classList.toggle("active", currentView === "chat");
   els.navLibrary.classList.toggle("active", currentView === "library");
   els.navSettings.classList.toggle("active", currentView === "settings");
+  if (els.navVideo) els.navVideo.classList.toggle("active", currentView === "video");
   updateScopeDesc();
 }
 
@@ -2354,6 +2362,7 @@ function bindEvents() {
   els.navLibrary.addEventListener("click", function () {
     switchView("library");
   });
+  if (els.navVideo) els.navVideo.addEventListener("click", function () { switchView("video"); });
   els.librarySearchInput.addEventListener("input", onLibrarySearchInput);
   els.libraryStatusFilter.addEventListener("change", onLibraryFilterChange);
   els.librarySourceFilter.addEventListener("change", onLibraryFilterChange);
