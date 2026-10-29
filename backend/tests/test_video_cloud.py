@@ -62,7 +62,63 @@ def test_question_prompt_separates_server_evidence_history_and_question():
     data = json.loads(args.args[1][0]["text"])
     assert data == {"视频总结资料": evidence, "历史对话": history, "当前问题": "follow up?"}
     assert "untrusted earlier answer" not in prompt
-    assert args.kwargs["timeout_seconds"] == 75
+    assert 0 < args.kwargs["timeout_seconds"] <= 75
+
+
+def long_evidence():
+    return {"title": "lecture", "overview": "overview", "chapters": [
+        {"number": i, "start_seconds": (i - 1) * 90, "end_seconds": i * 90, "summary": "summary"}
+        for i in range(1, 5)], "transcript": {"sentences": [
+            {"id": i, "start_seconds": (i - 1) * 90, "end_seconds": i * 90 - 1, "text": str(i) * 8000}
+            for i in range(1, 5)]}}
+
+
+def test_long_qa_selects_original_ids_and_adds_both_cloud_usages():
+    from unittest.mock import Mock
+    client = CloudVideoClient()
+    original = long_evidence()
+    client.generate = Mock(side_effect=[('{"chapters":[3]}', {"total_tokens": 20}), ('answer [原文 3]', {"total_tokens": 10})])
+    answer, usage = client.answer(original, "question", [], CONFIG)
+    assert answer.endswith("[原文 3]") and usage == {"total_tokens": 30, "retrieval_calls": 1}
+    payload = json.loads(client.generate.call_args_list[1].args[1][0]["text"])["视频总结资料"]
+    assert [c["source"] for c in payload["chapters"]] == ["[片段 3]"]
+    assert [s["source"] for s in payload["transcript"]["sentences"]] == ["[原文 3]"]
+    assert len(original["transcript"]["sentences"]) == 4
+    assert client.generate.call_args_list[0].kwargs["max_tokens"] == 256
+    assert "不能断言转写无误" in client.generate.call_args_list[1].kwargs["system_prompt"]
+
+
+@pytest.mark.parametrize("selection", ['{"chapters":[99]}', '{"chapters":[true]}', '{"chapters":[1,1]}', '{"chapters":[1,2,3,4]}', 'not json', '{"chapters":null}', '{"chapters":[1],"answer":"forged"}'])
+def test_long_qa_rejects_invalid_selection_without_another_paid_call(selection):
+    from unittest.mock import Mock
+    client = CloudVideoClient()
+    client.generate = Mock(return_value=(selection, {}))
+    with pytest.raises(VideoError, match="片段选择"):
+        client.answer(long_evidence(), "question", [], CONFIG)
+    assert client.generate.call_count == 1
+
+
+def test_long_qa_empty_selection_does_not_claim_global_absence_or_call_answer_model():
+    from unittest.mock import Mock
+    client = CloudVideoClient()
+    client.generate = Mock(return_value=('{"chapters":[]}', {"total_tokens": 5}))
+    answer, usage = client.answer(long_evidence(), "question", [], CONFIG)
+    assert "不表示整段视频一定没有" in answer and usage["retrieval_calls"] == 1
+    assert client.generate.call_count == 1
+
+
+def test_selection_and_answer_share_one_question_deadline(monkeypatch):
+    from unittest.mock import Mock
+    now = {"value": 0}
+    monkeypatch.setattr("backend.clients.video.time.monotonic", lambda: now["value"])
+    client = CloudVideoClient()
+    def generate(*_args, **_kwargs):
+        now["value"] = 80
+        return '{"chapters":[1]}', {}
+    client.generate = Mock(side_effect=generate)
+    with pytest.raises(VideoError) as caught:
+        client.answer(long_evidence(), "question", [], CONFIG)
+    assert caught.value.status == 504 and client.generate.call_count == 1
 
 
 def test_combine_preserves_order_and_separates_rare_final_segment_from_rules():
@@ -77,6 +133,21 @@ def test_combine_preserves_order_and_separates_rare_final_segment_from_rules():
     assert [item["片段"] for item in data] == list(range(1, 21))
     assert "927" not in call.kwargs["system_prompt"]
     assert "末段新增信息" in call.kwargs["system_prompt"]
+    assert call.kwargs["max_tokens"] == 4096
+
+
+def test_long_combine_has_bounded_room_and_truncation_is_still_an_error():
+    requests = []
+    def handle(request):
+        requests.append(json.loads(request.content))
+        event = {"id": "long", "object": "chat.completion.chunk", "created": 1, "model": CONFIG["model"],
+                 "choices": [{"index": 0, "delta": {"content": "incomplete"}, "finish_reason": "length"}]}
+        return httpx.Response(200, headers={"Content-Type": "text/event-stream"},
+                              text="data: " + json.dumps(event) + "\n\ndata: [DONE]\n\n")
+    transport = httpx.Client(transport=httpx.MockTransport(handle))
+    with pytest.raises(VideoError, match="截断"):
+        CloudVideoClient(transport_factory=lambda **_: transport).combine(["lecture"] * 20, CONFIG)
+    assert len(requests) == 1 and requests[0]["max_tokens"] == 4096
 
 
 def test_question_sdk_keeps_system_rules_outside_untrusted_evidence():

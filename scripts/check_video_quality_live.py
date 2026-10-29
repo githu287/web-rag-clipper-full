@@ -11,6 +11,12 @@ import json
 import math
 import sys
 import tempfile
+import time
+
+try:
+    from scripts.video_quality_metrics import compare_transcript, read_vtt, tokens as reference_tokens
+except ModuleNotFoundError:  # Also support `python scripts/check_video_quality_live.py`.
+    from video_quality_metrics import compare_transcript, read_vtt, tokens as reference_tokens
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -34,6 +40,7 @@ def main():
     parser.add_argument("--workspace-id", required=True, help="Existing Workspace with an independent video model config")
     parser.add_argument("--allow-paid", action="store_true", help="Explicitly enable paid cloud requests")
     parser.add_argument("--max-segments", type=int, default=1, help="Opt-in per-file segment budget, 1..40 (default: 1)")
+    parser.add_argument("--with-asr", action="store_true", help="Also pay for online ASR and compare optional reference_vtt subtitles")
     parser.add_argument("--output", type=Path, default=ROOT / ".venv/runtime/video-quality/report.json")
     args = parser.parse_args()
     if not args.allow_paid:
@@ -43,8 +50,9 @@ def main():
     # Imports deliberately follow argument parsing so --help never touches config/services.
     from backend.core.di import get_video_service
     from backend.clients.video import CloudVideoClient
+    from backend.clients.video_asr import CloudAsrClient, ASR_MODEL
     from backend.core.video_errors import VideoError
-    from backend.services.video_media import inspect_video, make_segment
+    from backend.services.video_media import inspect_video, make_segment, make_audio
 
     cases = json.loads(args.manifest.read_text(encoding="utf-8"))
     if not isinstance(cases, list) or not 1 <= len(cases) <= 10:
@@ -60,21 +68,51 @@ def main():
             parser.error("Fixture exceeds --max-segments; increase the explicit paid-call budget")
         if len(case.get("questions", [])) > 3:
             parser.error("At most 3 questions per fixture")
-        prepared.append((case, source, info, count))
+        reference = None
+        if case.get("asr_expected") and not args.with_asr:
+            parser.error("asr_expected requires --with-asr")
+        if case.get("reference_vtt"):
+            if not args.with_asr:
+                parser.error("reference_vtt requires --with-asr")
+            reference = read_vtt((args.manifest.parent / case["reference_vtt"]).read_text(encoding="utf-8-sig"))
+            if len(reference_tokens(" ".join(c["text"] for c in reference if c["end_seconds"] <= info.duration))) > 12000:
+                parser.error("Reference exceeds 12000 tokens")
+            if not any(c["end_seconds"] <= info.duration for c in reference):
+                parser.error("Reference has no complete cues inside fixture duration")
+        maximum = case.get("max_token_error_rate")
+        if maximum is not None and (not reference or isinstance(maximum, bool) or not isinstance(maximum, (int, float)) or not 0 <= maximum <= 1):
+            parser.error("max_token_error_rate needs reference_vtt and a number in 0..1")
+        prepared.append((case, source, info, count, reference))
     config = service.config(args.workspace_id, secret=True)
     client = CloudVideoClient()
     report = {"model": config["model"], "cases": [], "passed": True,
-              "scope": "Real cloud + FFmpeg; lexical semantic checks need human review; no API/ingestion"}
+              "scope": "Real cloud + FFmpeg; subtitle disagreement and lexical semantic checks need human review; no API/ingestion"}
+    if args.with_asr:
+        report["asr_model"] = ASR_MODEL
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="media-", dir=args.output.parent) as temp:
-        for case, source, info, count in prepared:
+        for case, source, info, count, reference in prepared:
             row = {"name": case.get("name", source.name), "has_audio": info.has_audio, "questions": []}
+            started = time.monotonic()
             try:
                 segment = Path(temp) / "segment.mp4"
                 chapters, usage = [], {}
+                transcript = {"status": "processing" if info.has_audio else "no_audio", "sentences": [], "usage": {"duration_seconds": 0}}
                 for index in range(count):
                     start = index * service.settings.video_segment_seconds
                     end = min(info.duration, start + service.settings.video_segment_seconds)
+                    if args.with_asr and info.has_audio:
+                        audio = Path(temp) / "audio.wav"
+                        try:
+                            make_audio(source, audio, start, end - start, service.settings)
+                            sentences, asr_usage = CloudAsrClient().transcribe(audio, end - start, config)
+                            transcript["usage"]["duration_seconds"] += asr_usage.get("duration_seconds", 0)
+                            for sentence in sentences:
+                                transcript["sentences"].append({"id": len(transcript["sentences"]) + 1,
+                                    "start_seconds": round(start + sentence["start_seconds"], 3),
+                                    "end_seconds": round(start + sentence["end_seconds"], 3), "text": sentence["text"]})
+                        finally:
+                            audio.unlink(missing_ok=True)
                     make_segment(source, segment, start, end - start, service.settings, has_audio=info.has_audio)
                     text, tokens = client.summarize(segment, config)
                     chapters.append({"number": index + 1, "summary": text, "start_seconds": start, "end_seconds": end})
@@ -88,6 +126,18 @@ def main():
                         usage[key] = usage.get(key, 0) + value
                 row.update(summary=summary, usage=usage, failures=check_expectations(summary, case.get("expected", {})))
                 row.update(chapters=chapters, duration_seconds=info.duration)
+                if args.with_asr:
+                    if info.has_audio:
+                        transcript["status"] = "ready" if transcript["sentences"] else "no_speech"
+                    row["transcript"] = transcript
+                    original = "\n".join(s["text"] for s in transcript["sentences"])
+                    row["failures"].extend({"asr": failure} for failure in check_expectations(original, case.get("asr_expected", {})))
+                    if reference:
+                        row["reference_metrics"] = compare_transcript(reference, transcript["sentences"], info.duration, service.settings.video_segment_seconds)
+                        maximum = case.get("max_token_error_rate")
+                        rate = row["reference_metrics"]["token_error_rate"]
+                        if maximum is not None and rate > maximum:
+                            row["failures"].append({"token_error_rate": rate, "maximum": maximum})
                 for number, expected in case.get("chapter_expectations", {}).items():
                     matching = next((c for c in chapters if str(c["number"]) == number), None)
                     if matching is None:
@@ -95,6 +145,8 @@ def main():
                     else:
                         row["failures"].extend({"chapter": number, **failure} for failure in check_expectations(matching["summary"], expected))
                 evidence = {"overview": summary, "chapters": chapters}
+                if args.with_asr and transcript["status"] == "ready":
+                    evidence["transcript"] = {"basis": "云端ASR识别原文，可能误识别", "sentences": transcript["sentences"]}
                 history = []
                 for question in case.get("questions", []):
                     answer, tokens = client.answer(evidence, question["query"], history, config)
@@ -106,6 +158,7 @@ def main():
             except Exception as exc:
                 # Never write arbitrary upstream exception text or signed URLs.
                 row.update(passed=False, error=str(exc) if isinstance(exc, VideoError) else type(exc).__name__)
+            row["elapsed_seconds"] = round(time.monotonic() - started, 2)
             report["cases"].append(row)
             report["passed"] = report["passed"] and row["passed"]
             args.output.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")

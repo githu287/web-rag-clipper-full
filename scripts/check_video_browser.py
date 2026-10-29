@@ -93,7 +93,7 @@ def main():
             if query == "模拟失败":
                 raise VideoError("问答失败，请重试", 502)
             if query == "原文讲了什么":
-                return "原文记录蓝色演示。[原文1]", {"total_tokens": 9}
+                return "原文记录蓝色演示。[原文1-2]", {"total_tokens": 9}
             return "蓝色背景与提示音。[片段 1]", {"total_tokens": 9}
     class AsrFixture:
         def transcribe(self, _path, duration, _config, _alive):
@@ -212,9 +212,12 @@ def main():
                 expect(page.locator("#video-chat-messages .assistant")).to_have_count(1)
                 expect(page.locator("#video-chat-messages")).to_contain_text("ASR时间范围")
                 expect(page.locator("#video-chat-messages")).to_contain_text("蓝色演示原文")
-                page.locator("#video-chat-messages .video-time-link").click()
+                expect(page.locator("#video-chat-messages .video-time-link")).to_have_count(2)
+                page.locator("#video-chat-messages .video-time-link").first.click()
                 assert page.locator("#video-player").evaluate("v=>v.currentTime") >= .19
-                done("ASR source quote seeks the actual local player; HTML remains text; reattachment creates no upload task")
+                page.locator("#video-chat-messages .video-time-link").nth(1).click()
+                assert page.locator("#video-player").evaluate("v=>v.currentTime") >= 10.19
+                done("ASR range citation exposes both server quotes and seeks each actual local position; HTML remains text; no new upload")
                 for box in page.locator("#video-part-options input").all():
                     box.uncheck()
                 page.locator('#video-transcript-list input[value="1"]').check()

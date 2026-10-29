@@ -153,3 +153,23 @@ def test_unknown_model_citations_do_not_create_fake_source_ranges(service):
     job = completed(service)
     service._cloud_client.answer.return_value = ("资料没有该内容。[片段 999]", {})
     assert service.ask("a", job.id, {"query": "更细的操作"})["sources"] == []
+
+
+@pytest.mark.parametrize("citation", ["[原文 1-3]", "[原文1–3]", "[原文1至3]", "[原文1、2，3]", "[原文1, 2-3]"])
+def test_real_model_range_citations_preserve_original_quotes_and_times(service, citation):
+    job = completed(service)
+    result = json.loads(service.repo.get("a", job.id).result)
+    sentences = [{"id": n, "start_seconds": n * 2, "end_seconds": n * 2 + 1, "text": f"原文{n}"} for n in range(1, 4)]
+    result["transcript"] = {"status": "ready", "sentences": sentences}
+    with service.repo.sessions.begin() as session:
+        session.execute(update(VideoJob).where(VideoJob.id == job.id).values(result=json.dumps(result)))
+    service._cloud_client.answer.return_value = ("不会主动决定。" + citation, {})
+    sources = service.ask("a", job.id, {"query": "是否主动决定？"})["sources"]
+    assert [s["text"] for s in sources] == [s["text"] for s in sentences]
+    assert [s["start_seconds"] for s in sources] == [2, 4, 6]
+
+
+@pytest.mark.parametrize("citation", ["[原文 1-9999]", "[原文3-1]", "[原文0-2]", "[原文1-4]", "[原文1,999]", "[原文1.0]", "[原文1-2-3]"])
+def test_invalid_or_unknown_ranges_never_fabricate_partial_sources(citation):
+    from backend.services.video_summary import citation_ids
+    assert citation_ids(citation, "原文", {1, 2, 3}) == set()

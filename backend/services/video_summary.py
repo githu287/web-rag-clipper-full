@@ -21,6 +21,27 @@ DEFAULT_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 VIDEO_EXTENSIONS = (".mp4", ".mov", ".webm", ".mkv", ".avi")
 
 
+def citation_ids(answer, kind, valid_ids):
+    """Resolve bounded model citation lists/ranges against server-owned IDs only."""
+    result = set()
+    item = r"[0-9]{1,4}(?:\s*[-–—至]\s*[0-9]{1,4})?"
+    for match in re.finditer(r"\[" + re.escape(kind) + r"\s*([^\[\]]{1,160})\]", answer):
+        value = match.group(1).strip()
+        if not re.fullmatch(item + r"(?:\s*[,，、]\s*" + item + r")*", value):
+            continue
+        referenced = set()
+        for part in re.split(r"[,，、]", value):
+            bounds = re.split(r"\s*[-–—至]\s*", part.strip())
+            start, end = int(bounds[0]), int(bounds[-1])
+            if not 1 <= start <= end or end - start >= 20:
+                referenced = set()
+                break
+            referenced.update(range(start, end + 1))
+        if len(referenced) <= 20 and referenced <= valid_ids:
+            result.update(referenced)
+    return result
+
+
 class VideoSummaryService:
     def __init__(self, repository, settings, cloud_client=None):
         self.repo = repository
@@ -81,17 +102,19 @@ class VideoSummaryService:
             current = self.repo.get(owner, job_id)
             if current.expires_at <= datetime.utcnow() or current.status != "SUCCEEDED":
                 raise VideoError("视频总结已不可用，问答结果已丢弃", 409)
-            referenced = {int(value) for value in re.findall(r"\[片段\s*(\d{1,3})\]", answer)}
+            referenced = citation_ids(answer, "片段", set(range(1, len(chapters) + 1)))
             sources = [{"label": f"片段 {i + 1}", "start_seconds": c["start_seconds"], "end_seconds": c["end_seconds"]}
                        for i, c in enumerate(chapters) if i + 1 in referenced]
-            cited = {int(value) for value in re.findall(r"\[原文\s*(\d{1,4})\]", answer)}
+            cited = citation_ids(answer, "原文", {row["id"] for row in sentences})
             sources = [{"label": f"原文 {row['id']}", "start_seconds": row["start_seconds"],
                         "end_seconds": row["end_seconds"], "text": row["text"], "timestamp_basis": "asr_alignment"}
                        for row in sentences if row["id"] in cited] + sources
             if "[整体摘要]" in answer:
                 sources.insert(0, {"label": "整体摘要", "start_seconds": None, "end_seconds": None})
-            return {"answer": answer, "sources": sources, "usage": usage, "model": config["model"],
-                    "basis": "云端ASR原文与AI视频总结，未重新分析原视频" if sentences else "AI 视频总结，未重新分析原视频", "job_id": job.id}
+            basis = "云端ASR原文与AI视频总结，未重新分析原视频" if sentences else "AI 视频总结，未重新分析原视频"
+            if usage.get("retrieval_calls"):
+                basis += "；已先按摘要检索最多3个片段，未命中不能判定全片不存在相关内容"
+            return {"answer": answer, "sources": sources, "usage": usage, "model": config["model"], "basis": basis, "job_id": job.id}
         finally:
             with self._ask_lock:
                 self._asking.discard(owner)
