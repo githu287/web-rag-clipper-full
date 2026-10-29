@@ -238,6 +238,7 @@ input, textarea {
 .video-form label, #video-preview > label { font-size: 12px; font-weight: 600; }
 .video-form input, .video-form select, .video-form textarea, #video-preview-text { width: 100%; min-width: 0; border: 1px solid var(--border); background: var(--bg); color: var(--text); border-radius: 6px; padding: 9px; }
 .video-form input[type=file] { font-size: 11px; padding: 8px 4px; }
+.video-form input[type=checkbox] { width: auto; accent-color: var(--primary); }
 .video-form input:focus-visible, .video-form textarea:focus-visible, #video-preview-text:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
 .video-card .hint, .video-history .hint { font-size: 11px; color: var(--text-sub); line-height: 1.75; margin: 7px 0; }
 .video-divider { display: flex; align-items: center; gap: 9px; color: var(--text-sub); font-size: 10px; margin-top: 18px; }
@@ -268,6 +269,19 @@ input, textarea {
 .video-message strong { font-size: 11px; color: var(--primary); }
 .video-message p { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; line-height: 1.8; margin-top: 5px; }
 .video-message small { display: block; font-size: 10px; color: var(--text-sub); margin-top: 8px; line-height: 1.7; }
+.video-evidence { border-top: 1px solid var(--border); padding-top: 16px; margin-top: 14px; }
+#video-player { display: block; width: 100%; max-height: 240px; background: #111827; border-radius: 8px; margin: 10px 0; }
+#video-player[hidden] { display: none; }
+#video-local-source { width: 100%; font-size: 11px; margin: 8px 0; }
+#video-transcript-choices { border: 1px solid var(--border); border-radius: 6px; padding: 8px; margin: 12px 0; font-size: 11px; }
+#video-transcript-list { max-height: 320px; overflow-y: auto; }
+.video-transcript-row { display: grid; grid-template-columns: 18px minmax(0,1fr); gap: 5px; border-bottom: 1px solid var(--border); padding: 9px 2px; }
+.video-transcript-row:last-child { border-bottom: 0; }
+.video-transcript-row p { font-size: 12px; line-height: 1.8; white-space: pre-wrap; overflow-wrap: anywhere; margin-top: 4px; }
+.video-time-link { color: var(--primary); background: transparent; border: 0; padding: 3px 0; font: inherit; font-size: 11px; cursor: pointer; text-align: left; display: block; }
+.video-time-link:hover { text-decoration: underline; }
+.video-time-link:focus-visible, .video-transcript-row:focus { outline: 2px solid var(--primary); outline-offset: 2px; }
+.video-source-quote { display: block; padding-left: 8px; border-left: 2px solid var(--border); margin-top: 4px; white-space: pre-wrap; }
 
 .nav-btn {
   flex: 1;

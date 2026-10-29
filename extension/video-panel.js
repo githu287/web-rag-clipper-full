@@ -1,12 +1,14 @@
 "use strict";
 
-// Dedicated panel. Only job IDs live on the server; keys and video bytes never enter chrome.storage.
+// Keys and raw video bytes never enter chrome.storage; player URLs live only in this panel.
 const webRagVideoPanel = (() => {
   const el = id => document.getElementById("video-" + id);
   let owner = null, epoch = 0, active = false, timer = null, jobs = [], selected = null;
   let submitting = false, saving = false, saved = false, edited = false, ingestId = null, config = null;
   let chatBusy = false, chatToken = 0;
   const chats = new Map();
+  const localMedia = new Map();
+  let transcriptJob = null, pendingSeek = null;
   const pending = job => ["UPLOADING", "QUEUED", "PROCESSING"].includes(job.status);
   const identity = () => {
     const plugin = webRagApiClient.getPlugin();
@@ -24,11 +26,12 @@ const webRagVideoPanel = (() => {
     if (chatBusy) el("chat-status").textContent = "已停止等待回答；云端请求可能仍在处理中，可稍后重新提问。";
     chatToken++; chatBusy = false;
   }
-  function leave() { active = false; epoch++; clearTimeout(timer); stopWaitingForAnswer(); }
+  function leave() { active = false; epoch++; clearTimeout(timer); stopWaitingForAnswer(); el("player").pause(); }
   function reset() {
     leave(); owner = null; jobs = []; selected = null; ingestId = null; config = null;
     submitting = false; saving = false; saved = false; edited = false;
     chats.clear(); clearChatView(); el("part-options").replaceChildren();
+    clearMedia(); transcriptJob = null; el("transcript-list").replaceChildren(); el("transcript-state").textContent = "";
     el("key").value = ""; el("url").value = ""; el("file").value = "";
     el("jobs").replaceChildren(); el("preview-text").value = ""; el("preview").hidden = true;
     el("confirm").checked = false; el("ingest-status").textContent = ""; status("");
@@ -44,6 +47,7 @@ const webRagVideoPanel = (() => {
     el("save-parts").disabled = saving;
     el("ask").disabled = !selected || chatBusy || !config || !config.configured || !el("question").value.trim();
     el("question").disabled = chatBusy;
+    el("transcript-choices").disabled = saving;
   }
   function clearChatView() {
     chatToken++; chatBusy = false;
@@ -58,8 +62,14 @@ const webRagVideoPanel = (() => {
       card.append(label, text);
       if (message.sources && message.sources.length) {
         const sources = document.createElement("small");
-        sources.textContent = "依据：" + message.sources.map(source => source.start_seconds == null ? source.label :
-          `${source.label} ${formatTime(source.start_seconds)}–${formatTime(source.end_seconds)}（分段范围）`).join("；");
+        sources.append(document.createTextNode("依据："));
+        for (const source of message.sources) {
+          if (source.start_seconds == null) { sources.append(document.createTextNode(source.label)); continue; }
+          const link = document.createElement("button"); link.type = "button"; link.className = "video-time-link";
+          link.textContent = `${source.label} ${formatTime(source.start_seconds)}–${formatTime(source.end_seconds)}（${source.timestamp_basis === "asr_alignment" ? "ASR时间范围" : "分段范围"}）`;
+          link.addEventListener("click", () => seekTo(source.start_seconds)); sources.append(link);
+          if (source.text) { const quote = document.createElement("span"); quote.className = "video-source-quote"; quote.textContent = source.text; sources.append(quote); }
+        }
         card.append(sources);
       }
       el("chat-messages").append(card);
@@ -68,7 +78,90 @@ const webRagVideoPanel = (() => {
   }
   function formatTime(seconds) {
     const value = Math.floor(seconds);
-    return `${String(Math.floor(value / 60)).padStart(2, "0")}:${String(value % 60).padStart(2, "0")}`;
+    return `${String(Math.floor(value / 60)).padStart(2, "0")}:${String(value % 60).padStart(2, "0")}.${Math.floor((seconds - value) * 10)}`;
+  }
+  function clearPlayer() {
+    const player = el("player"); player.pause(); player.removeAttribute("src"); player.load(); player.hidden = true;
+    player.dataset.job = ""; pendingSeek = null; el("local-source").value = "";
+    el("playback-status").textContent = "请选择同一原视频用于定位，文件不会再次上传。";
+  }
+  function clearMedia() {
+    clearPlayer();
+    for (const media of localMedia.values()) URL.revokeObjectURL(media.url);
+    localMedia.clear();
+  }
+  function rememberMedia(jobId, file) {
+    if (localMedia.has(jobId)) URL.revokeObjectURL(localMedia.get(jobId).url);
+    localMedia.set(jobId, { url: URL.createObjectURL(file), name: file.name });
+    while (localMedia.size > 3) { const oldest = localMedia.keys().next().value; URL.revokeObjectURL(localMedia.get(oldest).url); localMedia.delete(oldest); }
+  }
+  function renderPlayer(job) {
+    const player = el("player"), media = localMedia.get(job.id);
+    if (!media) { if (player.dataset.job !== job.id) clearPlayer(); return; }
+    if (player.getAttribute("src") !== media.url) {
+      clearPlayer(); player.dataset.job = job.id; player.src = media.url; player.hidden = false;
+      el("playback-status").textContent = "视频仅在当前面板本机播放；点击时间可回看核对。关闭面板后释放。";
+    }
+  }
+  function seekTo(seconds) {
+    if (!Number.isFinite(seconds) || seconds < 0 || !selected) return;
+    const player = el("player");
+    if (!localMedia.has(selected) || player.dataset.job !== selected || player.error) {
+      el("playback-status").textContent = `请先选择同一原视频，再定位到 ${formatTime(seconds)}；文件不会再次上传。`;
+      el("local-source").focus(); return;
+    }
+    if (player.readyState < 1) { pendingSeek = seconds; return; }
+    const job = jobs.find(item => item.id === selected);
+    if (!job || !Number.isFinite(player.duration) || Math.abs(player.duration - job.result.duration_seconds) > 1) {
+      const media = localMedia.get(selected); if (media) URL.revokeObjectURL(media.url);
+      localMedia.delete(selected); clearPlayer(); el("playback-status").textContent = "所选视频时长与当前任务不一致，请选择同一原视频。"; return;
+    }
+    player.currentTime = Math.min(seconds, Math.max(0, player.duration - .01));
+    player.scrollIntoView({ block: "nearest" });
+    player.play().catch(() => { el("playback-status").textContent = "已定位，请点击播放核对原视频。"; });
+  }
+  el("player").addEventListener("loadedmetadata", () => {
+    const player = el("player"), job = jobs.find(item => item.id === selected);
+    if (!active || player.dataset.job !== selected || !job || !job.result) return;
+    if (!Number.isFinite(player.duration) || Math.abs(player.duration - job.result.duration_seconds) > 1) {
+      const media = localMedia.get(selected); if (media) URL.revokeObjectURL(media.url);
+      localMedia.delete(selected); clearPlayer(); el("playback-status").textContent = "所选视频时长与当前任务不一致，请选择同一原视频。"; return;
+    }
+    if (pendingSeek != null) { const time = pendingSeek; pendingSeek = null; seekTo(time); }
+  });
+  el("player").addEventListener("error", () => {
+    if (el("player").getAttribute("src")) el("playback-status").textContent = "浏览器无法播放该视频格式，可在外部播放器按时间核对；建议使用 MP4。";
+  });
+  el("local-source").addEventListener("change", () => {
+    const file = el("local-source").files[0], job = jobs.find(item => item.id === selected);
+    if (!file || !job) return;
+    rememberMedia(job.id, file); renderPlayer(job);
+  });
+  function regenerate(job) {
+    el("preview-text").value = selectedMarkdown(job); edited = true; saved = false;
+    el("confirm").checked = false; el("ingest-status").textContent = "已按所选部分重新生成待保存内容，可继续编辑。"; buttons();
+  }
+  function renderTranscript(job) {
+    if (transcriptJob === job.id) return;
+    transcriptJob = job.id; el("transcript-list").replaceChildren();
+    const transcript = job.result.transcript || {};
+    const states = { ready: "云端 ASR 识别原文，时间为对齐估计，可能误识别。可逐段勾选保存，点击时间回看。",
+      disabled: "此任务未启用原文转写。可在视频模型配置中启用，再上传生成。", no_audio: "原视频没有音轨，仅提供画面总结。",
+      no_speech: "云端未识别到可转写语音。", failed: "原文转写失败，当前仅提供 AI 总结。" };
+    el("transcript-state").textContent = (states[transcript.status] || states.disabled) + (transcript.error ? " " + transcript.error : "");
+    for (const row of transcript.status === "ready" ? transcript.sentences : []) {
+      const item = document.createElement("article"); item.className = "video-transcript-row";
+      const input = document.createElement("input"); input.type = "checkbox"; input.value = String(row.id); input.setAttribute("aria-label", `保存原文 ${row.id}`);
+      input.addEventListener("change", () => {
+        const all = [...el("transcript-list").querySelectorAll("input")], option = el("part-options").querySelector('input[value="transcript"]');
+        if (option) { option.checked = all.every(box => box.checked); option.indeterminate = !option.checked && all.some(box => box.checked); }
+        regenerate(job);
+      });
+      const body = document.createElement("div"), time = document.createElement("button"); time.type = "button"; time.className = "video-time-link";
+      time.textContent = `原文 ${row.id} · ${formatTime(row.start_seconds)}–${formatTime(row.end_seconds)}`;
+      time.addEventListener("click", () => seekTo(row.start_seconds));
+      const text = document.createElement("p"); text.textContent = row.text; body.append(time, text); item.append(input, body); el("transcript-list").append(item);
+    }
   }
   function selectedMarkdown(job) {
     const result = job.result;
@@ -77,24 +170,30 @@ const webRagVideoPanel = (() => {
     for (const option of options) {
       if (!option.checked) continue;
       if (option.value === "overview") sections.push("## 整体摘要\n\n" + result.overview);
+      else if (option.value === "transcript") continue;
       else {
         const index = Number(option.value), chapter = result.chapters[index];
         sections.push(`## 片段 ${index + 1} · ${formatTime(chapter.start_seconds)}–${formatTime(chapter.end_seconds)}\n\n${chapter.summary}`);
       }
     }
+    const selectedRows = new Set([...el("transcript-list").querySelectorAll("input:checked")].map(input => Number(input.value)));
+    const original = (result.transcript && result.transcript.sentences || []).filter(row => selectedRows.has(row.id));
+    if (original.length) sections.push("## 云端 ASR 转写原文\n\n> 时间为 ASR 对齐估计，原文可能误识别。\n\n" + original.map(row =>
+      `### 原文 ${row.id} · ${formatTime(row.start_seconds)}–${formatTime(row.end_seconds)}\n\n${row.text}`).join("\n\n"));
     if (!sections.length) return "";
-    return `# ${result.title}\n\n> AI 生成的视频总结节选，请核对原视频。\n\n来源：${job.source_url || job.filename}\n\n依据：${result.basis}。时间为分段边界，不是逐句字幕时间。\n\n` + sections.join("\n\n");
+    return `# ${result.title}\n\n> 视频笔记节选，请核对原视频。\n\n来源：${job.source_url || job.filename}\n\n总结依据：${result.basis}。总结时间为分段边界；原文时间为 ASR 对齐估计。\n\n` + sections.join("\n\n");
   }
   function renderParts(job) {
     el("part-options").replaceChildren();
     const choices = [["overview", "整体摘要"], ...job.result.chapters.map((chapter, index) =>
       [String(index), `片段 ${index + 1} · ${formatTime(chapter.start_seconds)}–${formatTime(chapter.end_seconds)}`])];
+    if (job.result.transcript && job.result.transcript.status === "ready") choices.push(["transcript", "全部转写原文（也可在上方逐段勾选）"]);
     for (const [value, text] of choices) {
       const label = document.createElement("label"); label.className = "video-confirm";
-      const input = document.createElement("input"); input.type = "checkbox"; input.value = value; input.checked = true;
+      const input = document.createElement("input"); input.type = "checkbox"; input.value = value; input.checked = value !== "transcript";
       input.addEventListener("change", () => {
-        el("preview-text").value = selectedMarkdown(job); edited = true; saved = false;
-        el("confirm").checked = false; el("ingest-status").textContent = "已按所选部分重新生成待保存内容，可继续编辑。"; buttons();
+        if (value === "transcript") for (const box of el("transcript-list").querySelectorAll("input")) box.checked = input.checked;
+        regenerate(job);
       });
       label.append(input, document.createTextNode(text)); el("part-options").append(label);
     }
@@ -108,6 +207,7 @@ const webRagVideoPanel = (() => {
       clearChatView();
     }
     if (changed || !el("part-options").children.length) renderParts(job);
+    renderTranscript(job); renderPlayer(job);
     el("preview").hidden = false;
     el("preview-title").textContent = job.result.title;
     const result = job.result;
@@ -123,7 +223,12 @@ const webRagVideoPanel = (() => {
       if (verb === "preview") { preview(job); return; }
       await webRagApiClient.videos[verb](job.id);
       if (!current(ticket)) return;
+      if (verb === "delete") {
+        chats.delete(job.id);
+        if (localMedia.has(job.id)) { URL.revokeObjectURL(localMedia.get(job.id).url); localMedia.delete(job.id); }
+      }
       if (verb === "delete" && selected === job.id) {
+        clearPlayer(); transcriptJob = null; el("transcript-list").replaceChildren();
         chats.delete(job.id); clearChatView(); el("part-options").replaceChildren();
         selected = null; el("preview").hidden = true; el("preview-text").value = "";
         ingestId = null; saved = false; saving = false;
@@ -165,6 +270,8 @@ const webRagVideoPanel = (() => {
       const chosen = jobs.find(job => job.id === selected);
       if (chosen && chosen.result) preview(chosen);
       if (selected && !chosen) {
+        if (localMedia.has(selected)) { URL.revokeObjectURL(localMedia.get(selected).url); localMedia.delete(selected); }
+        clearPlayer(); transcriptJob = null; el("transcript-list").replaceChildren();
         chats.delete(selected); selected = null; clearChatView(); el("part-options").replaceChildren();
         el("preview").hidden = true; el("preview-text").value = ""; buttons();
       }
@@ -192,6 +299,7 @@ const webRagVideoPanel = (() => {
       el("model").replaceChildren();
       for (const name of data.models) { const option = document.createElement("option"); option.value = name; option.textContent = name; el("model").append(option); }
       el("model").value = data.model;
+      el("asr-enabled").checked = data.asr_enabled === true;
       el("config-state").textContent = data.configured ? "已保存" : "待配置";
       el("config-details").open = !data.configured;
       el("limits").textContent = `最大 ${Math.floor(data.max_upload_bytes / 1048576)} MB、${Math.floor(data.max_duration_seconds / 60)} 分钟。原素材最多保留 ${data.raw_retention_hours} 小时，总结 ${data.result_retention_days} 天；成功后删除原素材。`;
@@ -210,7 +318,8 @@ const webRagVideoPanel = (() => {
       const job = kind === "upload" ? await webRagApiClient.videos.upload(file) : await webRagApiClient.videos.link(el("url").value.trim());
       if (!current(ticket)) return;
       status("任务已创建；处理进度保存在后端，重新打开面板可继续查看。");
-      selected = job.id; edited = false; saved = false; ingestId = null;
+      clearPlayer(); selected = job.id; edited = false; saved = false; ingestId = null;
+      if (kind === "upload") rememberMedia(job.id, file);
       clearChatView(); el("part-options").replaceChildren(); el("confirm").checked = false;
       el("preview").hidden = true; el("preview-text").value = "";
       el("file").value = ""; el("url").value = ""; await refresh(ticket);
@@ -237,13 +346,13 @@ const webRagVideoPanel = (() => {
       if (length + content.length > 16000) break;
       history.unshift({ role: message.role, content }); length += content.length;
     }
-    chatBusy = true; buttons(); el("chat-status").textContent = "正在根据这份视频总结回答…";
+    chatBusy = true; buttons(); el("chat-status").textContent = "正在根据这份视频资料回答…";
     try {
       const response = await webRagApiClient.videos.ask(jobId, query, history);
       if (!current(ticket) || selected !== jobId || token !== chatToken) return;
       messages.push({ role: "user", content: query }, { role: "assistant", content: response.answer, sources: response.sources });
       chats.set(jobId, messages.slice(-40)); el("question").value = ""; renderChat();
-      el("chat-status").textContent = "回答依据 AI 视频总结。未保存到知识库，也未保存对话。";
+      el("chat-status").textContent = `回答依据：${response.basis || "视频资料"}。未保存到知识库，也未保存对话。`;
     } catch (error) {
       if (current(ticket) && selected === jobId && token === chatToken) el("chat-status").textContent = error.message;
     } finally {
@@ -255,7 +364,7 @@ const webRagVideoPanel = (() => {
     event.preventDefault(); if (submitting) return;
     const ticket = epoch; submitting = true; buttons();
     try {
-      await webRagApiClient.videos.setConfig({ api_key: el("key").value, base_url: el("base-url").value.trim(), model: el("model").value });
+      await webRagApiClient.videos.setConfig({ api_key: el("key").value, base_url: el("base-url").value.trim(), model: el("model").value, asr_enabled: el("asr-enabled").checked });
       if (current(ticket)) { status("配置已加密保存。首次视频分析会验证模型权限。请确认地域与服务地址一致。"); await enter(); }
     } catch (error) { if (current(ticket)) status(error.message, true); }
     finally { el("key").value = ""; if (current(ticket)) { submitting = false; buttons(); } }

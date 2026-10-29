@@ -84,3 +84,12 @@ def make_segment(source, target, start, length, settings, alive=lambda: True, *,
               timeout=180, alive=alive)
     if not target.is_file() or not 0 < target.stat().st_size <= 7 * 1024 * 1024:
         raise VideoError("视频分段过大或无法编码")
+
+
+def make_audio(source, target, start, length, settings, alive=lambda: True):
+    run_media([ffmpeg_executable(settings), "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
+               "-protocol_whitelist", "file,pipe", "-ss", str(start), "-i", str(source), "-t", str(length),
+               "-map", "0:a:0", "-vn", "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", str(target)],
+              timeout=90, alive=alive)
+    if not target.is_file() or not 0 < target.stat().st_size <= 5 * 1024 * 1024:
+        raise VideoError("音频分段过大或无法编码")

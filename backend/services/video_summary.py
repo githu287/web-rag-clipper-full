@@ -14,6 +14,7 @@ from ..core.security import decrypt_api_key, encrypt_api_key
 from ..core.video_errors import VideoError
 from .video_links import normalize_link
 from .video_media import ffmpeg_executable
+from ..clients.video_asr import ASR_MODEL
 
 MODELS = ("qwen3-omni-flash", "qwen3.5-omni-flash", "qwen3.5-omni-plus", "qwen3.8-omni-flash")
 DEFAULT_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
@@ -57,6 +58,10 @@ class VideoSummaryService:
                         {"number": index + 1, "start_seconds": chapter["start_seconds"],
                          "end_seconds": chapter["end_seconds"], "summary": chapter["summary"]}
                         for index, chapter in enumerate(chapters)]}
+        transcript = result.get("transcript", {})
+        sentences = transcript.get("sentences", []) if transcript.get("status") == "ready" else []
+        if sentences:
+            evidence["transcript"] = {"basis": "云端ASR识别原文，时间戳为识别估计，可能误识别", "sentences": sentences}
         if len(json.dumps(evidence, ensure_ascii=False)) > 100000:
             raise VideoError("视频总结过长，请选择需要的内容保存至知识库后检索问答", 413)
         config = self.config(owner, secret=True)
@@ -79,10 +84,14 @@ class VideoSummaryService:
             referenced = {int(value) for value in re.findall(r"\[片段\s*(\d{1,3})\]", answer)}
             sources = [{"label": f"片段 {i + 1}", "start_seconds": c["start_seconds"], "end_seconds": c["end_seconds"]}
                        for i, c in enumerate(chapters) if i + 1 in referenced]
+            cited = {int(value) for value in re.findall(r"\[原文\s*(\d{1,4})\]", answer)}
+            sources = [{"label": f"原文 {row['id']}", "start_seconds": row["start_seconds"],
+                        "end_seconds": row["end_seconds"], "text": row["text"], "timestamp_basis": "asr_alignment"}
+                       for row in sentences if row["id"] in cited] + sources
             if "[整体摘要]" in answer:
                 sources.insert(0, {"label": "整体摘要", "start_seconds": None, "end_seconds": None})
             return {"answer": answer, "sources": sources, "usage": usage, "model": config["model"],
-                    "basis": "AI 视频总结，未重新分析原视频", "job_id": job.id}
+                    "basis": "云端ASR原文与AI视频总结，未重新分析原视频" if sentences else "AI 视频总结，未重新分析原视频", "job_id": job.id}
         finally:
             with self._ask_lock:
                 self._asking.discard(owner)
@@ -119,17 +128,19 @@ class VideoSummaryService:
         if row is None:
             if secret:
                 raise VideoError("请先在视频面板配置云端 Qwen-Omni 服务", 409)
-            return {"configured": False, "base_url": DEFAULT_URL, "model": MODELS[0], "models": MODELS}
+            return {"configured": False, "base_url": DEFAULT_URL, "model": MODELS[0], "models": MODELS,
+                    "asr_enabled": True, "asr_model": ASR_MODEL}
         try:
             data = json.loads(decrypt_api_key(row.ciphertext, row.nonce, self.settings.app_master_key))
         except Exception:
             raise VideoError("视频模型配置无法解密，请重新保存配置", 503) from None
         if secret:
             return data
-        return {"configured": True, "base_url": data["base_url"], "model": data["model"], "models": MODELS}
+        return {"configured": True, "base_url": data["base_url"], "model": data["model"], "models": MODELS,
+                "asr_enabled": data.get("asr_enabled", False), "asr_model": ASR_MODEL}
 
     def put_config(self, owner, payload):
-        if not isinstance(payload, dict) or set(payload) - {"api_key", "base_url", "model"}:
+        if not isinstance(payload, dict) or set(payload) - {"api_key", "base_url", "model", "asr_enabled"}:
             raise VideoError("视频配置字段不正确", 422)
         base_url, model, key = (payload.get(field) for field in ("base_url", "model", "api_key"))
         if not isinstance(base_url, str) or not re.fullmatch(
@@ -137,11 +148,24 @@ class VideoSummaryService:
             raise VideoError("请填写百炼控制台提供的 HTTPS Chat Completions 服务地址（以 /compatible-mode/v1 结尾）", 422)
         if model not in MODELS:
             raise VideoError("请选择支持音视频输入的 Qwen-Omni 模型", 422)
+        if "asr_enabled" in payload:
+            asr_enabled = payload["asr_enabled"]
+        else:
+            try:
+                asr_enabled = self.config(owner).get("asr_enabled", False) if self.repo.config(owner) else False
+            except VideoError:
+                # A fresh explicit key can repair an unreadable encrypted config.
+                asr_enabled = False
+        if not isinstance(asr_enabled, bool):
+            raise VideoError("云端原文转写开关格式不正确", 422)
+        if asr_enabled and ("-us.aliyuncs.com" in base_url or "us-east-1" in base_url or "cn-shanghai" in base_url):
+            raise VideoError("云端原文转写请使用百炼北京或新加坡地域的地址与 Key", 422)
         if key in (None, ""):
             key = self.config(owner, secret=True)["api_key"]
         if not isinstance(key, str) or not 10 <= len(key.strip()) <= 512 or any(ord(ch) < 32 for ch in key):
             raise VideoError("API Key 格式不正确", 422)
-        ciphertext, nonce = encrypt_api_key(json.dumps({"api_key": key.strip(), "base_url": base_url.rstrip("/"), "model": model}), self.settings.app_master_key)
+        ciphertext, nonce = encrypt_api_key(json.dumps({"api_key": key.strip(), "base_url": base_url.rstrip("/"), "model": model,
+                                                       "asr_enabled": asr_enabled}), self.settings.app_master_key)
         self.repo.put_config(owner, ciphertext, nonce)
         return self.config(owner)
 

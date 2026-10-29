@@ -9,6 +9,7 @@
 | `README.md` | 项目定位、快速启动、模型配置、使用流程、测试与排障 |
 | `BACKLOG.md` | 暂缓的 PDF、视频首版完成状态及后续增强待办 |
 | `VIDEO_SUMMARY.md` | 视频总结操作、云端配置、平台边界、部署、API 与真实验证记录 |
+| `VIDEO_TRANSCRIPT.md` | 云端 ASR 原文、时间引用、本机回看、选择性保存、配置与真实验收 |
 | `LIVE_ACCEPTANCE.md` | 本机 0012 升级备份、真实模型/浏览器/故障验收及向量读取一致性修复 |
 | `.github/workflows/ci.yml` | push/PR/手动触发的 Linux/Windows 离线回归，以及 Linux Chromium 真实扩展提取测试 |
 | `scripts/check.py` | 本地与 CI 统一离线检查入口，自动发现 Node 测试并传播失败 |
@@ -22,7 +23,7 @@
 | `scripts/audit_collapsed_site.py` | 按需只读检查公开网页前若干原生折叠块和原网页开闭状态，不调用后端/模型 |
 | `scripts/check_pagination_browser.py` | 无后端分页真实扩展回归；侧栏使用合成身份与 OCR 替身 |
 | `scripts/check_ocr.py` | 真实 CPU 模型的中英文、长图分段边界和重复行检查 |
-| `scripts/check_video_browser.py` | 真实扩展/API/SQLite/FFmpeg 的视频上传、编辑、确认保存和隔离回归，云端与最终入库边界使用替身 |
+| `scripts/check_video_browser.py` | 真实扩展/API/SQLite/FFmpeg 的视频上传、ASR 引用、本机定位、原文选段保存和隔离回归；Omni/ASR 及最终入库边界使用替身 |
 | `scripts/check_video_quality_live.py` | 显式启用付费的真实云端内容验收，检查已知素材的事实、否定、数字及问答，不修改 Workspace 或入库 |
 | `scripts/check_video_concurrency_live.py` | 显式启用付费的本机 MySQL/API/云端突发并发验收，创建并清理独立测试空间，验证配额、问答限流和恢复 |
 | `VIDEO_LIMITS_TEST_20261029.md` | 0.14.2 长视频、并发、流式取消/超时和分段引用专项验收及复现说明 |
@@ -309,6 +310,7 @@
 | `backend/services/video_media.py` | 有界 FFmpeg 探测与带音轨分段，无本地推理 |
 | `backend/services/video_links.py` | B站/抖音适配、短链验证、限制域名与固定公网 IP 下载 |
 | `backend/clients/video.py` | 云端原生音视频与总结问答流式调用、用量和完整响应校验 |
+| `backend/clients/video_asr.py` | 私有音频 Base64 云端转写、稳定字词时间校验与原文分段，不提供公网媒体链接 |
 | `backend/api/routers/videos.py`、`backend/api/video_body_limit.py` | 视频 API 与 multipart 解析前的字节限制 |
 | `backend/workers/video_worker.py` | 独立视频处理入口、分段汇总、取消与清理 |
 | `backend/requirements-video.txt` | 固定媒体二进制与平台解析工具版本 |

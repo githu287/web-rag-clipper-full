@@ -6,9 +6,10 @@ import signal
 import threading
 
 from ..clients.video import CloudVideoClient
+from ..clients.video_asr import CloudAsrClient, ASR_MODEL
 from ..core.video_errors import VideoError
 from ..services.video_links import download_platform
-from ..services.video_media import inspect_video, make_segment
+from ..services.video_media import inspect_video, make_segment, make_audio
 
 logger = logging.getLogger(__name__)
 
@@ -19,11 +20,12 @@ def timestamp(seconds):
 
 
 class VideoWorker:
-    def __init__(self, service, client=None):
+    def __init__(self, service, client=None, asr_client=None):
         self.service = service
         self.repo = service.repo
         self.settings = service.settings
         self.client = client or CloudVideoClient()
+        self.asr_client = asr_client or CloudAsrClient()
 
     def run_once(self):
         self.service.cleanup()
@@ -67,10 +69,32 @@ class VideoWorker:
                 info = inspect_video(source, self.settings, alive)
                 count = math.ceil(info.duration / self.settings.video_segment_seconds)
                 chapters, usage = [], {}
+                transcript = {"status": "disabled", "model": ASR_MODEL, "sentences": [], "usage": {"duration_seconds": 0}}
+                if config.get("asr_enabled"):
+                    transcript["status"] = "processing" if info.has_audio else "no_audio"
                 for index in range(count):
                     start = index * self.settings.video_segment_seconds
                     end = min(info.duration, start + self.settings.video_segment_seconds)
                     segment = directory / "segment.mp4"
+                    if transcript["status"] == "processing":
+                        stage(f"云端原文转写 {index + 1}/{count}", 10 + int(75 * index / count))
+                        audio = directory / "audio.wav"
+                        try:
+                            make_audio(source, audio, start, end - start, self.settings, alive)
+                            rows, tokens = self.asr_client.transcribe(audio, end - start, config, alive)
+                            transcript["usage"]["duration_seconds"] += tokens.get("duration_seconds", 0)
+                            for row in rows:
+                                transcript["sentences"].append({"id": len(transcript["sentences"]) + 1,
+                                    "start_seconds": round(start + row["start_seconds"], 3),
+                                    "end_seconds": round(start + row["end_seconds"], 3), "text": row["text"]})
+                            if len(transcript["sentences"]) > 3000 or sum(len(row["text"]) for row in transcript["sentences"]) > 120000:
+                                raise VideoError("转写原文过长，请使用较短视频生成可定位原文")
+                        except Exception as exc:
+                            if isinstance(exc, VideoError) and exc.status == 409:
+                                raise
+                            transcript.update(status="failed", sentences=[], error=str(exc) if isinstance(exc, VideoError) else "云端转写失败")
+                        finally:
+                            audio.unlink(missing_ok=True)
                     stage(f"分段转码 {index + 1}/{count}", 10 + int(75 * index / count))
                     make_segment(source, segment, start, end - start, self.settings, alive, has_audio=info.has_audio)
                     stage(f"云端音视频分析 {index + 1}/{count}", 12 + int(75 * index / count))
@@ -79,6 +103,8 @@ class VideoWorker:
                     for name, value in tokens.items():
                         usage[name] = usage.get(name, 0) + value
                     segment.unlink()
+                if transcript["status"] == "processing":
+                    transcript["status"] = "ready" if transcript["sentences"] else "no_speech"
                 overview = chapters[0]["summary"]
                 if count > 1:
                     stage("生成整体摘要", 90)
@@ -95,6 +121,7 @@ class VideoWorker:
                 result = {"title": title, "duration_seconds": round(info.duration, 2), "has_audio": info.has_audio,
                           "basis": basis, "timestamp_basis": "segment_boundaries", "model": config["model"],
                           "overview": overview, "chapters": chapters, "usage": usage, "markdown": markdown}
+                result["transcript"] = transcript
                 stage("保存总结预览", 98)
                 if self.repo.finish(job, result=json.dumps(result, ensure_ascii=False), result_days=self.settings.video_result_days):
                     self.service.remove_media(job.id)

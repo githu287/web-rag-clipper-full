@@ -92,11 +92,18 @@ def main():
                 late_release.wait(5)
             if query == "模拟失败":
                 raise VideoError("问答失败，请重试", 502)
+            if query == "原文讲了什么":
+                return "原文记录蓝色演示。[原文1]", {"total_tokens": 9}
             return "蓝色背景与提示音。[片段 1]", {"total_tokens": 9}
+    class AsrFixture:
+        def transcribe(self, _path, duration, _config, _alive):
+            return [{"start_seconds": min(.2, duration / 4), "end_seconds": min(.8, duration),
+                     "text": "蓝色演示原文 <img src=x onerror=alert(1)>"}], {"duration_seconds": duration}
     service._cloud_client = CloudFixture()
-    media = args.artifacts / "fixture.mp4"
-    subprocess.run([ffmpeg_executable(settings), "-nostdin", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "color=c=blue:s=160x120:r=12", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=16000", "-t", "11", "-c:v", "libx264", "-c:a", "aac", str(media)], check=True, timeout=20)
-    worker = VideoWorker(service, CloudFixture())
+    # Open codecs let the player assertions run in both installed Chrome and CI Chromium.
+    media = args.artifacts / "fixture.webm"
+    subprocess.run([ffmpeg_executable(settings), "-nostdin", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "color=c=blue:s=160x120:r=12", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=16000", "-t", "11", "-c:v", "libvpx", "-deadline", "realtime", "-c:a", "libopus", str(media)], check=True, timeout=20)
+    worker = VideoWorker(service, CloudFixture(), AsrFixture())
     sock = socket.socket()
     sock.bind(("127.0.0.1", 0))
     base = "http://127.0.0.1:" + str(sock.getsockname()[1])
@@ -191,6 +198,33 @@ def main():
                 page.get_by_role("button", name="查看总结", exact=True).click()
                 expect(page.locator("#video-preview")).to_be_visible()
                 done("Reopening the extension restores durable job history and original summary")
+                expect(page.locator("#video-transcript-list .video-transcript-row")).to_have_count(2)
+                expect(page.locator("#video-transcript-list img")).to_have_count(0)
+                expect(page.locator("#video-player")).to_be_hidden()
+                page.locator("#video-local-source").set_input_files(str(media))
+                expect(page.locator("#video-player")).to_be_visible()
+                # Inspect real media state before seeking; no injected player API.
+                deadline = time.monotonic() + 5
+                while page.locator("#video-player").evaluate("v=>v.readyState") < 1 and time.monotonic() < deadline:
+                    time.sleep(.05)
+                page.locator("#video-question").fill("原文讲了什么")
+                page.locator("#video-ask").click()
+                expect(page.locator("#video-chat-messages .assistant")).to_have_count(1)
+                expect(page.locator("#video-chat-messages")).to_contain_text("ASR时间范围")
+                expect(page.locator("#video-chat-messages")).to_contain_text("蓝色演示原文")
+                page.locator("#video-chat-messages .video-time-link").click()
+                assert page.locator("#video-player").evaluate("v=>v.currentTime") >= .19
+                done("ASR source quote seeks the actual local player; HTML remains text; reattachment creates no upload task")
+                for box in page.locator("#video-part-options input").all():
+                    box.uncheck()
+                page.locator('#video-transcript-list input[value="1"]').check()
+                selected_text = page.locator("#video-preview-text").input_value()
+                assert "原文 1" in selected_text and "原文 2" not in selected_text and "## 片段" not in selected_text
+                assert len(uploaded_summaries) == 1
+                page.locator("#video-confirm").check(); page.locator("#video-save").click()
+                expect(page.locator("#video-ingest-status")).to_contain_text("已保存到知识库")
+                assert uploaded_summaries[-1] == selected_text and len(uploaded_summaries) == 2
+                done("Only the selected transcript excerpt is persisted after explicit confirmation")
                 page.locator("#video-url").fill("https://127.0.0.1/video/123")
                 page.locator("#video-link-btn").click()
                 expect(page.locator("#video-status")).to_contain_text("目前支持")
@@ -205,6 +239,8 @@ def main():
                 expect(page.locator("#video-preview-text")).to_have_value("")
                 expect(page.locator("#video-preview")).to_be_hidden()
                 expect(page.locator("#video-chat-messages")).to_be_empty()
+                assert page.locator("#video-player").get_attribute("src") is None
+                expect(page.locator("#video-transcript-list")).to_be_empty()
                 done("Changing Workspace clears the previous preview before asynchronous requests resolve")
                 assert errors == [], errors
             finally:
@@ -215,7 +251,7 @@ def main():
         sock.close()
         engine.dispose()
         late_release.set()
-        (args.artifacts / "report.json").write_text(json.dumps({"checks": checks, "passed": len(checks) == 9, "cloud": "fixture", "ingest": "fixture boundary", "media": "real FFmpeg", "errors": errors}, ensure_ascii=False, indent=2), encoding="utf-8")
+        (args.artifacts / "report.json").write_text(json.dumps({"checks": checks, "passed": len(checks) == 11, "cloud": "fixture (Omni and ASR)", "ingest": "fixture boundary", "media": "real FFmpeg", "errors": errors}, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 if __name__ == "__main__":

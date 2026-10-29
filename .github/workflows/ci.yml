@@ -89,5 +89,5 @@ jobs:
         run: python scripts/check_ocr_browser.py --channel chromium
       - name: Exercise bounded article pagination and temporary-tab cleanup
         run: python scripts/check_pagination_browser.py --channel chromium
-      - name: Exercise video upload, editable preview and Workspace isolation
+      - name: Exercise video transcripts, source seeking, optional persistence and isolation
         run: python scripts/check_video_browser.py --channel chromium

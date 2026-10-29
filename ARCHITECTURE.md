@@ -282,6 +282,8 @@ Workspace 删除要求 `confirm=true` 且提交名称与当前名称完全一致
 
 视频总结使用独立的 `video_model_configs`（现有 AES-GCM 工具加密）与 `video_jobs`（MySQL 持久化）表，迁移为 `0013`。`videos` Router → `VideoSummaryService` → `VideoRepository`；独立 `video_worker` 原子领取任务并通过租约/心跳防止旧进程写回。素材在私有上传根目录，CPU FFmpeg 分段，`CloudVideoClient` 将带声音的视频片段发送至线上 Qwen-Omni，再汇总为预览。只有前端明确确认后才走原有 Markdown 上传/Redis 入库链路。原 Embedding 指纹和双模型凭证结构不变。平台解析、删除、过期和验证范围见 [VIDEO_SUMMARY.md](VIDEO_SUMMARY.md)。
 
+0.15.0 可选 `CloudAsrClient`：同一私有工作目录中提取16kHz单声道 WAV，经百炼原生 HTTP 将 Base64 音频发送至 Fun-ASR-Flash，按稳定字词时间戳生成原文片段，再叠加视频段偏移。原文/时间和独立用量写入既有 `result.transcript`，不新增迁移。直接问答优先引用原文，服务端从原文编号生成文本和时间来源；旧总结任务保持兼容。前端本机播放器仅用当前面板内临时媒体 URL，支持原文/回答时间定位与独立勾选入库，换空间/刷新/关闭时释放；不开放带身份凭证的媒体播放 URL。见 [VIDEO_TRANSCRIPT.md](VIDEO_TRANSCRIPT.md)。
+
 视频问答 `POST /videos/{id}/ask` 从认证空间的已完成、未过期总结读取证据，直接调用视频模型的文本能力，不依赖 Embedding、Redis 或 Milvus；历史与答案不持久化。前端可按整体摘要/分段构造待保存 Markdown，手动确认后才进入原入库链路。问答不使用编辑稿。服务端限制输入、上下文与并发，响应前重新检查来源存在，客户端以身份、视频 ID 和请求序号隔离迟到回答。0.14.0 不新增数据库迁移。
 
 当前共有 36 个操作：Plugin 9、Document 8、Clip 2、Job 2、Ingest 1、RAG 2、OCR 1、Video 11。其中 `POST /plugins/register` 与 `GET /plugins/model-providers` 不要求 Plugin Header。

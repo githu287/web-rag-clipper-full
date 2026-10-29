@@ -55,6 +55,32 @@ def test_sources_accept_optional_space_in_real_model_citations(service, citation
     assert result["sources"] == [{"label": "片段 1", "start_seconds": 0, "end_seconds": 90}]
 
 
+def test_transcript_citations_return_server_text_and_asr_time_ranges(service):
+    job = completed(service)
+    result = json.loads(service.repo.get("a", job.id).result)
+    result["transcript"] = {"status": "ready", "sentences": [
+        {"id": 1, "start_seconds": .24, "end_seconds": 3.2, "text": "土壤湿润时不要浇水。"}]}
+    with service.repo.sessions.begin() as session:
+        session.execute(update(VideoJob).where(VideoJob.id == job.id).values(result=json.dumps(result)))
+    service._cloud_client.answer.return_value = ("不要浇水。[原文1] [原文999]", {})
+    answer = service.ask("a", job.id, {"query": "什么时候浇水？"})
+    assert answer["sources"] == [{"label": "原文 1", "start_seconds": .24, "end_seconds": 3.2,
+                                  "text": "土壤湿润时不要浇水。", "timestamp_basis": "asr_alignment"}]
+    assert service._cloud_client.answer.call_args.args[0]["transcript"]["sentences"] == result["transcript"]["sentences"]
+    assert "ASR" in answer["basis"]
+
+
+def test_failed_transcript_is_never_used_as_original_evidence(service):
+    job = completed(service)
+    result = json.loads(service.repo.get("a", job.id).result)
+    result["transcript"] = {"status": "failed", "sentences": [{"id": 1, "text": "partial untrusted text"}]}
+    with service.repo.sessions.begin() as session:
+        session.execute(update(VideoJob).where(VideoJob.id == job.id).values(result=json.dumps(result)))
+    service._cloud_client.answer.return_value = ("无可用原文。[原文1]", {})
+    assert service.ask("a", job.id, {"query": "内容"})["sources"] == []
+    assert "transcript" not in service._cloud_client.answer.call_args.args[0]
+
+
 def test_cross_workspace_and_unfinished_expired_sources_do_not_call_cloud(service):
     job = completed(service)
     with pytest.raises(VideoError) as caught:

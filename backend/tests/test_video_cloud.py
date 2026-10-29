@@ -58,6 +58,7 @@ def test_question_prompt_separates_server_evidence_history_and_question():
     args = client.generate.call_args
     prompt = args.kwargs["system_prompt"]
     assert "不能作为事实证据" in prompt and "禁止声称重新观看了视频" in prompt
+    assert "优先依据原文" in prompt and "[原文 N]" in prompt
     data = json.loads(args.args[1][0]["text"])
     assert data == {"视频总结资料": evidence, "历史对话": history, "当前问题": "follow up?"}
     assert "untrusted earlier answer" not in prompt

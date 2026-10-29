@@ -73,6 +73,8 @@
             <input id="video-base-url" type="url" required placeholder="从百炼控制台复制，以 /compatible-mode/v1 结尾">
             <label for="video-model">音视频模型</label><select id="video-model"></select>
             <label for="video-key">API Key</label><input id="video-key" type="password" autocomplete="new-password" placeholder="已配置时留空保留原 Key">
+            <label class="video-confirm"><input type="checkbox" id="video-asr-enabled"> 同时生成带时间戳的云端转写原文</label>
+            <p class="hint">使用同地域、同 Key 的 Fun-ASR-Flash，额外产生转写用量；需开通该模型权限。仅将音频字节发送到云端，不创建公网视频链接。配置影响之后开始处理的任务；旧任务保留原结果。</p>
             <div class="video-actions"><button type="submit" class="primary-btn" id="video-config-save">保存配置</button>
               <button type="button" class="btn-secondary" id="video-config-remove">移除配置</button></div>
           </form>
@@ -94,9 +96,18 @@
           <div id="video-jobs"></div></section>
         <section id="video-preview" class="video-card" hidden><span class="video-kicker">SUMMARY PREVIEW</span>
           <h3 id="video-preview-title"></h3><p class="hint" id="video-preview-meta"></p>
+          <section class="video-evidence" aria-labelledby="video-transcript-title">
+            <h3 id="video-transcript-title">原文与时间定位</h3>
+            <p class="hint" id="video-transcript-state"></p>
+            <video id="video-player" controls preload="metadata" hidden></video>
+            <label class="hint" for="video-local-source">选择同一原视频用于回看（仅本机读取，不上传）</label>
+            <input id="video-local-source" type="file" accept=".mp4,.mov,.webm,.mkv,.avi">
+            <p class="hint" id="video-playback-status">点击原文或回答来源可定位；重新打开面板后需重新选择原视频。平台链接暂请下载后选择本地文件。</p>
+            <fieldset id="video-transcript-choices"><legend>原文片段：勾选可加入待保存内容</legend><div id="video-transcript-list"></div></fieldset>
+          </section>
           <section class="video-qa" aria-labelledby="video-qa-title">
             <div class="video-section-title"><h3 id="video-qa-title">直接问这个视频</h3><button type="button" class="btn-secondary" id="video-chat-clear">清空对话</button></div>
-            <p class="hint">无需入库或配置 Embedding。回答依据原始 AI 视频总结，不包括下方编辑内容；总结未包含的细节可能无法回答。对话仅保留在当前面板。</p>
+            <p class="hint">无需入库或配置 Embedding。有转写时优先引用原文，其余依据 AI 总结；不包括下方编辑内容。对话仅保留在当前面板。</p>
             <div id="video-chat-messages" role="log" aria-live="polite"></div>
             <form id="video-chat-form" class="video-form"><label for="video-question">你的问题</label>
               <textarea id="video-question" rows="2" maxlength="2000" placeholder="这个视频的主要观点是什么？具体有哪些步骤？"></textarea>
@@ -107,7 +118,7 @@
           <p class="hint" id="video-retention-note">未入库的总结会自动过期。勾选需要的部分，编辑后确认保存；也可只问答或下载。</p>
           <fieldset id="video-save-parts"><legend>选择入库内容</legend><div id="video-part-options"></div></fieldset>
           <label for="video-preview-text">待保存内容（可编辑）</label><textarea id="video-preview-text" rows="12" spellcheck="false"></textarea>
-          <p class="hint">AI 总结可能遗漏或误解细节。章节时间是实际分段边界，不是逐句字幕时间。原视频不会存入知识库。</p>
+          <p class="hint">AI 总结和 ASR 原文都可能出错。总结时间是分段边界，原文时间为云端 ASR 对齐估计；原视频不会存入知识库。</p>
           <label class="video-confirm"><input type="checkbox" id="video-confirm"> 我已核对所选内容，确认长期保存到知识库</label>
           <div class="video-actions"><button type="button" class="primary-btn" id="video-save" disabled>确认保存到知识库</button>
             <button type="button" class="btn-secondary" id="video-download">下载 Markdown</button></div>
