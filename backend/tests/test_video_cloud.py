@@ -46,3 +46,17 @@ def test_incomplete_stream_is_not_accepted_as_a_complete_summary():
     transport = httpx.Client(transport=httpx.MockTransport(lambda request: httpx.Response(200, headers={"Content-Type": "text/event-stream"}, text="data: " + json.dumps(event) + "\n\n")))
     with pytest.raises(VideoError, match="完整"):
         CloudVideoClient(transport_factory=lambda **kwargs: transport).combine(["source"], CONFIG)
+
+
+def test_question_prompt_separates_server_evidence_history_and_question():
+    from unittest.mock import Mock
+    client = CloudVideoClient()
+    client.generate = Mock(return_value=("answer", {}))
+    evidence = {"overview": "server summary", "chapters": []}
+    history = [{"role": "assistant", "content": "untrusted earlier answer"}]
+    client.answer(evidence, "follow up?", history, CONFIG)
+    args = client.generate.call_args
+    prompt = args.args[1][0]["text"]
+    assert "不能作为事实证据" in prompt and "禁止声称重新观看了视频" in prompt
+    assert '"视频总结资料":' in prompt and '"当前问题": "follow up?"' in prompt
+    assert args.kwargs["timeout_seconds"] == 75

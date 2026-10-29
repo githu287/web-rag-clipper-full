@@ -64,7 +64,7 @@
     <div class="view-inner" id="view-video">
       <div class="video-scroll">
         <div class="video-heading"><span class="video-kicker">VIDEO NOTES</span><h2>把视频，变成可回看的笔记。</h2>
-          <p>上传文件或粘贴 B站、抖音分享链接。云端分析声音和画面，总结后由你决定是否保存。</p></div>
+          <p>上传文件或粘贴 B站、抖音分享链接。总结后可直接提问，也可选择需要的内容长期保存。</p></div>
         <details id="video-config-details" class="video-card">
           <summary>云端视频模型 <span id="video-config-state">读取中</span></summary>
           <form id="video-config-form" class="video-form">
@@ -94,12 +94,25 @@
           <div id="video-jobs"></div></section>
         <section id="video-preview" class="video-card" hidden><span class="video-kicker">SUMMARY PREVIEW</span>
           <h3 id="video-preview-title"></h3><p class="hint" id="video-preview-meta"></p>
-          <label for="video-preview-text">总结内容（可编辑）</label><textarea id="video-preview-text" rows="16" spellcheck="false"></textarea>
+          <section class="video-qa" aria-labelledby="video-qa-title">
+            <div class="video-section-title"><h3 id="video-qa-title">直接问这个视频</h3><button type="button" class="btn-secondary" id="video-chat-clear">清空对话</button></div>
+            <p class="hint">无需入库或配置 Embedding。回答依据原始 AI 视频总结，不包括下方编辑内容；总结未包含的细节可能无法回答。对话仅保留在当前面板。</p>
+            <div id="video-chat-messages" role="log" aria-live="polite"></div>
+            <form id="video-chat-form" class="video-form"><label for="video-question">你的问题</label>
+              <textarea id="video-question" rows="2" maxlength="2000" placeholder="这个视频的主要观点是什么？具体有哪些步骤？"></textarea>
+              <button type="submit" class="primary-btn" id="video-ask">发送问题</button></form>
+            <p id="video-chat-status" class="hint" role="status" aria-live="polite"></p>
+          </section>
+          <section class="video-persistence" aria-labelledby="video-persistence-title"><h3 id="video-persistence-title">选择性保存到知识库（可选）</h3>
+          <p class="hint" id="video-retention-note">未入库的总结会自动过期。勾选需要的部分，编辑后确认保存；也可只问答或下载。</p>
+          <fieldset id="video-save-parts"><legend>选择入库内容</legend><div id="video-part-options"></div></fieldset>
+          <label for="video-preview-text">待保存内容（可编辑）</label><textarea id="video-preview-text" rows="12" spellcheck="false"></textarea>
           <p class="hint">AI 总结可能遗漏或误解细节。章节时间是实际分段边界，不是逐句字幕时间。原视频不会存入知识库。</p>
-          <label class="video-confirm"><input type="checkbox" id="video-confirm"> 我已核对内容，确认将这份 AI 总结保存到知识库</label>
+          <label class="video-confirm"><input type="checkbox" id="video-confirm"> 我已核对所选内容，确认长期保存到知识库</label>
           <div class="video-actions"><button type="button" class="primary-btn" id="video-save" disabled>确认保存到知识库</button>
             <button type="button" class="btn-secondary" id="video-download">下载 Markdown</button></div>
           <p id="video-ingest-status" role="status" aria-live="polite"></p>
+          </section>
         </section>
       </div>
     </div>

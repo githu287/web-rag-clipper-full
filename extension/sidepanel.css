@@ -256,6 +256,18 @@ input, textarea {
 #video-ingest-status { font-size: 12px; line-height: 1.7; margin-top: 12px; }
 .video-scroll .err, .video-job .err { color: var(--danger); }
 .video-scroll button:disabled { opacity: .5; cursor: default; }
+.video-qa { margin: 16px 0 22px; padding-top: 6px; border-top: 1px solid var(--border); }
+.video-qa .video-section-title { margin-top: 10px; }
+.video-persistence { padding-top: 16px; border-top: 1px solid var(--border); }
+#video-save-parts { padding: 10px; border: 1px solid var(--border); border-radius: 6px; margin: 12px 0; }
+#video-save-parts legend { font-size: 12px; padding: 0 4px; }
+#video-part-options { display: grid; gap: 6px; max-height: 190px; overflow-y: auto; font-size: 12px; }
+#video-chat-messages { max-height: 380px; overflow-y: auto; }
+.video-message { padding: 10px 12px; margin: 10px 0; border-radius: 8px; background: var(--bg); border: 1px solid var(--border); }
+.video-message.user { border-left: 3px solid var(--primary); }
+.video-message strong { font-size: 11px; color: var(--primary); }
+.video-message p { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; line-height: 1.8; margin-top: 5px; }
+.video-message small { display: block; font-size: 10px; color: var(--text-sub); margin-top: 8px; line-height: 1.7; }
 
 .nav-btn {
   flex: 1;

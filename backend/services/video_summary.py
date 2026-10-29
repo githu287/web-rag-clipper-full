@@ -1,11 +1,13 @@
 """Video jobs and encrypted cloud configuration; previews never implicitly ingest."""
 from contextlib import contextmanager
+from datetime import datetime
 import importlib.util
 import json
 from pathlib import Path
 import re
 import shutil
 import time
+import threading
 from uuid import UUID, uuid4
 
 from ..core.security import decrypt_api_key, encrypt_api_key
@@ -19,10 +21,72 @@ VIDEO_EXTENSIONS = (".mp4", ".mov", ".webm", ".mkv", ".avi")
 
 
 class VideoSummaryService:
-    def __init__(self, repository, settings):
+    def __init__(self, repository, settings, cloud_client=None):
         self.repo = repository
         self.settings = settings
         self.root = Path(settings.upload_dir).resolve() / "video"
+        self._cloud_client = cloud_client
+        self._ask_lock = threading.Lock()
+        self._asking = set()
+        self._ask_capacity = threading.BoundedSemaphore(4)
+
+    def ask(self, owner, job_id, payload):
+        job = self.repo.get(owner, job_id)
+        if job.expires_at <= datetime.utcnow():
+            raise VideoError("视频总结已过期，请重新生成；已入库的内容可在知识库中问答", 409)
+        if job.status != "SUCCEEDED" or not job.result:
+            raise VideoError("视频总结尚未完成，暂时无法问答", 409)
+        if not isinstance(payload, dict) or set(payload) - {"query", "history"}:
+            raise VideoError("视频问答请求格式不正确", 422)
+        query, history = payload.get("query"), payload.get("history", [])
+        if not isinstance(query, str) or not query.strip() or len(query) > 2000:
+            raise VideoError("请输入 1–2000 字的问题", 422)
+        if not isinstance(history, list) or len(history) > 10:
+            raise VideoError("视频追问最多携带最近 10 条消息", 422)
+        for message in history:
+            if (not isinstance(message, dict) or set(message) != {"role", "content"}
+                or message["role"] not in ("user", "assistant") or not isinstance(message["content"], str)
+                or not 1 <= len(message["content"]) <= 4000):
+                raise VideoError("视频问答历史格式不正确", 422)
+        if sum(len(message["content"]) for message in history) > 16000:
+            raise VideoError("视频问答历史过长，请清空对话后再提问", 422)
+        result = json.loads(job.result)
+        chapters = result.get("chapters", [])
+        evidence = {"title": result["title"], "overview": result["overview"], "basis": result["basis"],
+                    "timestamp_basis": "分段边界，不是精确事件时间", "chapters": [
+                        {"number": index + 1, "start_seconds": chapter["start_seconds"],
+                         "end_seconds": chapter["end_seconds"], "summary": chapter["summary"]}
+                        for index, chapter in enumerate(chapters)]}
+        if len(json.dumps(evidence, ensure_ascii=False)) > 100000:
+            raise VideoError("视频总结过长，请选择需要的内容保存至知识库后检索问答", 413)
+        config = self.config(owner, secret=True)
+        with self._ask_lock:
+            if owner in self._asking or not self._ask_capacity.acquire(blocking=False):
+                raise VideoError("视频问答正在处理中，请稍后再试", 429)
+            self._asking.add(owner)
+        try:
+            from ..clients.video import CloudVideoClient
+            try:
+                answer, usage = (self._cloud_client or CloudVideoClient()).answer(evidence, query.strip(), history, config)
+            except VideoError:
+                raise
+            except Exception:
+                raise VideoError("云端视频问答失败，请稍后重试", 502) from None
+            # A deleted, expired or cancelled source must not return a stale answer.
+            current = self.repo.get(owner, job_id)
+            if current.expires_at <= datetime.utcnow() or current.status != "SUCCEEDED":
+                raise VideoError("视频总结已不可用，问答结果已丢弃", 409)
+            referenced = {int(value) for value in re.findall(r"\[片段\s+(\d{1,3})\]", answer)}
+            sources = [{"label": f"片段 {i + 1}", "start_seconds": c["start_seconds"], "end_seconds": c["end_seconds"]}
+                       for i, c in enumerate(chapters) if i + 1 in referenced]
+            if "[整体摘要]" in answer:
+                sources.insert(0, {"label": "整体摘要", "start_seconds": None, "end_seconds": None})
+            return {"answer": answer, "sources": sources, "usage": usage, "model": config["model"],
+                    "basis": "AI 视频总结，未重新分析原视频", "job_id": job.id}
+        finally:
+            with self._ask_lock:
+                self._asking.discard(owner)
+                self._ask_capacity.release()
 
     def directory(self, job_id):
         try:

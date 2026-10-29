@@ -304,11 +304,12 @@
 | `backend/services/video_summary.py` | 加密配置、上传、预览、私有媒体目录和过期清理 |
 | `backend/services/video_media.py` | 有界 FFmpeg 探测与带音轨分段，无本地推理 |
 | `backend/services/video_links.py` | B站/抖音适配、短链验证、限制域名与固定公网 IP 下载 |
-| `backend/clients/video.py` | 云端原生音视频流式调用、用量和完整响应校验 |
+| `backend/clients/video.py` | 云端原生音视频与总结问答流式调用、用量和完整响应校验 |
 | `backend/api/routers/videos.py`、`backend/api/video_body_limit.py` | 视频 API 与 multipart 解析前的字节限制 |
 | `backend/workers/video_worker.py` | 独立视频处理入口、分段汇总、取消与清理 |
 | `backend/requirements-video.txt` | 固定媒体二进制与平台解析工具版本 |
-| `extension/video-panel.js` | 上传、链接、任务历史、编辑、下载、确认入库和异步身份保护 |
+| `extension/video-panel.js` | 上传、链接、任务历史、直接追问、按分段选择/编辑、下载、确认入库和异步身份保护 |
+| `backend/tests/test_video_qa.py` | 不入库问答、历史/问题预算、并发、过期与迟到回答的来源校验 |
 | `backend/tests/test_video_summary.py`、`backend/tests/test_video_cloud.py` | 实际媒体、迁移、队列、隔离、清理与 SDK 协议测试 |
 
 ## 可靠性测试

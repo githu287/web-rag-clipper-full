@@ -44,8 +44,9 @@ def main():
     parser.add_argument("--artifacts", type=Path, default=ROOT / ".venv/runtime/video-browser")
     args = parser.parse_args()
     args.artifacts.mkdir(parents=True, exist_ok=True)
-    checks, uploaded_summaries, errors = [], [], []
-    settings = Settings(upload_dir=str(args.artifacts / "uploads"), app_master_key="T" * 32)
+    checks, uploaded_summaries, errors, questions = [], [], [], []
+    late_started, late_release = threading.Event(), threading.Event()
+    settings = Settings(upload_dir=str(args.artifacts / "uploads"), app_master_key="T" * 32, video_segment_seconds=10)
     engine = create_engine("sqlite://", poolclass=StaticPool, connect_args={"check_same_thread": False})
     Base.metadata.create_all(engine)
     repository = VideoRepository(engine)
@@ -82,8 +83,19 @@ def main():
     class CloudFixture:
         def summarize(self, *_args):
             return "主要内容：蓝色画面与提示音。\n\n关键结论：浏览器测试样例。", {"total_tokens": 18}
+        def combine(self, *_args):
+            return "整体摘要：蓝色画面与声音演示。", {"total_tokens": 6}
+        def answer(self, evidence, query, history, _config):
+            questions.append({"evidence": evidence, "query": query, "history": history})
+            if query == "延迟回答":
+                late_started.set()
+                late_release.wait(5)
+            if query == "模拟失败":
+                raise VideoError("问答失败，请重试", 502)
+            return "蓝色背景与提示音。[片段 1]", {"total_tokens": 9}
+    service._cloud_client = CloudFixture()
     media = args.artifacts / "fixture.mp4"
-    subprocess.run([ffmpeg_executable(settings), "-nostdin", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "color=c=blue:s=160x120:r=12", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=16000", "-t", "1", "-c:v", "libx264", "-c:a", "aac", str(media)], check=True, timeout=20)
+    subprocess.run([ffmpeg_executable(settings), "-nostdin", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "color=c=blue:s=160x120:r=12", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=16000", "-t", "11", "-c:v", "libx264", "-c:a", "aac", str(media)], check=True, timeout=20)
     worker = VideoWorker(service, CloudFixture())
     sock = socket.socket()
     sock.bind(("127.0.0.1", 0))
@@ -127,8 +139,42 @@ def main():
                 assert "蓝色画面" in page.locator("#video-preview-text").input_value()
                 assert not service.input_path(repository.list("video-fixture")[0].id).exists()
                 done("Actual multipart upload, durable queue and FFmpeg reach a preview without automatic ingestion")
+                page.locator("#video-question").fill("这是什么画面？")
+                page.locator("#video-ask").click()
+                expect(page.locator("#video-chat-messages .assistant")).to_have_count(1)
+                assert uploaded_summaries == []
+                assert "蓝色" in questions[0]["evidence"]["overview"]
+                assert questions[0]["history"] == []
+                page.locator("#video-question").fill("再说一下声音")
+                page.locator("#video-ask").click()
+                expect(page.locator("#video-chat-messages .assistant")).to_have_count(2)
+                assert len(questions[1]["history"]) == 2
+                assert "分段范围" in page.locator("#video-chat-messages").inner_text()
+                done("Direct video questions and followups work before ingestion with summary evidence and segment references")
+                page.locator("#video-question").fill("模拟失败")
+                page.locator("#video-ask").click()
+                expect(page.locator("#video-chat-status")).to_contain_text("问答失败")
+                expect(page.locator("#video-question")).to_have_value("模拟失败")
+                expect(page.locator("#video-ask")).to_be_enabled()
+                done("Failed questions preserve the question and do not add a fake answer")
                 expect(page.locator("#video-save")).to_be_disabled()
+                page.locator('#video-part-options input[value="overview"]').uncheck()
+                page.locator('#video-part-options input[value="1"]').uncheck()
+                selected = page.locator("#video-preview-text").input_value()
+                assert "## 片段 1" in selected and "## 片段 2" not in selected and "## 整体摘要" not in selected
+                page.locator('#video-part-options input[value="0"]').uncheck()
+                expect(page.locator("#video-preview-text")).to_have_value("")
+                expect(page.locator("#video-save")).to_be_disabled()
+                page.locator('#video-part-options input[value="0"]').check()
+                done("Users choose individual sections; selecting nothing cannot persist an empty document")
+                page.locator("#video-qa-title").scroll_into_view_if_needed()
+                page.screenshot(path=str(args.artifacts / "video-qa.png"), full_page=True)
                 page.locator("#video-preview-text").fill("# Edited video notes\nVerified content.")
+                page.locator("#video-question").fill("原视频画面是什么？")
+                page.locator("#video-ask").click()
+                expect(page.locator("#video-chat-messages .assistant")).to_have_count(3)
+                assert "Edited video notes" not in json.dumps(questions[-1]["evidence"])
+                assert uploaded_summaries == []
                 page.locator("#nav-chat").click()
                 page.locator("#nav-video").click()
                 expect(page.locator("#video-preview-text")).to_have_value("# Edited video notes\nVerified content.")
@@ -150,9 +196,15 @@ def main():
                 expect(page.locator("#video-status")).to_contain_text("目前支持")
                 assert len(repository.list("video-fixture")) == 1
                 done("Unsupported/private links fail without creating a task")
+                page.locator("#video-question").fill("延迟回答")
+                page.locator("#video-ask").click()
+                assert late_started.wait(3)
                 page.evaluate("webRagApiClient.setPluginDetails({pluginId:'other-fixture',pluginSecret:'other-secret'});webRagVideoPanel.enter()")
+                with page.expect_response("**/videos/*/ask"):
+                    late_release.set()
                 expect(page.locator("#video-preview-text")).to_have_value("")
                 expect(page.locator("#video-preview")).to_be_hidden()
+                expect(page.locator("#video-chat-messages")).to_be_empty()
                 done("Changing Workspace clears the previous preview before asynchronous requests resolve")
                 assert errors == [], errors
             finally:
@@ -162,7 +214,8 @@ def main():
         thread.join(timeout=5)
         sock.close()
         engine.dispose()
-        (args.artifacts / "report.json").write_text(json.dumps({"checks": checks, "passed": len(checks) == 6, "cloud": "fixture", "ingest": "fixture boundary", "media": "real FFmpeg", "errors": errors}, ensure_ascii=False, indent=2), encoding="utf-8")
+        late_release.set()
+        (args.artifacts / "report.json").write_text(json.dumps({"checks": checks, "passed": len(checks) == 9, "cloud": "fixture", "ingest": "fixture boundary", "media": "real FFmpeg", "errors": errors}, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 if __name__ == "__main__":

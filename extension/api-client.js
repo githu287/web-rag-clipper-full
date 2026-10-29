@@ -319,6 +319,11 @@ const webRagApiClient = (() => {
     setUnauthenticatedHandler: setUnauthenticatedHandler,
     request: request,
     videos: {
+      async ask(id, query, history) {
+        return (await request("/videos/" + encodeURIComponent(id) + "/ask", {
+          method: "POST", body: { query, history }, timeoutMs: 95000,
+        })).data;
+      },
       async config() { return (await request("/videos/config")).data; },
       async setConfig(body) { return (await request("/videos/config", { method: "PUT", body })).data; },
       async clearConfig() { await request("/videos/config", { method: "DELETE" }); },

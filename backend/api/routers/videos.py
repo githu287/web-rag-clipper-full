@@ -74,6 +74,12 @@ def get_job(job_id: str, plugin: PluginWorkspace = Depends(get_current_plugin), 
     return job_response(service.repo.get(plugin.plugin_id, job_id))
 
 
+@router.post("/{job_id}/ask")
+async def ask(job_id: str, request: Request, plugin: PluginWorkspace = Depends(get_current_plugin), service: VideoSummaryService = Depends(get_video_service)):
+    payload = await read_json(request, 80000)
+    return await asyncio.to_thread(service.ask, plugin.plugin_id, job_id, payload)
+
+
 @router.post("/{job_id}/retry", status_code=202)
 def retry(job_id: str, plugin: PluginWorkspace = Depends(get_current_plugin), service: VideoSummaryService = Depends(get_video_service)):
     return job_response(service.retry(plugin.plugin_id, job_id))
