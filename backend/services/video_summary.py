@@ -12,6 +12,7 @@ from uuid import UUID, uuid4
 
 from ..core.security import decrypt_api_key, encrypt_api_key
 from ..core.video_errors import VideoError
+from ..core.video_citations import citation_ids
 from .video_links import normalize_link
 from .video_media import ffmpeg_executable
 from ..clients.video_asr import ASR_MODEL
@@ -19,27 +20,6 @@ from ..clients.video_asr import ASR_MODEL
 MODELS = ("qwen3-omni-flash", "qwen3.5-omni-flash", "qwen3.5-omni-plus", "qwen3.8-omni-flash")
 DEFAULT_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 VIDEO_EXTENSIONS = (".mp4", ".mov", ".webm", ".mkv", ".avi")
-
-
-def citation_ids(answer, kind, valid_ids):
-    """Resolve bounded model citation lists/ranges against server-owned IDs only."""
-    result = set()
-    item = r"[0-9]{1,4}(?:\s*[-–—至]\s*[0-9]{1,4})?"
-    for match in re.finditer(r"\[" + re.escape(kind) + r"\s*([^\[\]]{1,160})\]", answer):
-        value = match.group(1).strip()
-        if not re.fullmatch(item + r"(?:\s*[,，、]\s*" + item + r")*", value):
-            continue
-        referenced = set()
-        for part in re.split(r"[,，、]", value):
-            bounds = re.split(r"\s*[-–—至]\s*", part.strip())
-            start, end = int(bounds[0]), int(bounds[-1])
-            if not 1 <= start <= end or end - start >= 20:
-                referenced = set()
-                break
-            referenced.update(range(start, end + 1))
-        if len(referenced) <= 20 and referenced <= valid_ids:
-            result.update(referenced)
-    return result
 
 
 class VideoSummaryService:
@@ -114,6 +94,10 @@ class VideoSummaryService:
             basis = "云端ASR原文与AI视频总结，未重新分析原视频" if sentences else "AI 视频总结，未重新分析原视频"
             if usage.get("retrieval_calls"):
                 basis += "；已先按摘要检索最多3个片段，未命中不能判定全片不存在相关内容"
+            if usage.get("verification_rejected"):
+                basis += "；引用不足以支持草稿结论，已停止展示该结论"
+            elif usage.get("verification_calls"):
+                basis += "；已用云端核对引用，仍可能误判，请核对原文"
             return {"answer": answer, "sources": sources, "usage": usage, "model": config["model"], "basis": basis, "job_id": job.id}
         finally:
             with self._ask_lock:

@@ -7,6 +7,7 @@ Cue windows near cuts are approximate: subtitle cue times are not word times.
 import html
 import math
 import re
+import unicodedata
 
 
 def tokens(text):
@@ -65,6 +66,28 @@ def disagreement(reference, hypothesis):
     distance = previous[-1]
     return {"reference_tokens": len(reference), "hypothesis_tokens": len(hypothesis), "edit_distance": distance,
             "token_error_rate": distance / len(reference)}
+
+
+def compare_reference_text(reference, hypothesis):
+    """Chinese-first CER from independent text; never manufacture subtitle times."""
+    def characters(text):
+        text = unicodedata.normalize("NFKC", text).casefold().replace("−", "-")
+        result = []
+        for index, char in enumerate(text):
+            previous = text[index - 1] if index else ""
+            following = text[index + 1] if index + 1 < len(text) else ""
+            if (unicodedata.category(char)[0] in ("L", "N") or char in "%‰°"
+                or (char in ".:/" and previous.isdigit() and following.isdigit())
+                or (char in "+-" and following.isdigit())):
+                result.append(char)
+        return result
+    expected, actual = characters(reference), characters(hypothesis)
+    if not expected:
+        raise ValueError("Reference has no letters, numbers or Chinese characters")
+    score = disagreement(expected, actual)
+    return {"reference_characters": len(expected), "hypothesis_characters": len(actual),
+            "edit_distance": score["edit_distance"], "character_error_rate": score["token_error_rate"],
+            "method": "NFKC/case normalized character edit distance; keep numbers, names, decimal/sign/ratio and percent units; no timestamp reference"}
 
 
 def compare_transcript(cues, sentences, duration, segment_seconds=90):

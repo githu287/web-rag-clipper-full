@@ -9,14 +9,15 @@ from pathlib import Path
 import argparse
 import json
 import math
+import re
 import sys
 import tempfile
 import time
 
 try:
-    from scripts.video_quality_metrics import compare_transcript, read_vtt, tokens as reference_tokens
+    from scripts.video_quality_metrics import compare_transcript, compare_reference_text, read_vtt, tokens as reference_tokens
 except ModuleNotFoundError:  # Also support `python scripts/check_video_quality_live.py`.
-    from video_quality_metrics import compare_transcript, read_vtt, tokens as reference_tokens
+    from video_quality_metrics import compare_transcript, compare_reference_text, read_vtt, tokens as reference_tokens
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -68,7 +69,23 @@ def main():
             parser.error("Fixture exceeds --max-segments; increase the explicit paid-call budget")
         if len(case.get("questions", [])) > 3:
             parser.error("At most 3 questions per fixture")
-        reference = None
+        if any(q.get("require_asr_citation") is not None and type(q["require_asr_citation"]) is not bool for q in case.get("questions", [])):
+            parser.error("require_asr_citation must be a boolean")
+        if not args.with_asr and any(q.get("require_asr_citation") for q in case.get("questions", [])):
+            parser.error("require_asr_citation requires --with-asr")
+        reference = plain_reference = None
+        reference_range = case.get("reference_range_seconds", [0, info.duration])
+        if (not isinstance(reference_range, list) or len(reference_range) != 2
+            or any(isinstance(x, bool) or not isinstance(x, (float, int)) or not math.isfinite(x) for x in reference_range)
+            or not 0 <= reference_range[0] < reference_range[1] <= info.duration):
+            parser.error("reference_range_seconds must be [start, end] inside fixture")
+        if case.get("reference_text") and case.get("reference_vtt"):
+            parser.error("Choose reference_text or reference_vtt, not both")
+        if case.get("reference_text"):
+            if not args.with_asr:
+                parser.error("reference_text requires --with-asr")
+            plain_reference = (args.manifest.parent / case["reference_text"]).read_text(encoding="utf-8-sig")
+            compare_reference_text(plain_reference, "")  # Validate size/content before any paid call.
         if case.get("asr_expected") and not args.with_asr:
             parser.error("asr_expected requires --with-asr")
         if case.get("reference_vtt"):
@@ -82,7 +99,10 @@ def main():
         maximum = case.get("max_token_error_rate")
         if maximum is not None and (not reference or isinstance(maximum, bool) or not isinstance(maximum, (int, float)) or not 0 <= maximum <= 1):
             parser.error("max_token_error_rate needs reference_vtt and a number in 0..1")
-        prepared.append((case, source, info, count, reference))
+        maximum_cer = case.get("max_character_error_rate")
+        if maximum_cer is not None and (not plain_reference or isinstance(maximum_cer, bool) or not isinstance(maximum_cer, (int, float)) or not 0 <= maximum_cer <= 1):
+            parser.error("max_character_error_rate needs reference_text and a number in 0..1")
+        prepared.append((case, source, info, count, reference, plain_reference, reference_range))
     config = service.config(args.workspace_id, secret=True)
     client = CloudVideoClient()
     report = {"model": config["model"], "cases": [], "passed": True,
@@ -91,7 +111,7 @@ def main():
         report["asr_model"] = ASR_MODEL
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="media-", dir=args.output.parent) as temp:
-        for case, source, info, count, reference in prepared:
+        for case, source, info, count, reference, plain_reference, reference_range in prepared:
             row = {"name": case.get("name", source.name), "has_audio": info.has_audio, "questions": []}
             started = time.monotonic()
             try:
@@ -138,6 +158,13 @@ def main():
                         rate = row["reference_metrics"]["token_error_rate"]
                         if maximum is not None and rate > maximum:
                             row["failures"].append({"token_error_rate": rate, "maximum": maximum})
+                    if plain_reference:
+                        window = [s for s in transcript["sentences"] if s["start_seconds"] < reference_range[1] and s["end_seconds"] > reference_range[0]]
+                        metrics = compare_reference_text(plain_reference, "\n".join(s["text"] for s in window))
+                        row["reference_metrics"] = {**metrics, "reference_range_seconds": reference_range}
+                        maximum = case.get("max_character_error_rate")
+                        if maximum is not None and metrics["character_error_rate"] > maximum:
+                            row["failures"].append({"character_error_rate": metrics["character_error_rate"], "maximum": maximum})
                 for number, expected in case.get("chapter_expectations", {}).items():
                     matching = next((c for c in chapters if str(c["number"]) == number), None)
                     if matching is None:
@@ -151,6 +178,8 @@ def main():
                 for question in case.get("questions", []):
                     answer, tokens = client.answer(evidence, question["query"], history, config)
                     failures = check_expectations(answer, question.get("expected", {}))
+                    if question.get("require_asr_citation") and not re.search(r"\[原文\s*[0-9]{1,4}", answer):
+                        failures.append({"missing_asr_citation": True})
                     row["questions"].append({"query": question["query"], "answer": answer,
                                              "usage": tokens, "failures": failures})
                     history += [{"role": "user", "content": question["query"]}, {"role": "assistant", "content": answer}]

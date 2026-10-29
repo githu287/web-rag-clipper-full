@@ -1,7 +1,7 @@
 """Independent subtitle scoring must not hide names, numbers or missing speech."""
 import pytest
 
-from scripts.video_quality_metrics import compare_transcript, disagreement, read_vtt, tokens
+from scripts.video_quality_metrics import compare_transcript, compare_reference_text, disagreement, read_vtt, tokens
 
 
 def test_vtt_cue_settings_speaker_markup_and_sound_annotations():
@@ -42,6 +42,21 @@ def test_normalization_preserves_apostrophes_but_ignores_case_and_punctuation():
     assert tokens("I DON’T wait. A&amp;B") == tokens("i don't wait; a b")
 
 
+def test_chinese_character_scoring_keeps_negations_names_and_numeric_errors():
+    score = compare_reference_text("蔡清华：不得退款８０元。", "蔡清花：得退款90元。")
+    assert score["edit_distance"] == 3
+    assert score["reference_characters"] == 10
+    assert score["character_error_rate"] == .3
+    with pytest.raises(ValueError):
+        compare_reference_text("...", "捏造")
+
+
+@pytest.mark.parametrize("reference,actual", [("退款80%", "退款80"), ("参数0.8", "参数08"), ("温度-3度", "温度3度"), ("比例1:2", "比例12")])
+def test_chinese_scoring_does_not_erase_meaningful_numeric_symbols(reference, actual):
+    assert compare_reference_text(reference, actual)["edit_distance"] == 1
+    assert compare_reference_text("８０％", "80%")["edit_distance"] == 0
+
+
 def test_unique_cue_anchor_checks_real_range_overlap_without_guessing_word_times():
     cues = [{"start_seconds": 10, "end_seconds": 13, "text": "alpha beta gamma delta epsilon"},
             {"start_seconds": 20, "end_seconds": 23, "text": "one two three four five"}]
@@ -61,9 +76,11 @@ def test_paid_runner_validates_reference_before_cloud_and_reports_scores(tmp_pat
     output = tmp_path / "report.json"
     manifest = tmp_path / "manifest.json"
     (tmp_path / "reference.vtt").write_text("WEBVTT\n\n00:00 --> 00:01\nPlease do not water now\n", encoding="utf-8")
-    manifest.write_text(json.dumps([{"file": "test.mp4", "reference_vtt": "reference.vtt", "max_token_error_rate": maximum}]), encoding="utf-8")
+    manifest.write_text(json.dumps([{"file": "test.mp4", "reference_vtt": "reference.vtt", "max_token_error_rate": maximum,
+                                    "questions": [{"query": "What should I do?", "require_asr_citation": True}]}]), encoding="utf-8")
     cloud = Mock()
     cloud.summarize.return_value = ("summary", {"total_tokens": 10})
+    cloud.answer.return_value = ("Do not water. [原文 1]", {"total_tokens": 4})
     asr = Mock()
     asr.transcribe.return_value = ([{"start_seconds": 0, "end_seconds": 1, "text": "Please do not water now"}], {"duration_seconds": 2})
     service = SimpleNamespace(settings=SimpleNamespace(video_segment_seconds=90), config=Mock(return_value={"model": "fixture"}))

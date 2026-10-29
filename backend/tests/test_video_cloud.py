@@ -77,9 +77,9 @@ def test_long_qa_selects_original_ids_and_adds_both_cloud_usages():
     from unittest.mock import Mock
     client = CloudVideoClient()
     original = long_evidence()
-    client.generate = Mock(side_effect=[('{"chapters":[3]}', {"total_tokens": 20}), ('answer [原文 3]', {"total_tokens": 10})])
+    client.generate = Mock(side_effect=[('{"chapters":[3]}', {"total_tokens": 20}), ('answer [原文 3]', {"total_tokens": 10}), ('{"supported":true}', {"total_tokens": 5})])
     answer, usage = client.answer(original, "question", [], CONFIG)
-    assert answer.endswith("[原文 3]") and usage == {"total_tokens": 30, "retrieval_calls": 1}
+    assert answer.endswith("[原文 3]") and usage == {"total_tokens": 35, "retrieval_calls": 1, "verification_calls": 1}
     payload = json.loads(client.generate.call_args_list[1].args[1][0]["text"])["视频总结资料"]
     assert [c["source"] for c in payload["chapters"]] == ["[片段 3]"]
     assert [s["source"] for s in payload["transcript"]["sentences"]] == ["[原文 3]"]
@@ -88,7 +88,7 @@ def test_long_qa_selects_original_ids_and_adds_both_cloud_usages():
     assert "不能断言转写无误" in client.generate.call_args_list[1].kwargs["system_prompt"]
 
 
-@pytest.mark.parametrize("selection", ['{"chapters":[99]}', '{"chapters":[true]}', '{"chapters":[1,1]}', '{"chapters":[1,2,3,4]}', 'not json', '{"chapters":null}', '{"chapters":[1],"answer":"forged"}'])
+@pytest.mark.parametrize("selection", ['{"chapters":[99]}', '{"chapters":[true]}', '{"chapters":[1,1]}', 'not json', '{"chapters":null}', '{"chapters":[1],"answer":"forged"}'])
 def test_long_qa_rejects_invalid_selection_without_another_paid_call(selection):
     from unittest.mock import Mock
     client = CloudVideoClient()
@@ -96,6 +96,19 @@ def test_long_qa_rejects_invalid_selection_without_another_paid_call(selection):
     with pytest.raises(VideoError, match="片段选择"):
         client.answer(long_evidence(), "question", [], CONFIG)
     assert client.generate.call_count == 1
+
+
+def test_valid_overselection_is_capped_locally_without_another_selection_call():
+    from unittest.mock import Mock
+    client = CloudVideoClient()
+    evidence = long_evidence()
+    for row in evidence["transcript"]["sentences"]:
+        row["text"] = "recorded speech"
+    client.generate = Mock(return_value=('{"chapters":[4,2,1,3]}', {}))
+    selected, usage = client.select_evidence(evidence, "speaker?", [], CONFIG)
+    assert [c["number"] for c in selected["chapters"]] == [1, 2, 4]
+    assert [s["id"] for s in selected["transcript"]["sentences"]] == [1, 2, 4]
+    client.generate.assert_called_once()
 
 
 def test_long_qa_empty_selection_does_not_claim_global_absence_or_call_answer_model():

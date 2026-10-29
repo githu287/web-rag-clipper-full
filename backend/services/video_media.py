@@ -66,9 +66,11 @@ def inspect_video(path: Path, settings, alive=lambda: True):
         raise VideoError("无法读取视频时长或没有视频画面")
     hours, minutes, seconds = map(float, match.groups())
     duration = hours * 3600 + minutes * 60 + seconds
-    if not 0 < duration <= settings.video_max_duration_seconds:
+    # AAC/video frame padding can put an exactly capped export a few frames
+    # over the limit. Process only the allowed timeline, never the padded tail.
+    if not 0 < duration <= settings.video_max_duration_seconds + .25:
         raise VideoError(f"视频必须大于 0 秒且不超过 {settings.video_max_duration_seconds // 60} 分钟")
-    return VideoInfo(duration, "Audio:" in text)
+    return VideoInfo(min(duration, settings.video_max_duration_seconds), "Audio:" in text)
 
 
 def make_segment(source, target, start, length, settings, alive=lambda: True, *, has_audio=True):
