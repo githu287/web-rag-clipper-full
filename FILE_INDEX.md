@@ -24,6 +24,8 @@
 | `scripts/check_ocr.py` | 真实 CPU 模型的中英文、长图分段边界和重复行检查 |
 | `scripts/check_video_browser.py` | 真实扩展/API/SQLite/FFmpeg 的视频上传、编辑、确认保存和隔离回归，云端与最终入库边界使用替身 |
 | `scripts/check_video_quality_live.py` | 显式启用付费的真实云端内容验收，检查已知素材的事实、否定、数字及问答，不修改 Workspace 或入库 |
+| `scripts/check_video_concurrency_live.py` | 显式启用付费的本机 MySQL/API/云端突发并发验收，创建并清理独立测试空间，验证配额、问答限流和恢复 |
+| `VIDEO_LIMITS_TEST_20261029.md` | 0.14.2 长视频、并发、流式取消/超时和分段引用专项验收及复现说明 |
 | `REAL_TEST_20261029.md` | 0.14.1 全面验收范围、发现、优化、真实/模拟边界及复现说明 |
 | `scripts/check_ocr_browser.py` | 真实扩展→生产 OCR 路由→本地模型→可编辑预览，使用临时身份不写库 |
 | `CLIPPING_COMPATIBILITY.md` | 四种剪藏方式、依赖来源、真实浏览器验证和网站适配边界 |

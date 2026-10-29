@@ -47,6 +47,14 @@ def test_direct_questions_and_followups_need_no_embeddings_or_ingestion(service)
         assert list(session.scalars(select(Document))) == []
 
 
+@pytest.mark.parametrize("citation", ["[片段1]", "[片段 1]", "[片段\t1]", "[片段\n1]"])
+def test_sources_accept_optional_space_in_real_model_citations(service, citation):
+    job = completed(service)
+    service._cloud_client.answer.return_value = ("不要继续浇水。" + citation, {})
+    result = service.ask("a", job.id, {"query": "湿润时是否浇水？"})
+    assert result["sources"] == [{"label": "片段 1", "start_seconds": 0, "end_seconds": 90}]
+
+
 def test_cross_workspace_and_unfinished_expired_sources_do_not_call_cloud(service):
     job = completed(service)
     with pytest.raises(VideoError) as caught:

@@ -76,7 +76,7 @@ class VideoSummaryService:
             current = self.repo.get(owner, job_id)
             if current.expires_at <= datetime.utcnow() or current.status != "SUCCEEDED":
                 raise VideoError("视频总结已不可用，问答结果已丢弃", 409)
-            referenced = {int(value) for value in re.findall(r"\[片段\s+(\d{1,3})\]", answer)}
+            referenced = {int(value) for value in re.findall(r"\[片段\s*(\d{1,3})\]", answer)}
             sources = [{"label": f"片段 {i + 1}", "start_seconds": c["start_seconds"], "end_seconds": c["end_seconds"]}
                        for i, c in enumerate(chapters) if i + 1 in referenced]
             if "[整体摘要]" in answer:
