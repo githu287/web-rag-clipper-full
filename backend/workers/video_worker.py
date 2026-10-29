@@ -72,7 +72,7 @@ class VideoWorker:
                     end = min(info.duration, start + self.settings.video_segment_seconds)
                     segment = directory / "segment.mp4"
                     stage(f"分段转码 {index + 1}/{count}", 10 + int(75 * index / count))
-                    make_segment(source, segment, start, end - start, self.settings, alive)
+                    make_segment(source, segment, start, end - start, self.settings, alive, has_audio=info.has_audio)
                     stage(f"云端音视频分析 {index + 1}/{count}", 12 + int(75 * index / count))
                     text, tokens = self.client.summarize(segment, config, alive)
                     chapters.append({"start_seconds": start, "end_seconds": round(end, 2), "summary": text})

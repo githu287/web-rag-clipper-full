@@ -254,6 +254,36 @@ def test_corrupt_media_never_calls_model(service):
     cloud.summarize.assert_not_called()
 
 
+def test_silent_video_gets_bounded_silent_audio_but_retains_original_metadata(service, real_video, tmp_path):
+    silent = tmp_path / "silent.mp4"
+    subprocess.run([ffmpeg_executable(service.settings), "-nostdin", "-loglevel", "error", "-y",
+                    "-i", str(real_video), "-an", "-c:v", "copy", str(silent)], check=True, timeout=30)
+    assert not inspect_video(silent, service.settings).has_audio
+    configure(service)
+    with silent.open("rb") as stream:
+        job = service.upload("a", stream, "silent.mp4")
+    lengths = []
+    def summarize(segment, *_args):
+        info = inspect_video(segment, service.settings)
+        assert info.has_audio
+        lengths.append(info.duration)
+        # Decode the actual generated audio; padding must be digital silence.
+        audio = subprocess.run([ffmpeg_executable(service.settings), "-nostdin", "-loglevel", "error",
+                                "-i", str(segment), "-map", "0:a:0", "-f", "s16le", "-"],
+                               capture_output=True, check=True, timeout=30).stdout
+        assert audio and not any(audio)
+        return "蓝色画面，无讲解", {}
+    cloud = Mock(summarize=Mock(side_effect=summarize))
+    cloud.combine.return_value = ("蓝色画面，无讲解", {})
+    VideoWorker(service, cloud).run_once()
+    result = job_response(service.repo.get("a", job.id))
+    assert result["status"] == "SUCCEEDED"
+    assert result["result"]["has_audio"] is False
+    assert "未检测到音轨" in result["result"]["basis"]
+    assert len(lengths) == 2 and 9.8 <= lengths[0] <= 10.2 and 0.8 <= lengths[1] <= 1.2
+    assert not list(service.root.iterdir())
+
+
 def test_cancelled_worker_cannot_write_result(service, real_video):
     configure(service)
     with real_video.open("rb") as stream:

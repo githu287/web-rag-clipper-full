@@ -71,10 +71,14 @@ def inspect_video(path: Path, settings, alive=lambda: True):
     return VideoInfo(duration, "Audio:" in text)
 
 
-def make_segment(source, target, start, length, settings, alive=lambda: True):
+def make_segment(source, target, start, length, settings, alive=lambda: True, *, has_audio=True):
+    # Qwen-Omni rejects some video-only MP4s. A bounded silent track makes the
+    # container compatible; callers retain the original has_audio metadata.
+    audio_input = [] if has_audio else ["-f", "lavfi", "-i", "anullsrc=r=16000:cl=mono"]
+    audio_map = "0:a:0?" if has_audio else "1:a:0"
     run_media([ffmpeg_executable(settings), "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
-               "-protocol_whitelist", "file,pipe", "-ss", str(start), "-i", str(source), "-t", str(length),
-               "-map", "0:v:0", "-map", "0:a:0?", "-vf", "scale='min(720,iw)':-2,fps=12",
+               "-protocol_whitelist", "file,pipe", "-ss", str(start), "-i", str(source), *audio_input, "-t", str(length),
+               "-map", "0:v:0", "-map", audio_map, *([] if has_audio else ["-shortest"]), "-vf", "scale='min(720,iw)':-2,fps=12",
                "-c:v", "libx264", "-preset", "veryfast", "-b:v", "450k", "-maxrate", "600k", "-bufsize", "1200k",
                "-c:a", "aac", "-b:a", "64k", "-ac", "1", "-threads", "2", "-movflags", "+faststart", str(target)],
               timeout=180, alive=alive)
