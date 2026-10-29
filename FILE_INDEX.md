@@ -7,6 +7,7 @@
 | 文件 | 说明 |
 |---|---|
 | `README.md` | 项目定位、快速启动、模型配置、使用流程、测试与排障 |
+| `BACKLOG.md` | 未完成需求：暂缓的 PDF 剪藏、优先讨论的视频上传/国内平台链接云端总结 |
 | `LIVE_ACCEPTANCE.md` | 本机 0012 升级备份、真实模型/浏览器/故障验收及向量读取一致性修复 |
 | `.github/workflows/ci.yml` | push/PR/手动触发的 Linux/Windows 离线回归，以及 Linux Chromium 真实扩展提取测试 |
 | `scripts/check.py` | 本地与 CI 统一离线检查入口，自动发现 Node 测试并传播失败 |
