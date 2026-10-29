@@ -46,6 +46,8 @@ FastAPI
 
 0.11.2 补充 [可见数字页码图集支持与实测](GALLERY_PAGINATION_2026-10-28.md)：两个此前停在当前页的图集可连续采集至 5 页上限，纯 JS/隐藏链接翻页仍有限制。
 
+0.11.3 补充 [无链接当前页标记](PAGINATION_CAPTURE.md)：支持 `aria-current="page"` 及明确 current/active 数字标记，增加标签与 URL 页码核对，沿用 5 页上限与可编辑预览。
+
 ## 技术栈
 
 | 领域 | 实现 |

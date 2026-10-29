@@ -26,12 +26,15 @@ def main():
     args = parser.parse_args()
     args.artifacts.mkdir(parents=True, exist_ok=True)
     checks, requests = [], []
+    passed = False
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
             parsed = urlsplit(self.path)
             query = parse_qs(parsed.query)
             case, number = query.get("case", ["normal"])[0], int(query.get("page", ["1"])[0])
+            if parsed.path.startswith("/marked_"):
+                number = int(parsed.path.split("_")[1].split(".")[0])
             requests.append({"case": case, "page": number, "path": parsed.path})
             if parsed.path == "/image.png":
                 data = (ROOT / "extension/tests/fixtures/ocr/bilingual.png").read_bytes()
@@ -47,8 +50,9 @@ def main():
                 self.send_header("Location", "/login")
                 self.end_headers()
                 return
-            total = 12 if case == "limit" else 3
+            total = 12 if case in ["limit", "numeric-marker-limit"] else 3
             target = "/story?" + urlencode({"case": case, "page": number + 1})
+            if case == "numeric-marker-path": target = f"/marked_{number+1}.html?case={case}"
             title = "分页文章测试"
             text_number = 1 if case == "repeat" else number
             body_text = "CONTENT_PAGE_" + str(text_number) + "。分页正文保持清晰的页面顺序，不应混入导航、其他文章或重复窗口。" * 8
@@ -90,6 +94,27 @@ def main():
                 if case == "numeric-conflict": next_link += f'<a href="?case={case}&pg={number+1}">{number+1}</a>'
                 if case == "numeric-current-conflict": current_link += f'<a href="{html.escape(current)}">{number+3}</a>'
                 if case == "numeric-foreign": next_link = f'<a href="https://example.invalid/story?page={number+1}">{number+1}</a>'
+                if case.startswith("numeric-marker"):
+                    current_link = f'<span aria-current="page">{number}</span>'
+                    if case == "numeric-marker-current": current_link = f'<span class="current"><b>{number}</b></span>'
+                    if case == "numeric-marker-active": current_link = f'<em class="active">{number}</em>'
+                    if case == "numeric-marker-list": current_link = f'<ul><li aria-current="page"><span>{number}</span></li></ul>'
+                    if case == "numeric-marker-placeholder": current_link = f'<a href="#" aria-current="page">{number}</a>'
+                    if case == "numeric-marker-plain": current_link = f'<span>{number}</span>'
+                    if case == "numeric-marker-hidden": current_link = f'<span hidden aria-current="page">{number}</span>'
+                    if case == "numeric-marker-disabled": current_link = f'<span aria-disabled="true" aria-current="page">{number}</span>'
+                    if case == "numeric-marker-native-disabled": current_link = f'<button disabled aria-current="page">{number}</button>'
+                    if case == "numeric-marker-false": current_link = f'<span class="current" aria-current="false">{number}</span>'
+                    if case == "numeric-marker-conflict": current_link += f'<em class="current">{number+2}</em>'
+                    if case == "numeric-marker-link-conflict": current_link += f'<a href="{html.escape(current)}">{number+2}</a>'
+                    if case == "numeric-marker-wrong-url": current_link = f'<a href="{html.escape(target)}"><span class="current">{number}</span></a>'
+                    if case == "numeric-marker-nested-pager": current_link = f'<div class="pager">{current_link}</div>'
+                    if case == "numeric-marker-comment": current_link = f'<div class="comments">{current_link}</div>'
+                    if case == "numeric-marker-stale":
+                        current_link = '<span aria-current="page">9</span>'
+                        next_link = f'<a href="{html.escape(target)}">10</a>'
+                    if case == "numeric-marker-jump": next_link = f'<a href="?case={case}&page={number+2}">{number+1}</a>'
+                    if case == "numeric-marker-foreign": next_link = f'<a href="https://example.invalid/story?page={number+1}">{number+1}</a>'
                 if case == "numeric-unscoped": pager = current_link + next_link
                 else: pager = f'<nav class="page_n">{current_link}{next_link}<a href="{html.escape(target)}" hidden>下一页</a></nav>'
             if case == "suffix":
@@ -209,6 +234,29 @@ def main():
                     assert not any(item["page"]>1 for item in requests[before:]),case
                 done("Visible numeric pagers follow consecutive pages from a middle page; missing, hidden, disabled, conflicting, foreign and unscoped hints are rejected")
 
+                for case in ["numeric-marker", "numeric-marker-current", "numeric-marker-active", "numeric-marker-placeholder", "numeric-marker-list"]:
+                    tab=navigate(case);before_html=source.content();begin(tab);value=result()
+                    assert value["diagnostics"]["pagination_page_count"]==3,(case,value)
+                    assert value["diagnostics"]["pagination_stop_reason"]=="complete",(case,value)
+                    assert source.content()==before_html,case
+                source.goto(base+"/marked_2.html?case=numeric-marker-path")
+                tab=driver.evaluate("async url=>(await chrome.tabs.query({})).find(t=>t.url===url).id",source.url)
+                before=len(requests);begin(tab);value=result()
+                assert value["diagnostics"]["pagination_page_count"]==2,value
+                assert not any(item["path"]=="/marked_1.html" for item in requests[before:])
+                for suffix, expected in [("plain","complete"),("hidden","complete"),("disabled","complete"),("native-disabled","complete"),
+                    ("false","complete"),("conflict","complete"),("link-conflict","complete"),
+                    ("wrong-url","complete"),("nested-pager","complete"),("comment","complete"),
+                    ("stale","complete"),("jump","complete"),("foreign","unsupported")]:
+                    case="numeric-marker-"+suffix
+                    tab=navigate(case);before=len(requests);begin(tab);value=result()
+                    assert value["diagnostics"]["pagination_page_count"]==1,(case,value)
+                    assert value["diagnostics"]["pagination_stop_reason"]==expected,(case,value)
+                    assert not any(item["page"]>1 for item in requests[before:]),case
+                tab=navigate("numeric-marker-limit");begin(tab);value=result()
+                assert value["diagnostics"]["pagination_page_count"]==5 and value["diagnostics"]["pagination_stop_reason"]=="page_limit",value
+                done("Non-link current markers: ARIA, current/active classes, placeholder anchors, middle suffix pages and five-page cap pass; stale, conflicting, nested, hidden, disabled and unrelated markers are rejected without DOM mutation")
+
                 source.goto(base+"/story?case=normal&page=2")
                 tab=driver.evaluate("async url=>(await chrome.tabs.query({})).find(t=>t.url===url).id",source.url)
                 before=len(requests);begin(tab);value=result()
@@ -307,9 +355,10 @@ def main():
                 done("Sidepanel mode gating, pagination progress, editable preview, cross-page image OCR handoff and cancellation preserving edits passed (synthetic identity/OCR)")
             finally:
                 context.close()
+        passed = True
     finally:
         server.shutdown();server.server_close()
-        (args.artifacts/"report.json").write_text(json.dumps({"checks":checks,"passed":len(checks)==14,"backend_required":False,"ocr_stub":True},ensure_ascii=False,indent=2)+"\n",encoding="utf-8")
+        (args.artifacts/"report.json").write_text(json.dumps({"checks":checks,"passed":passed,"backend_required":False,"ocr_stub":True},ensure_ascii=False,indent=2)+"\n",encoding="utf-8")
 
 
 if __name__=="__main__":

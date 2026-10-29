@@ -7,6 +7,8 @@
 })(typeof globalThis !== "undefined" ? globalThis : this, function () {
   const PAGE_KEYS = new Set(["page", "pageno", "page_no", "page_num", "pageindex", "pagenum", "pg"]);
   const PAGER = ".pagination,.pager,.pages,.page-links,.pagebar,.page_n,#page,[aria-label*='分页'],[aria-label*='pagination' i]";
+  const CURRENT = "[aria-current='page' i],span.current,span.active,em.current,em.active,strong.current,strong.active,b.current,b.active";
+  const EXCLUDED = "aside,[role='complementary'],[id*='comment' i],[class*='comment' i],.related,.recommend";
   function key(value) {
     return globalThis.webRagUrlUtils ? webRagUrlUtils.normalizeWebUrl(value) : new URL(value).href;
   }
@@ -91,24 +93,45 @@
       if (!currentPages.has(pager)) {
         const numbers = new Set();
         for (const anchor of Array.from(pager.querySelectorAll("a[href]")).slice(0, 160)) {
-          if (!visible(anchor) || anchor.closest(PAGER) !== pager || anchor.closest("[inert],.disabled,[aria-disabled='true']")) continue;
+          if (!visible(anchor) || anchor.closest(PAGER) !== pager || anchor.closest("[inert],.disabled,[aria-disabled='true']") || anchor.closest(EXCLUDED)) continue;
           const text = String(anchor.textContent || "").trim(), raw = anchor.getAttribute("href");
           if (!/^[1-9]\d{0,3}$/.test(text) || !raw || /^\s*(?:#|javascript:)/i.test(raw)) continue;
           try { if (key(new URL(raw, doc.baseURI).href) === key(doc.URL)) numbers.add(Number(text)); } catch (_error) {}
         }
+        for (const marker of Array.from(pager.querySelectorAll(CURRENT)).slice(0, 160)) {
+          if (!visible(marker) || marker.closest(PAGER) !== pager || marker.closest(EXCLUDED) ||
+              marker.closest("[inert],[disabled],.disabled,[aria-disabled='true']") || marker.querySelector("a[href]") ||
+              (marker.hasAttribute("aria-current") && marker.getAttribute("aria-current").toLowerCase() !== "page")) continue;
+          const text = String(marker.textContent || "").trim();
+          if (!/^[1-9]\d{0,3}$/.test(text)) continue;
+          // A styled child of a different-page link is not a current marker.
+          const anchor = marker.closest("a[href]");
+          if (anchor) {
+            const raw = anchor.getAttribute("href");
+            try { if (raw && raw.trim() !== "#" && key(new URL(raw, doc.baseURI).href) !== key(doc.URL)) continue; }
+            catch (_error) { continue; }
+          }
+          numbers.add(Number(text));
+        }
         currentPages.set(pager, numbers.size === 1 ? Array.from(numbers)[0] : null);
       }
       const current = currentPages.get(pager);
-      // Require an explicit visible current-page link in the same pager. The
-      // destination must independently pass nextURL's sequential URL checks.
-      return current !== null && Number(label) === current + 1;
+      if (current === null || Number(label) !== current + 1) return false;
+      // Check numeric labels against the actual destination's page index too;
+      // a stale marker saying 9 must not authorize a URL for page 2.
+      try {
+        const target = new URL(link.getAttribute("href"), doc.baseURI);
+        const pages = Array.from(target.searchParams).filter(function (pair) { return PAGE_KEYS.has(pair[0].toLowerCase()); });
+        const index = pages.length === 1 ? Number(pages[0][1]) : pathPage(target.pathname).index;
+        return index === Number(label);
+      } catch (_error) { return false; }
     }
     const targets = new Set();
     const excluded = new Set();
     let unsupported = false;
     for (const link of links.slice(0, 1320)) {
       if (!visible(link) || link.getAttribute("aria-disabled") === "true" || link.closest("[inert],.disabled,[aria-disabled='true']")) continue;
-      if (link.closest("aside,[role='complementary'],[id*='comment' i],[class*='comment' i],.related,.recommend")) continue;
+      if (link.closest(EXCLUDED)) continue;
       const label = String(link.getAttribute("aria-label") || link.textContent || "").trim().replace(/\s+/g, " ");
       const rel = String(link.getAttribute("rel") || "").toLowerCase().split(/\s+/).includes("next");
       if (link.hasAttribute("download") || /下一篇|下一章|下一个文章|next\s+(?:post|article|chapter)/i.test(label)) {
