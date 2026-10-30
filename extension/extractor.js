@@ -6,7 +6,7 @@
   if (typeof module === "object" && module.exports) module.exports = api;
   if (root) root.webRagPageExtractor = api;
 })(typeof globalThis !== "undefined" ? globalThis : this, function () {
-  const VERSION = "1.7.1";
+  const VERSION = "1.7.2";
   const MIN_MEANINGFUL_CHARS = 180;
   const MAX_EXTRACTED_CHARS = 500000;
 
@@ -58,6 +58,7 @@
   // known article bodies. Missing/hidden roots always fall back to heuristics.
   const SITE_PROFILES = [
     { id: "github-readme", hosts: ["github.com"], root: "article.markdown-body", title: "article.markdown-body h1" },
+    { id: "wps-course", hosts: ["www.wps.cn", "wps.cn"], root: "article.course-detail-description-content", title: "h1.mobile-player-title", require: "article.course-detail-description-content" },
     { id: "wechat", hosts: ["mp.weixin.qq.com"], root: "#js_content", title: "#activity-name" },
     { id: "cnblogs", hosts: ["www.cnblogs.com", "cnblogs.com"], root: "#cnblogs_post_body", title: "#cb_post_title_url" },
     { id: "juejin", hosts: ["juejin.cn"], root: "#article-root .markdown-body, #article-root", title: "h1.article-title" },

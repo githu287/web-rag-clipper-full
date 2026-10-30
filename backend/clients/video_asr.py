@@ -10,8 +10,10 @@ from urllib.parse import urlsplit
 import httpx
 
 from ..core.video_errors import VideoError
+from .video_transport import DeadlineTransport
 
 ASR_MODEL = "fun-asr-flash-2026-06-15"
+ASR_TIMEOUT_SECONDS = 120
 
 
 def aligned_sentences(data, duration):
@@ -68,7 +70,7 @@ def aligned_sentences(data, duration):
 
 class CloudAsrClient:
     def __init__(self, transport_factory=None):
-        self.transport_factory = transport_factory or httpx.Client
+        self.transport_factory = transport_factory
 
     def transcribe(self, path: Path, duration, config, alive=lambda: True):
         if not 0 < path.stat().st_size <= 5 * 1024 * 1024:
@@ -83,14 +85,21 @@ class CloudAsrClient:
         def check():
             if not alive():
                 raise VideoError("任务已取消", 409)
-            if time.monotonic() - started > 120:
+            if time.monotonic() - started >= ASR_TIMEOUT_SECONDS:
                 raise VideoError("云端转写超时，可稍后手动重试", 504)
+        def remaining():
+            check()
+            return max(ASR_TIMEOUT_SECONDS - (time.monotonic() - started), 0.000001)
         check()
         payload = {"model": ASR_MODEL, "input": {"messages": [{"role": "user", "content": [{"type": "input_audio",
             "input_audio": {"data": "data:audio/wav;base64," + base64.b64encode(path.read_bytes()).decode("ascii")}}]}]},
             "parameters": {"format": "wav", "sample_rate": 16000}}
         try:
-            with self.transport_factory(trust_env=False, follow_redirects=False, timeout=httpx.Timeout(30, read=30)) as client:
+            factory = self.transport_factory or httpx.Client
+            options = {"trust_env": False, "follow_redirects": False, "timeout": httpx.Timeout(30, read=30)}
+            if self.transport_factory is None:
+                options["transport"] = DeadlineTransport(remaining)
+            with factory(**options) as client:
                 with client.stream("POST", endpoint, headers={"Authorization": "Bearer " + config["api_key"],
                         "X-DashScope-SSE": "disable"}, json=payload) as response:
                     check()
@@ -111,4 +120,5 @@ class CloudAsrClient:
                 seconds = 0
             return sentences, {"duration_seconds": seconds}
         except (httpx.HTTPError, ValueError, TypeError):
+            check()
             raise VideoError("云端转写连接失败或返回无效结果，请稍后重试", 502) from None

@@ -2,6 +2,24 @@
   "description": "Public page samples for opt-in live capture audits. Access restrictions are recorded separately from extraction defects; these samples do not establish a site-wide compatibility rate.",
   "samples": [
     {
+      "id": "wps-freeze",
+      "site": "WPS 官方中文教程",
+      "url": "https://www.wps.cn/learning/course/detail/id/12834.html",
+      "root": "article.course-detail-description-content",
+      "title": "h1.mobile-player-title",
+      "min_chars": 100,
+      "exclude_text": ["看了此视频的人还看了这些", "推荐学习课程", "加载完成", "音量", "手机观看", "立即学习", "精品课会员专享"]
+    },
+    {
+      "id": "github-project",
+      "site": "项目 GitHub README",
+      "url": "https://github.com/githu287/web-rag-clipper-full",
+      "root": "article.markdown-body",
+      "title": "article.markdown-body h1",
+      "min_chars": 1000,
+      "exclude_text": ["Notifications", "Latest commit", "Folders and files", "Copy code to clipboard", "Skip to content"]
+    },
+    {
       "id": "github-yt-dlp",
       "site": "GitHub 大型 README",
       "url": "https://github.com/yt-dlp/yt-dlp",

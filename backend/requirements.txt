@@ -24,6 +24,8 @@ setuptools==80.9.0
 # 阿里云百炼 OpenAI 兼容 API
 openai>=1.52.0,<2.0.0
 httpx>=0.27.0,<1.0.0
+# Public socket backend used for bounded cloud-video request deadlines.
+httpcore>=1.0.0,<2.0.0
 
 # FastAPI multipart 解析（Phase 2.10 Step 3：POST /documents/upload 依赖 UploadFile/File）
 python-multipart>=0.0.9,<1.0.0

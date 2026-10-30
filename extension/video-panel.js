@@ -18,6 +18,10 @@ const webRagVideoPanel = (() => {
     const now = identity();
     return active && ticket === epoch && owner && owner.id === now.id && owner.secret === now.secret;
   }
+  function sameOwner(expected) {
+    const now = identity();
+    return owner === expected && owner && owner.id === now.id && owner.secret === now.secret;
+  }
   function status(message, error = false) {
     el("status").textContent = message;
     el("status").classList.toggle("err", error);
@@ -280,7 +284,9 @@ const webRagVideoPanel = (() => {
         if (!current(ticket)) return;
         el("ingest-status").textContent = ingest.status === "SUCCEEDED" ? "已保存到知识库，可以在 AI 聊天中提问。" :
           ingest.status === "FAILED" ? "入库失败，请在知识库中查看失败记录并重试。" : "总结正在入库，请稍候…";
-        if (["SUCCEEDED", "FAILED"].includes(ingest.status)) { ingestId = null; saving = false; saved = ingest.status === "SUCCEEDED"; buttons(); }
+        if (["SUCCEEDED", "FAILED"].includes(ingest.status)) {
+          ingestId = null; saving = false; saved = ingest.status === "SUCCEEDED"; buttons(); renderJobs();
+        }
       }
     } catch (error) { if (current(ticket)) status(error.message, true); }
     if (current(ticket) && (jobs.some(pending) || ingestId)) timer = setTimeout(() => refresh(ticket), 3000);
@@ -376,15 +382,18 @@ const webRagVideoPanel = (() => {
   });
   el("save").addEventListener("click", async () => {
     if (el("save").disabled) return;
-    const ticket = epoch; saving = true; buttons(); renderJobs();
+    // Navigation changes the display epoch, but a submitted document still needs
+    // its receipt. Only a Workspace reset invalidates this save operation.
+    const saveOwner = owner; saving = true; buttons(); renderJobs();
     try {
       const file = new File([el("preview-text").value], "video-summary-" + selected + ".md", { type: "text/markdown" });
       const job = await webRagApiClient.documents.uploadFileAsync(file);
-      if (!current(ticket)) return;
-      saved = true; ingestId = job.id; el("ingest-status").textContent = "已提交总结，正在入库…"; await refresh(ticket);
+      if (!sameOwner(saveOwner)) return;
+      saved = true; ingestId = job.id; el("ingest-status").textContent = "已提交总结，正在入库…";
+      if (active) await refresh(epoch);
     } catch (error) {
-      if (current(ticket)) { saving = false; el("ingest-status").textContent = error.message + "；若请求超时，请先在知识库中确认，避免重复保存。"; }
-    } finally { if (current(ticket)) { buttons(); renderJobs(); } }
+      if (sameOwner(saveOwner)) { saving = false; el("ingest-status").textContent = error.message + "；若请求超时，请先在知识库中确认，避免重复保存。"; }
+    } finally { if (sameOwner(saveOwner)) { buttons(); renderJobs(); } }
   });
   el("download").addEventListener("click", () => {
     const url = URL.createObjectURL(new Blob([el("preview-text").value], { type: "text/markdown;charset=utf-8" }));

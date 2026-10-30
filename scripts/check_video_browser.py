@@ -4,6 +4,7 @@ No .env, paid model calls or user's database. Owns isolated server/profile lifec
 """
 from pathlib import Path
 import argparse
+import asyncio
 import json
 import socket
 import subprocess
@@ -46,12 +47,15 @@ def main():
     args.artifacts.mkdir(parents=True, exist_ok=True)
     checks, uploaded_summaries, errors, questions = [], [], [], []
     late_started, late_release = threading.Event(), threading.Event()
+    ingest_started, ingest_release = threading.Event(), threading.Event()
+    ingest_behavior = {"next": "normal", "polls_remaining": 0}
     settings = Settings(upload_dir=str(args.artifacts / "uploads"), app_master_key="T" * 32, video_segment_seconds=10)
     engine = create_engine("sqlite://", poolclass=StaticPool, connect_args={"check_same_thread": False})
     Base.metadata.create_all(engine)
     repository = VideoRepository(engine)
     with repository.sessions.begin() as session:
         session.add(PluginWorkspace(plugin_id="video-fixture", plugin_name="Video fixture", plugin_name_norm="video fixture", plugin_secret_hash="f" * 64))
+        session.add(PluginWorkspace(plugin_id="other-fixture", plugin_name="Other fixture", plugin_name_norm="other fixture", plugin_secret_hash="g" * 64))
     service = VideoSummaryService(repository, settings)
     api = FastAPI()
     api.include_router(router)
@@ -59,7 +63,7 @@ def main():
 
     class Identity:
         def authenticate(self, plugin_id, secret):
-            if plugin_id != "video-fixture" or secret != "ephemeral-video-secret":
+            if {"video-fixture": "ephemeral-video-secret", "other-fixture": "other-secret"}.get(plugin_id) != secret:
                 raise VideoError("invalid fixture identity", 401)
             return SimpleNamespace(plugin_id=plugin_id)
     api.dependency_overrides[get_plugin_service] = Identity
@@ -74,10 +78,20 @@ def main():
         return provider_catalog()
     @api.post("/documents/upload/async", status_code=202)
     async def ingest(file: UploadFile = File(...)):
+        mode = ingest_behavior.pop("next", "normal")
+        if mode.startswith("delayed-"):
+            ingest_started.set()
+            await asyncio.to_thread(ingest_release.wait, 10)
+        if mode == "delayed-failure":
+            return JSONResponse({"detail": "fixture ingest failure"}, status_code=503)
         uploaded_summaries.append((await file.read()).decode())
+        ingest_behavior["polls_remaining"] = 1 if mode == "poll-once" else 0
         return {"id": "fixture-ingest", "status": "QUEUED"}
     @api.get("/jobs/fixture-ingest")
     def ingest_status():
+        if ingest_behavior["polls_remaining"]:
+            ingest_behavior["polls_remaining"] -= 1
+            return {"id": "fixture-ingest", "status": "QUEUED"}
         return {"id": "fixture-ingest", "status": "SUCCEEDED"}
 
     class CloudFixture:
@@ -228,6 +242,65 @@ def main():
                 expect(page.locator("#video-ingest-status")).to_contain_text("已保存到知识库")
                 assert uploaded_summaries[-1] == selected_text and len(uploaded_summaries) == 2
                 done("Only the selected transcript excerpt is persisted after explicit confirmation")
+                def prepare_save(text, mode):
+                    # Selecting a section regenerates an editable version after a
+                    # previous successful save; it does not submit another file.
+                    page.locator('#video-part-options input[value="overview"]').check()
+                    page.locator('#video-part-options input[value="overview"]').uncheck()
+                    page.locator("#video-preview-text").fill(text)
+                    page.locator("#video-confirm").check()
+                    ingest_started.clear(); ingest_release.clear()
+                    ingest_behavior["next"] = mode
+
+                prepare_save("# Navigation success\nKeep the upload receipt.", "delayed-success")
+                page.locator("#video-save").click()
+                assert ingest_started.wait(3)
+                page.locator("#nav-chat").click()
+                with page.expect_response("**/documents/upload/async"):
+                    ingest_release.set()
+                page.locator("#nav-video").click()
+                expect(page.locator("#video-ingest-status")).to_contain_text("已保存到知识库")
+                expect(page.locator("#video-upload-btn")).to_be_enabled()
+                assert len(uploaded_summaries) == 3
+                assert all(button.is_enabled() for button in page.locator("#video-jobs button").all())
+                done("Saving continues across navigation and its upload receipt is recovered without duplicate submission")
+
+                prepare_save("# Navigation failure\nKeep the editable notes.", "delayed-failure")
+                page.locator("#video-save").click()
+                assert ingest_started.wait(3)
+                page.locator("#nav-chat").click()
+                with page.expect_response("**/documents/upload/async"):
+                    ingest_release.set()
+                page.locator("#nav-video").click()
+                expect(page.locator("#video-ingest-status")).to_contain_text("fixture ingest failure")
+                expect(page.locator("#video-preview-text")).to_have_value("# Navigation failure\nKeep the editable notes.")
+                expect(page.locator("#video-preview-text")).to_be_enabled()
+                expect(page.locator("#video-save")).to_be_enabled()
+                assert len(uploaded_summaries) == 3
+                done("A failed save after navigation releases the controls and preserves the notes for a manual retry")
+
+                prepare_save("# Poll completion\nRestore task actions.", "poll-once")
+                page.locator("#video-save").click()
+                expect(page.locator("#video-ingest-status")).to_contain_text("总结正在入库")
+                expect(page.locator("#video-ingest-status")).to_contain_text("已保存到知识库", timeout=10000)
+                assert all(button.is_enabled() for button in page.locator("#video-jobs button").all())
+                expect(page.locator("#video-upload-btn")).to_be_enabled()
+                done("A terminal ingestion poll restores dynamic task actions as well as the upload controls")
+
+                prepare_save("# Workspace isolation\nDo not apply a late receipt elsewhere.", "delayed-success")
+                page.locator("#video-save").click()
+                assert ingest_started.wait(3)
+                page.evaluate("webRagApiClient.setPluginDetails({pluginId:'other-fixture',pluginSecret:'other-secret'});webRagVideoPanel.enter()")
+                with page.expect_response("**/documents/upload/async"):
+                    ingest_release.set()
+                expect(page.locator("#video-preview")).to_be_hidden()
+                expect(page.locator("#video-preview-text")).to_have_value("")
+                expect(page.locator("#video-ingest-status")).to_be_empty()
+                page.evaluate("webRagApiClient.setPluginDetails({pluginId:'video-fixture',pluginSecret:'ephemeral-video-secret'});webRagVideoPanel.enter()")
+                expect(page.locator("#video-jobs .video-job")).to_have_count(1)
+                page.get_by_role("button", name="查看总结", exact=True).click()
+                expect(page.locator("#video-preview-text")).to_be_enabled()
+                done("A late save response cannot populate or lock a different Workspace")
                 page.locator("#video-url").fill("https://127.0.0.1/video/123")
                 page.locator("#video-link-btn").click()
                 expect(page.locator("#video-status")).to_contain_text("目前支持")
@@ -254,7 +327,8 @@ def main():
         sock.close()
         engine.dispose()
         late_release.set()
-        (args.artifacts / "report.json").write_text(json.dumps({"checks": checks, "passed": len(checks) == 11, "cloud": "fixture (Omni and ASR)", "ingest": "fixture boundary", "media": "real FFmpeg", "errors": errors}, ensure_ascii=False, indent=2), encoding="utf-8")
+        ingest_release.set()
+        (args.artifacts / "report.json").write_text(json.dumps({"checks": checks, "passed": len(checks) == 15, "cloud": "fixture (Omni and ASR)", "ingest": "fixture boundary", "media": "real FFmpeg", "errors": errors}, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 if __name__ == "__main__":

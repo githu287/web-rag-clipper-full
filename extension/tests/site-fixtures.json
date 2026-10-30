@@ -2,6 +2,14 @@
   "description": "Original synthetic fixtures reproducing observed site DOM patterns, not copies of third-party articles. URLs are intercepted locally by the browser regression runner.",
   "cases": [
     {
+      "id": "wps-course-body",
+      "url": "https://www.wps.cn/learning/course/detail/id/fixture.html",
+      "html": "<article class='default-layout-content'><h1 class='mobile-player-title'>表格操作测试</h1><div class='player'>加载完成: 0% 音量 手机观看</div><article class='course-detail-description-content'><p>先点击编辑，再点击工具，在查看中找到冻结窗格。</p><p>可冻结当前位置、首行或首列。</p><img alt='操作步骤示意' src='data:image/png;base64,AA=='></article><section>看了此视频的人还看了这些 推荐学习课程</section>{{padding}}</article>",
+      "contains": ["表格操作测试", "先点击编辑", "首行或首列", "操作步骤示意"],
+      "excludes": ["加载完成", "音量", "手机观看", "推荐学习课程", "看了此视频"],
+      "profile": "wps-course"
+    },
+    {
       "id": "github-readme-scope",
       "url": "https://github.com/clipper-fixture/project",
       "html": "<main id='js-repo-pjax-container'><div><h2>仓库文件列表</h2><p>仓库控件噪声REPO_NOISE应被排除。</p>{{padding}}<table><tr><td>unrelated.js</td></tr></table></div><article class='markdown-body'><h1>项目使用说明README_TITLE</h1><p>这是说明文件的正文，讲解安装方法、使用方式、配置参数以及调试步骤。README_BODY</p><pre>npm install example\nnode example.js</pre><clipboard-copy aria-label='Copy code to clipboard'></clipboard-copy></article><div>{{padding}}</div></main>",
