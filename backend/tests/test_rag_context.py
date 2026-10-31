@@ -21,8 +21,10 @@ def chunk(index=0, text="evidence", title="Title", url="https://example.com"):
 
 def answer(results, budget=4000):
     llm = Mock(generate=Mock(return_value="answer [Source 1]"))
+    documents = Mock()
+    documents.get_documents_by_ids.return_value = [SimpleNamespace(id=1, status="SUCCESS")]
     service = RagAnswerService(
-        SimpleNamespace(search=AsyncMock(return_value=results)), llm, Mock(),
+        SimpleNamespace(search=AsyncMock(return_value=results)), llm, documents,
         max_context_chars=budget,
     )
     response = asyncio.run(service.ask("question", plugin_id="test", api_key="test"))

@@ -361,26 +361,43 @@ def test_partial_delete_stays_deleting_until_retry(repos):
     assert documents.count_documents("a") == 0
 
 
-def test_slow_llm_does_not_block_event_loop():
+@pytest.mark.parametrize("scope", ["document", "library"])
+@pytest.mark.parametrize("change", ["none", "delete", "processing"])
+def test_slow_llm_and_concurrent_document_changes(repos, scope, change):
+    documents, _ = repos
+    doc = make_document(documents)
+    documents.update_ingest_result(doc.id, chunk_count=1, status=DS.SUCCESS)
     started, release = threading.Event(), threading.Event()
     def generate(*args, **kwargs):
         started.set()
         if not release.wait(2):
             raise RuntimeError("event loop was blocked")
         return "answer"
-    result = SimpleNamespace(title="title", url="https://example.com", document_id=1,
-                             chunk_text="body", id="1_0", page_id=1, distance=0.9)
+    result = SimpleNamespace(title="title", url="https://example.com", document_id=doc.id,
+                             chunk_text="body", id=f"{doc.id}_0", page_id=doc.id, distance=0.9)
     service = RagAnswerService(SimpleNamespace(search=AsyncMock(return_value=[result])),
-                               SimpleNamespace(generate=generate), Mock())
+                               SimpleNamespace(generate=generate), documents)
     async def scenario():
-        task = asyncio.create_task(service.ask("question", plugin_id="a", api_key="test"))
+        task = asyncio.create_task(service.ask("question", plugin_id="a", api_key="test",
+                                              document_id=doc.id if scope == "document" else None))
         try:
             for _ in range(100):
                 if started.is_set():
                     break
                 await asyncio.sleep(0.01)
             assert started.is_set()
+            if change == "delete":
+                await asyncio.to_thread(documents.delete_document, doc.id, "a")
+            elif change == "processing":
+                await asyncio.to_thread(documents.update_ingest_result, doc.id,
+                                        chunk_count=0, status=DS.PROCESSING)
         finally:
             release.set()
-        assert (await task).answer == "answer"
+        response = await task
+        if change == "none":
+            assert response.answer == "answer"
+            assert [source.document_id for source in response.sources] == [doc.id]
+        else:
+            assert "本次回答已丢弃" in response.answer
+            assert response.sources == []
     asyncio.run(scenario())

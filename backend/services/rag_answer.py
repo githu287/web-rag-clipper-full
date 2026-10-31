@@ -2,6 +2,7 @@
 
 Blocking model/repository calls run in threads. Only chunks with body text
 actually included in the prompt become sources; empty evidence skips the LLM.
+Source ownership/status is rechecked after generation before returning any answer.
 """
 
 from __future__ import annotations
@@ -22,6 +23,7 @@ logger: logging.Logger = logging.getLogger(__name__)
 
 # 无检索结果时的固定回答（不调用 LLM；HTTP 200）
 _EMPTY_ANSWER: Final[str] = "当前内容中没有足够信息回答该问题。"
+_UNAVAILABLE_ANSWER: Final[str] = "引用文档已删除或暂不可用，本次回答已丢弃，请重新提问。"
 
 # Context 最大字符数默认值（防 Prompt 无限增长；允许测试注入更小值验证截断）
 _DEFAULT_MAX_CONTEXT_CHARS: Final[int] = 4000
@@ -107,6 +109,7 @@ class RagAnswerService:
             RagAskResponse：
                 answer  — LLM 回答；无检索结果时为固定提示语（不调用 LLM）。
                 sources — 引用来源列表（来自真实 retrieval result；无结果时空列表）。
+                生成期间任一引用文档已删除或非 SUCCESS 时，丢弃整份回答并提示重问。
 
         Raises:
             ValueError: query 为空字符串（service 层防御）。
@@ -170,8 +173,22 @@ class RagAnswerService:
         # Phase 3.4 Step D：LLM 生成使用插件工作空间自己的 API Key（None 回退测试 Key）
         answer = await asyncio.to_thread(self._llm.generate, system_prompt, user_prompt, api_key=api_key)
 
-        # -------------------------------------------------------- Step 8: 组装 Sources
+        # Model generation may take seconds: retrieval's ownership/status check
+        # does not guarantee the sources still exist when the answer is ready.
+        # Discard the whole answer if any included document is unavailable;
+        # removing only its citation would leave its facts in the generated text.
         sources = [self._to_source(result) for result in included_results]
+        source_ids = list(dict.fromkeys(source.document_id for source in sources))
+        documents = await asyncio.to_thread(
+            self._documents.get_documents_by_ids, source_ids, plugin_id,
+        )
+        available_ids = {
+            document.id for document in documents
+            if document.status == DocumentStatus.SUCCESS
+        }
+        if not set(source_ids).issubset(available_ids):
+            logger.info("RagAnswerService.ask: source unavailable after generation; answer discarded")
+            return RagAskResponse(answer=_UNAVAILABLE_ANSWER, sources=[])
 
         return RagAskResponse(answer=answer, sources=sources)
 

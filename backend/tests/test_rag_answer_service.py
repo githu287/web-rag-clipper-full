@@ -34,7 +34,7 @@ from backend.clients.llm import (
     LLMClient,
     LLMClientRequestError,
 )
-from backend.core.exceptions import DocumentNotFoundError, DocumentNotSuccessError
+from backend.core.exceptions import DocumentNotFoundError, DocumentNotSuccessError, DocumentOperationError
 from backend.models.api_schema import RagAnswerSource, RagAskResponse, RagSearchResult
 from backend.models.document import Document, DocumentStatus
 from backend.repositories.mysql import DocumentRepository
@@ -102,6 +102,7 @@ class RagAnswerServiceTest(unittest.TestCase):
         self.llm_client = Mock(spec=LLMClient)
         self.llm_client.generate.return_value = "这是 AI 生成的回答。"
         self.document_repository = Mock(spec=DocumentRepository)
+        self.document_repository.get_documents_by_ids.return_value = [_make_document()]
 
         self.service = RagAnswerService(
             rag_service=self.rag_service,
@@ -256,7 +257,7 @@ class RagAnswerServiceTest(unittest.TestCase):
 
     # ----------------------------------------------------- 11. 全库模式
     def test_ask_full_knowledge_mode_skips_document_check(self) -> None:
-        """11：全库模式（document_id=None）：不查 Document、search 不传 document_id。"""
+        """全库模式无单篇前置检查；生成后仍批量复查实际来源。"""
         self.rag_service.search.return_value = [_make_result()]
 
         self.ask("问题", document_id=None)
@@ -426,6 +427,91 @@ class RagAnswerServiceTest(unittest.TestCase):
         user_prompt = call_args.kwargs.get("user_prompt") or call_args.args[1]
         self.assertIn("plugin-a 独有内容", user_prompt)
         self.assertNotIn("plugin-b 独有内容", user_prompt)
+
+    def test_deleted_source_during_generation_discards_answer_in_both_modes(self) -> None:
+        for document_id in (53, None):
+            with self.subTest(document_id=document_id):
+                self.rag_service.search.return_value = [_make_result()]
+                self.document_repository.get_document.return_value = _make_document()
+                self.document_repository.get_documents_by_ids.return_value = [_make_document()]
+
+                def delete_during_generation(*args, **kwargs):
+                    self.document_repository.get_documents_by_ids.return_value = []
+                    return "已删除资料中的敏感内容 [Source 1]"
+
+                self.llm_client.generate.side_effect = delete_during_generation
+                response = self.ask("问题", document_id=document_id, plugin_id="owner")
+                self.assertEqual(response.sources, [])
+                self.assertIn("本次回答已丢弃", response.answer)
+                self.assertNotIn("敏感内容", response.answer)
+                self.document_repository.get_documents_by_ids.assert_called_with([53], "owner")
+
+    def test_any_unavailable_source_discards_entire_multi_document_answer(self) -> None:
+        self.rag_service.search.return_value = [
+            _make_result(), _make_result(pk="54_0", page_id=54, document_id=54),
+        ]
+        for status in (None, DocumentStatus.DELETING, DocumentStatus.PENDING,
+                       DocumentStatus.PROCESSING, DocumentStatus.FAILED):
+            with self.subTest(status=status):
+                documents = [_make_document()]
+                if status is not None:
+                    documents.append(_make_document(doc_id=54, status=status))
+                self.document_repository.get_documents_by_ids.return_value = documents
+                response = self.ask("问题", plugin_id="owner")
+                self.assertEqual(response.sources, [])
+                self.assertIn("本次回答已丢弃", response.answer)
+                self.assertNotEqual(response.answer, self.llm_client.generate.return_value)
+
+    def test_source_recheck_batches_deduplicated_ids_and_preserves_source_order(self) -> None:
+        self.rag_service.search.return_value = [
+            _make_result(), _make_result(pk="54_0", page_id=54, document_id=54),
+            _make_result(pk="53_1", chunk_index=1),
+        ]
+        self.document_repository.get_documents_by_ids.return_value = [
+            _make_document(doc_id=54), _make_document(),
+        ]
+        response = self.ask("问题", plugin_id="owner")
+        self.assertEqual([s.chunk_id for s in response.sources], ["53_0", "54_0", "53_1"])
+        self.document_repository.get_documents_by_ids.assert_called_once_with([53, 54], "owner")
+
+    def test_source_recheck_ignores_results_not_in_prompt(self) -> None:
+        self.rag_service.search.return_value = [
+            _make_result(), _make_result(pk="54_0", page_id=54, document_id=54),
+        ]
+        response = self.ask("问题", top_k=1, plugin_id="owner")
+        self.assertEqual(response.answer, self.llm_client.generate.return_value)
+        self.document_repository.get_documents_by_ids.assert_called_once_with([53], "owner")
+
+    def test_source_recheck_uses_page_id_fallback(self) -> None:
+        self.rag_service.search.return_value = [_make_result(document_id=None)]
+        response = self.ask("问题", plugin_id="owner")
+        self.assertEqual(response.sources[0].document_id, 53)
+        self.document_repository.get_documents_by_ids.assert_called_once_with([53], "owner")
+
+    def test_source_recheck_failure_does_not_return_unverified_answer(self) -> None:
+        self.rag_service.search.return_value = [_make_result()]
+        self.document_repository.get_documents_by_ids.side_effect = DocumentOperationError("unavailable")
+        with self.assertRaises(DocumentOperationError):
+            self.ask("问题", plugin_id="owner")
+
+    def test_no_evidence_does_not_recheck_sources(self) -> None:
+        self.rag_service.search.return_value = []
+        self.ask("问题", plugin_id="owner")
+        self.document_repository.get_documents_by_ids.assert_not_called()
+
+    def test_source_recheck_runs_outside_event_loop(self) -> None:
+        import threading
+
+        main_thread = threading.get_ident()
+        self.rag_service.search.return_value = [_make_result()]
+
+        def read_documents(*args):
+            self.assertNotEqual(threading.get_ident(), main_thread)
+            return [_make_document()]
+
+        self.document_repository.get_documents_by_ids.side_effect = read_documents
+        response = self.ask("问题", plugin_id="owner")
+        self.assertEqual(response.answer, self.llm_client.generate.return_value)
 
 
 if __name__ == "__main__":
