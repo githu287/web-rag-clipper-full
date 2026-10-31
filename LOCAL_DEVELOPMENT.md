@@ -72,3 +72,5 @@ docker compose ps
 ```
 
 API 和 Worker 默认向所启动终端输出日志；本仓库不保证存在历史机器上的 `.venv/runtime/` 后台日志或验证脚本。
+
+知识库文档与向量一致性可用 `scripts/audit_knowledge_base.py scan --output evaluation/private/kb-scan-001.json` 只读巡检；参数、维护窗口、完整备份与清理流程见 [知识库维护](KNOWLEDGE_MAINTENANCE.md)。
