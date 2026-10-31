@@ -108,7 +108,7 @@ def main():
                 raise VideoError("问答失败，请重试", 502)
             if query == "原文讲了什么":
                 return "原文记录蓝色演示。[原文1-2]", {"total_tokens": 9}
-            if query == "视频只有蓝色，对吗？还讲了什么？":
+            if query in ("视频只有蓝色，对吗？还讲了什么？", "视频只有蓝色，对吗；还讲了什么"):
                 from backend.clients.video import CloudVideoClient
                 client = CloudVideoClient()
                 outputs = iter([('{"answers":{"1":"视频只有蓝色。[原文 1]","2":"蓝色演示。[原文 2]"}}', {"total_tokens": 4}),
@@ -256,6 +256,12 @@ def main():
                 expect(page.locator("#video-chat-status")).to_contain_text("资料摘录")
                 assert len(uploaded_summaries) == 1
                 done("Compound question slots retain literal excerpts and verified items without publishing scoped model claims or HTML")
+                page.locator("#video-question").fill("视频只有蓝色，对吗；还讲了什么")
+                page.locator("#video-ask").click()
+                expect(page.locator("#video-chat-messages .assistant")).to_have_count(3)
+                expect(page.locator("#video-chat-messages .assistant").last).to_contain_text("2. 蓝色演示。")
+                expect(page.locator("#video-chat-messages .assistant").last).not_to_contain_text("视频只有蓝色")
+                done("Semicolon questions without final question marks retain two server-owned answer slots")
                 for box in page.locator("#video-part-options input").all():
                     box.uncheck()
                 page.locator('#video-transcript-list input[value="1"]').check()
@@ -352,7 +358,7 @@ def main():
         engine.dispose()
         late_release.set()
         ingest_release.set()
-        (args.artifacts / "report.json").write_text(json.dumps({"checks": checks, "passed": len(checks) == 17, "cloud": "fixture (Omni and ASR)", "ingest": "fixture boundary", "media": "real FFmpeg", "errors": errors}, ensure_ascii=False, indent=2), encoding="utf-8")
+        (args.artifacts / "report.json").write_text(json.dumps({"checks": checks, "passed": len(checks) == 18, "cloud": "fixture (Omni and ASR)", "ingest": "fixture boundary", "media": "real FFmpeg", "errors": errors}, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 if __name__ == "__main__":

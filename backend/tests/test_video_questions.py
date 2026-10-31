@@ -1,5 +1,6 @@
 """Coverage slots and literal evidence guard, independent of cloud agreement."""
 import json
+from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
@@ -7,6 +8,23 @@ import pytest
 from backend.clients.video import CloudVideoClient, UNSUPPORTED_ANSWER
 from backend.core.video_errors import VideoError
 from backend.core.video_questions import question_parts
+
+
+BOUNDARIES = json.loads((Path(__file__).resolve().parents[2] / "evaluation/datasets/video_question_eval.json").read_text(encoding="utf-8"))
+
+
+@pytest.mark.parametrize("case", BOUNDARIES, ids=[c["name"] for c in BOUNDARIES])
+def test_public_chinese_first_question_boundary_cases(case):
+    assert question_parts(case["query"]) == case["parts"]
+
+
+@pytest.mark.parametrize("separator", ["；", "，", "\n"])
+def test_implicit_punctuation_questions_obey_paid_call_budget(separator):
+    client = CloudVideoClient(); client.generate = Mock()
+    with pytest.raises(VideoError) as caught:
+        client.answer({"overview": "x" * 24001, "chapters": [{"number": i} for i in range(8)]}, separator.join(f"第{i}项是什么" for i in range(7)), [], {})
+    assert caught.value.status == 422
+    client.generate.assert_not_called()
 
 
 @pytest.mark.parametrize("query,parts", [
@@ -115,3 +133,23 @@ def test_institution_name_cannot_be_expanded_by_a_draft():
     answer, _ = client.verify_answer(evidence, "在哪家医院实习？", "在乙大学附属甲医院实习。[原文 1]", {})
     assert "在甲医院实习。" in answer and "乙大学" not in answer
     client.generate.assert_not_called()
+
+
+@pytest.mark.parametrize("query", ["他在什么医院实习？", "哪个医院是实习单位？", "哪一个医院是实习单位？", "哪间医院是实习单位？",
+                                 "Which hospital did he intern at?", "What hospital did he intern at?"])
+def test_institution_wording_variants_keep_actual_name(query):
+    evidence = {"transcript": {"sentences": [{"id": 1, "text": "在甲医院实习。"}]}}
+    client = CloudVideoClient(); client.generate = Mock()
+    answer, _ = client.verify_answer(evidence, query, "在乙大学附属甲医院实习。[原文 1]", {})
+    assert "在甲医院实习。" in answer and "乙大学" not in answer
+    client.generate.assert_not_called()
+
+
+def test_optional_context_cannot_crowd_out_short_cited_evidence():
+    from backend.core.video_questions import excerpt_ids, source_excerpt
+    rows = [{"id": 1, "start_seconds": 0, "end_seconds": 1, "text": "字" * 3500},
+            {"id": 2, "start_seconds": 1.1, "end_seconds": 2, "text": "正式文件前不得经营。"},
+            {"id": 3, "start_seconds": 2.1, "end_seconds": 3, "text": "后续说明。"}]
+    selected = excerpt_ids({2}, rows)
+    assert selected == {2, 3}
+    assert "正式文件前不得经营。" in source_excerpt(selected, {r['id']: r['text'] for r in rows})
