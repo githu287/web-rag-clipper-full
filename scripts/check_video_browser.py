@@ -108,6 +108,13 @@ def main():
                 raise VideoError("问答失败，请重试", 502)
             if query == "原文讲了什么":
                 return "原文记录蓝色演示。[原文1-2]", {"total_tokens": 9}
+            if query == "视频只有蓝色，对吗？还讲了什么？":
+                from backend.clients.video import CloudVideoClient
+                client = CloudVideoClient()
+                outputs = iter([('{"answers":{"1":"视频只有蓝色。[原文 1]","2":"蓝色演示。[原文 2]"}}', {"total_tokens": 4}),
+                                ('{"checks":[{"id":2,"reason":"fixture review","supported":true}]}', {"total_tokens": 2})])
+                client.generate = lambda *_a, **_kw: next(outputs)
+                return client.answer(evidence, query, history, _config)
             return "蓝色背景与提示音。[片段 1]", {"total_tokens": 9}
     class AsrFixture:
         def transcribe(self, _path, duration, _config, _alive):
@@ -238,6 +245,17 @@ def main():
                 page.locator("#video-chat-messages .video-time-link").nth(1).click()
                 assert page.locator("#video-player").evaluate("v=>v.currentTime") >= 10.19
                 done("ASR range citation exposes both server quotes and seeks each actual local position; HTML remains text; no new upload")
+                page.locator("#video-question").fill("视频只有蓝色，对吗？还讲了什么？")
+                page.locator("#video-ask").click()
+                expect(page.locator("#video-chat-messages .assistant")).to_have_count(2)
+                last_answer = page.locator("#video-chat-messages .assistant").last
+                expect(last_answer).to_contain_text("原文摘录")
+                expect(last_answer).to_contain_text("2. 蓝色演示。")
+                expect(last_answer).not_to_contain_text("视频只有蓝色")
+                expect(last_answer.locator("img")).to_have_count(0)
+                expect(page.locator("#video-chat-status")).to_contain_text("资料摘录")
+                assert len(uploaded_summaries) == 1
+                done("Compound question slots retain literal excerpts and verified items without publishing scoped model claims or HTML")
                 for box in page.locator("#video-part-options input").all():
                     box.uncheck()
                 page.locator('#video-transcript-list input[value="1"]').check()
@@ -334,7 +352,7 @@ def main():
         engine.dispose()
         late_release.set()
         ingest_release.set()
-        (args.artifacts / "report.json").write_text(json.dumps({"checks": checks, "passed": len(checks) == 16, "cloud": "fixture (Omni and ASR)", "ingest": "fixture boundary", "media": "real FFmpeg", "errors": errors}, ensure_ascii=False, indent=2), encoding="utf-8")
+        (args.artifacts / "report.json").write_text(json.dumps({"checks": checks, "passed": len(checks) == 17, "cloud": "fixture (Omni and ASR)", "ingest": "fixture boundary", "media": "real FFmpeg", "errors": errors}, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 if __name__ == "__main__":

@@ -32,12 +32,14 @@ def test_verified_draft_uses_immutable_cited_text_and_counts_extra_cloud_call():
     assert client.generate.call_args.kwargs["max_tokens"] == 768
 
 
-def test_wrong_negation_or_amount_is_not_published_when_semantic_check_rejects():
+def test_confirmation_question_returns_actual_prohibition_instead_of_wrong_positive_draft():
     client = CloudVideoClient()
     client.generate = Mock(return_value=(review(False), {"total_tokens": 9}))
     answer, usage = client.verify_answer(EVIDENCE, "可以恢复经营吗？", "可以恢复经营。[原文12]", CONFIG)
-    assert answer == UNSUPPORTED_ANSWER and "[原文" not in answer
-    assert usage["verification_rejected"] == 1 and usage["total_tokens"] == 9
+    assert "正式文件发布前，不得恢复经营。 [原文 12]" in answer
+    assert "可以恢复经营。" not in answer
+    assert usage == {"extractive_answers": 1}
+    client.generate.assert_not_called()
 
 
 @pytest.mark.parametrize("draft", ["没有来源的确定事实", "答案[原文999]", "答案[原文7][原文999]", "答案[原文7-9999]", "答案[原文0]", "答案[原文7、12、14]"])
@@ -121,7 +123,7 @@ def test_review_order_is_resolved_by_id_and_missing_checks_cannot_release_any_dr
 
 def test_review_failure_does_not_retry_or_release_unchecked_answer():
     client = CloudVideoClient()
-    draft = json.dumps({"answers": [{"question": "q", "answer": "退款80%。[原文7]"}]})
+    draft = json.dumps({"answers": {"1": "退款80%。[原文7]"}})
     client.generate = Mock(side_effect=[(draft, {}), VideoError("核对服务限流", 502)])
     with pytest.raises(VideoError, match="核对服务限流"):
         client.answer(EVIDENCE, "复合问题", [], CONFIG)
@@ -135,7 +137,7 @@ def test_draft_time_reduces_review_budget_instead_of_starting_another_full_deadl
     def generate(*args, **kwargs):
         if now["value"] == 0:
             now["value"] = 62
-            return json.dumps({"answers": [{"question": "q", "answer": "退款80%。[原文7]"}]}), {}
+            return json.dumps({"answers": {"1": "退款80%。[原文7]"}}), {}
         assert kwargs["timeout_seconds"] == 13
         return review(True), {}
     client.generate = Mock(side_effect=generate)
@@ -143,11 +145,11 @@ def test_draft_time_reduces_review_budget_instead_of_starting_another_full_deadl
     assert client.generate.call_count == 2
 
 
-def test_total_rejection_collapses_to_one_refusal_and_never_rewrites():
+def test_total_rejection_preserves_each_question_slot_and_never_rewrites():
     client = CloudVideoClient()
     client.generate = Mock(return_value=(review(False, False), {}))
     answer, usage = client.verify_answers(EVIDENCE, "复合问题", ["退款1%。[原文7]", "可以经营。[原文12]"], CONFIG)
-    assert answer == UNSUPPORTED_ANSWER and usage["verification_rejected"] == 1
+    assert answer == "1. " + UNSUPPORTED_ANSWER + "\n\n2. " + UNSUPPORTED_ANSWER and usage["verification_rejected"] == 1
     assert "verification_partial" not in usage
     client.generate.assert_called_once()
 
@@ -161,10 +163,13 @@ def test_unknown_overview_mixed_with_valid_source_is_rejected_locally():
 
 
 @pytest.mark.parametrize("draft", ["plain unchecked draft", "null", "[]", "{}", '{"answers":[]}',
+    '{"answers":{"1":true}}', '{"answers":{"1":""}}', '{"answers":{"1":"x","extra":"y"}}',
+    '{"answers":{"1":"first","1":"second"}}',
+    json.dumps({"answers": {"1": "x" * 2001}}),
     '{"answers":[{"question":"first","answer":"first","question":"second","answer":"second"}]}',
     '{"answers":[],"answers":[{"question":"q","answer":"当前资料无法确认。"}]}',
     '{"answers":["text"]}', '{"answers":[{"question":"q","answer":true}]}',
-    '{"answers":[{"question":"q","answer":""}]}', '{"answers":[{"question":"q","answer":"x","extra":1}]}',
+    '{"answers": {"1": ""}}', '{"answers":[{"question":"q","answer":"x","extra":1}]}',
     json.dumps({"answers": [{"question": "q", "answer": "x"}] * 7}),
     json.dumps({"answers": [{"question": "q", "answer": "x" * 2001}]}),
     json.dumps({"answers": [{"question": "q", "answer": "x" * 2000}] * 5})])
@@ -178,10 +183,9 @@ def test_malformed_or_oversized_answer_structure_never_starts_review(draft):
 
 def test_answer_to_review_usage_and_order_include_only_reviewed_text():
     client = CloudVideoClient()
-    draft = {"answers": [{"question": "不要泄漏这个规划问题", "answer": "退款80%。[原文7]"},
-                         {"question": "另一个问题", "answer": "可以恢复经营。[原文12]"}]}
+    draft = {"answers": {"1": "退款80%。[原文7]", "2": "可以恢复经营。[原文12]"}}
     client.generate = Mock(side_effect=[(json.dumps(draft), {"total_tokens": 20}), (review(True, False), {"total_tokens": 5})])
-    answer, usage = client.answer(EVIDENCE, "复合问题", [], CONFIG)
+    answer, usage = client.answer(EVIDENCE, "退款多少？经营安排是什么？", [], CONFIG)
     assert answer.startswith("1. 退款80%。[原文7]") and answer.endswith(UNSUPPORTED_ANSWER)
     assert "规划问题" not in answer and "规划问题" not in client.generate.call_args.args[1][0]["text"]
     assert usage["total_tokens"] == 25 and usage["verification_partial"] == 1

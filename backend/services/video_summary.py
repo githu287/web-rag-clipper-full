@@ -101,6 +101,8 @@ class VideoSummaryService:
                 basis += "；引用不足以支持草稿结论，已停止展示该结论"
             elif usage.get("verification_calls"):
                 basis += "；已用云端核对引用，仍可能误判，请核对原文"
+            if usage.get("extractive_answers"):
+                basis += "；确认、实体或否定范围措辞已改为服务端资料摘录，原文和AI总结分别标注；摘录是否回答问题仍需核对"
             return {"answer": answer, "sources": sources, "usage": usage, "model": config["model"], "basis": basis, "job_id": job.id}
         finally:
             with self._ask_lock:

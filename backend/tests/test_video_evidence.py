@@ -96,7 +96,7 @@ def test_generation_context_contains_exact_sources_and_does_not_mutate_stored_tr
     evidence = {"transcript": {"sentences": rows()}, "chapters": []}
     before = deepcopy(evidence)
     client = CloudVideoClient()
-    client.generate = Mock(return_value=('{"answers":[{"question":"q","answer":"当前资料无法确认。"}]}', {}))
+    client.generate = Mock(return_value=('{"answers": {"1": "当前资料无法确认。"}}', {}))
     client.answer(evidence, "question", [], {})
     transcript = json.loads(client.generate.call_args.args[1][0]["text"])["视频总结资料"]["transcript"]
     assert transcript["连续转写"] == continuous_transcript(rows())

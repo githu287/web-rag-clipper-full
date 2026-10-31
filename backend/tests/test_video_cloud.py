@@ -51,7 +51,7 @@ def test_incomplete_stream_is_not_accepted_as_a_complete_summary():
 def test_question_prompt_separates_server_evidence_history_and_question():
     from unittest.mock import Mock
     client = CloudVideoClient()
-    client.generate = Mock(return_value=('{"answers":[{"question":"follow up?","answer":"当前资料无法确认。"}]}', {}))
+    client.generate = Mock(return_value=('{"answers": {"1": "当前资料无法确认。"}}', {}))
     evidence = {"overview": "server summary", "chapters": []}
     history = [{"role": "assistant", "content": "untrusted earlier answer"}]
     client.answer(evidence, "follow up?", history, CONFIG)
@@ -60,7 +60,7 @@ def test_question_prompt_separates_server_evidence_history_and_question():
     assert "不能作为事实证据" in prompt and "禁止声称重新观看了视频" in prompt
     assert "优先依据原文" in prompt and "[原文 N]" in prompt
     data = json.loads(args.args[1][0]["text"])
-    assert data == {"视频总结资料": evidence, "历史对话": history, "当前问题": "follow up?"}
+    assert data == {"视频总结资料": evidence, "历史对话": history, "当前问题": "follow up?", "必须逐项回答": {"1": "follow up?"}}
     assert "untrusted earlier answer" not in prompt
     assert 0 < args.kwargs["timeout_seconds"] <= 75
 
@@ -77,7 +77,7 @@ def test_long_qa_selects_original_ids_and_adds_both_cloud_usages():
     from unittest.mock import Mock
     client = CloudVideoClient()
     original = long_evidence()
-    client.generate = Mock(side_effect=[('{"chapters":[3]}', {"total_tokens": 20}), ('{"answers":[{"question":"q","answer":"answer [原文 3]"}]}', {"total_tokens": 10}), ('{"checks":[{"id":1,"reason":"supported","supported":true}]}', {"total_tokens": 5})])
+    client.generate = Mock(side_effect=[('{"chapters":[3]}', {"total_tokens": 20}), ('{"answers": {"1": "answer [原文 3]"}}', {"total_tokens": 10}), ('{"checks":[{"id":1,"reason":"supported","supported":true}]}', {"total_tokens": 5})])
     answer, usage = client.answer(original, "question", [], CONFIG)
     assert answer.endswith("[原文 3]") and usage == {"total_tokens": 35, "retrieval_calls": 1, "verification_calls": 1}
     payload = json.loads(client.generate.call_args_list[1].args[1][0]["text"])["视频总结资料"]
@@ -168,7 +168,7 @@ def test_question_sdk_keeps_system_rules_outside_untrusted_evidence():
     def handle(request):
         requests.append(json.loads(request.content))
         event = {"id": "qa", "object": "chat.completion.chunk", "created": 1, "model": CONFIG["model"],
-                 "choices": [{"index": 0, "delta": {"content": '{"answers":[{"question":"q","answer":"无法确认"}]}'}, "finish_reason": "stop"}]}
+                 "choices": [{"index": 0, "delta": {"content": '{"answers": {"1": "无法确认"}}'}, "finish_reason": "stop"}]}
         return httpx.Response(200, headers={"Content-Type": "text/event-stream"},
                               text="data: " + json.dumps(event) + "\n\ndata: [DONE]\n\n")
     transport = httpx.Client(transport=httpx.MockTransport(handle))

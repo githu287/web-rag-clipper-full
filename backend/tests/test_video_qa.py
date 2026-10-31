@@ -52,8 +52,7 @@ def test_partial_grounding_returns_only_surviving_sources_without_persisting_dra
     job = completed(service)
     before = service.repo.get("a", job.id).result
     client = CloudVideoClient()
-    draft = {"answers": [{"question": "浇水？", "answer": "土壤湿润时不要继续浇水。[片段1]"},
-                         {"question": "放在哪里？", "answer": "放在烈日下。[片段2]"}]}
+    draft = {"answers": {"1": "土壤湿润。[片段1]", "2": "放在烈日下。[片段2]"}}
     decision = {"checks": [{"id": 1, "reason": "原文支持", "supported": True}, {"id": 2, "reason": "地点错误", "supported": False}]}
     client.generate = Mock(side_effect=[(json.dumps(draft), {"total_tokens": 20}), (json.dumps(decision), {"total_tokens": 5})])
     service._cloud_client = client

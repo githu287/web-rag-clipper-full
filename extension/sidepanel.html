@@ -107,7 +107,7 @@
           </section>
           <section class="video-qa" aria-labelledby="video-qa-title">
             <div class="video-section-title"><h3 id="video-qa-title">直接问这个视频</h3><button type="button" class="btn-secondary" id="video-chat-clear">清空对话</button></div>
-            <p class="hint">无需入库或配置 Embedding。有转写时优先引用原文，其余依据 AI 总结；不包括下方编辑内容。复合问题分项回答，并额外调用云端核对引用：有依据的部分保留，其余标记无法确认。核对仍可能误判，对话仅保留在当前面板。</p>
+            <p class="hint">无需入库或配置 Embedding。有转写时优先引用原文，其余依据 AI 总结；不包括下方编辑内容。一次最多6个用问号或分行编号明确分开的问句。确认、姓名机构及否定范围问题优先展示资料摘录，其余回答额外调用云端核对引用。摘录可带相邻上下文，相关性和模型核对仍需确认，对话仅保留在当前面板。</p>
             <div id="video-chat-messages" role="log" aria-live="polite"></div>
             <form id="video-chat-form" class="video-form"><label for="video-question">你的问题</label>
               <textarea id="video-question" rows="2" maxlength="2000" placeholder="这个视频的主要观点是什么？具体有哪些步骤？"></textarea>
