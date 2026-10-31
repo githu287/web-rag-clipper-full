@@ -362,11 +362,11 @@ def test_partial_delete_stays_deleting_until_retry(repos):
 
 
 @pytest.mark.parametrize("scope", ["document", "library"])
-@pytest.mark.parametrize("change", ["none", "delete", "processing"])
+@pytest.mark.parametrize("change", ["none", "delete", "processing", "completed"])
 def test_slow_llm_and_concurrent_document_changes(repos, scope, change):
     documents, _ = repos
     doc = make_document(documents)
-    documents.update_ingest_result(doc.id, chunk_count=1, status=DS.SUCCESS)
+    doc = documents.update_ingest_result(doc.id, chunk_count=1, status=DS.SUCCESS)
     started, release = threading.Event(), threading.Event()
     def generate(*args, **kwargs):
         started.set()
@@ -374,7 +374,8 @@ def test_slow_llm_and_concurrent_document_changes(repos, scope, change):
             raise RuntimeError("event loop was blocked")
         return "answer"
     result = SimpleNamespace(title="title", url="https://example.com", document_id=doc.id,
-                             chunk_text="body", id=f"{doc.id}_0", page_id=doc.id, distance=0.9)
+                             chunk_text="body", id=f"{doc.id}_0", page_id=doc.id, distance=0.9,
+                             content_revision=doc.content_revision)
     service = RagAnswerService(SimpleNamespace(search=AsyncMock(return_value=[result])),
                                SimpleNamespace(generate=generate), documents)
     async def scenario():
@@ -391,6 +392,9 @@ def test_slow_llm_and_concurrent_document_changes(repos, scope, change):
             elif change == "processing":
                 await asyncio.to_thread(documents.update_ingest_result, doc.id,
                                         chunk_count=0, status=DS.PROCESSING)
+            elif change == "completed":
+                await asyncio.to_thread(documents.transition_status, doc.id, "a", {DS.SUCCESS}, DS.PROCESSING)
+                await asyncio.to_thread(documents.update_ingest_result, doc.id, chunk_count=1, status=DS.SUCCESS)
         finally:
             release.set()
         response = await task

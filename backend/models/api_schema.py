@@ -147,6 +147,9 @@ class RagSearchResult(ChunkSearchResult):
         不返回 file_path（后端存储路径，不在 API 边界暴露）。
     """
 
+    # Server-only evidence snapshot; excluded from search response JSON/schema.
+    content_revision: int | None = Field(default=None, ge=0, exclude=True)
+
     document_id: int | None = Field(
         default=None,
         ge=0,

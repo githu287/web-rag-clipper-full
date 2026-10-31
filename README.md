@@ -32,6 +32,8 @@ Web RAG Clipper 是一个本地优先、以网页剪藏为核心的个人知识�
 
 0.16.4 完成[视频选段入库与知识库问答验收](VIDEO_PERSISTENCE_TEST_20261031.md)：验证只保存勾选原文、独立笔记问答、删除视频后笔记保留；修复模型生成期间来源文档被删除或变为不可用时，仍返回旧答案和引用的问题。返回答案前批量复查引用文档，任一不可用即丢弃整份答案并提示重问。
 
+0.16.5 增加[重剪期间的问答版本校验](RAG_REVISION_TEST_20261031.md)：检索前后及生成回答后核对文档递增版本，避免同一文档重剪完成、恢复 SUCCESS 后仍返回旧内容。升级需迁移至 `0015`，并重启 API、入库 Worker 和视频 Worker；既有文档及向量可继续使用，无需重新向量化。
+
 当前仓库已经打通以下链路：
 
 - Plugin Workspace 注册与双凭证认证
@@ -168,7 +170,7 @@ python -m pip install -r requirements-dev.txt
 alembic upgrade head
 ```
 
-当前 Alembic head 为 `0013`，新增独立视频配置和任务表。此前的 `0012` 增加网页正文过期时间与索引，仍兼容两种历史 `0011` 结构；已有期限保留，缺失期限按创建时间加 7 天回填。升级前备份并停止 API/Worker，迁移后再启动。旧网页正文若已丢失无法恢复。视频安装与验证边界见 [VIDEO_SUMMARY.md](VIDEO_SUMMARY.md)，历史整合见 [VERSION_COMPARISON.md](VERSION_COMPARISON.md)。
+当前 Alembic head 为 `0015`：新增文档递增版本，既有记录回填为0；`0014` 保存视频阶段恢复与用量，`0013` 新增视频配置和任务表。升级前备份并停止 API、入库 Worker 和视频 Worker，执行 `alembic upgrade head` 后全部重启，避免旧 Worker 更新文档却不推进版本；无需重新向量化。此前 `0012` 的网页正文期限兼容规则不变，已丢失的旧正文无法恢复。版本校验及验证边界见 [RAG_REVISION_TEST_20261031.md](RAG_REVISION_TEST_20261031.md)，视频安装见 [VIDEO_SUMMARY.md](VIDEO_SUMMARY.md)。
 
 ### 5. 启动 API
 

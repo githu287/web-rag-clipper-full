@@ -146,6 +146,15 @@ class RagService:
             candidate_limit = max(limit, _MILVUS_SEARCH_CANDIDATE_LIMIT)
             expr = f"page_id in [{','.join(map(str, success_ids))}]"
 
+        # Read revisions BEFORE vector retrieval. Attaching only the post-search
+        # revision could mislabel old chunks if a reclip completed during search.
+        revisions = await asyncio.to_thread(
+            self._documents.get_content_revisions,
+            [document_id] if document_id is not None else success_ids, plugin_id,
+        )
+        if not revisions:
+            return []
+
         # Resolve access and searchable scope before spending an embedding call.
         fingerprint = embedding_claim_options(api_key).get("embedding_fingerprint")
         if fingerprint is not None:
@@ -189,6 +198,8 @@ class RagService:
             document.id
             for document in documents
             if document.status == DocumentStatus.SUCCESS
+            and document.id in revisions
+            and document.content_revision == revisions[document.id]
         }
         filtered = [
             c for c in candidates if c.page_id in success_document_ids
@@ -235,6 +246,7 @@ class RagService:
                     chunk_text=candidate.chunk_text,
                     distance=candidate.distance,
                     document_id=document.id,  # document.id = Milvus.page_id（1:1）
+                    content_revision=revisions[document.id],
                     filename=document.filename,
                     status=document.status,
                     created_at=document.created_at,

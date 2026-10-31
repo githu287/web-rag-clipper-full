@@ -86,6 +86,7 @@ class RagServiceStatusFilterTest(unittest.TestCase):
         self.embedding.embed.return_value = [_QUERY_VECTOR]
         self.milvus = Mock(spec=MilvusRepository)
         self.documents = Mock(spec=DocumentRepository)
+        self.documents.get_content_revisions.side_effect = lambda ids, owner: {i: 0 for i in ids}
         # Phase 3.5 Step 2-E：全库模式先取当前插件工作空间 SUCCESS document ids
         # （单测默认 plugin-a 有 doc 1、2；特殊用例按需覆盖）。
         self.documents.get_success_document_ids.return_value = [1, 2]
@@ -108,6 +109,7 @@ class RagServiceStatusFilterTest(unittest.TestCase):
     def _doc(self, doc_id: int, status: str) -> Document:
         return Document(
             id=doc_id,
+            content_revision=0,
             filename=f"file-{doc_id}.txt",
             file_path=f"uploads/file-{doc_id}.txt",
             status=status,
@@ -316,6 +318,7 @@ class RagServiceMetadataTest(unittest.TestCase):
         self.embedding.embed.return_value = [_QUERY_VECTOR]
         self.milvus = Mock(spec=MilvusRepository)
         self.documents = Mock(spec=DocumentRepository)
+        self.documents.get_content_revisions.side_effect = lambda ids, owner: {i: 0 for i in ids}
         # 全库模式先取当前 Plugin 的 SUCCESS document ids
         self.documents.get_success_document_ids.return_value = [1, 2]
         self.service = RagService(
@@ -345,6 +348,7 @@ class RagServiceMetadataTest(unittest.TestCase):
     ) -> Document:
         return Document(
             id=doc_id,
+            content_revision=0,
             filename=f"file-{doc_id}.txt",
             file_path=f"uploads/file-{doc_id}.txt",
             status=status,
@@ -677,6 +681,7 @@ class RagServiceUserIsolationTest(unittest.TestCase):
         self.embedding.embed.return_value = [_QUERY_VECTOR]
         self.milvus = Mock(spec=MilvusRepository)
         self.documents = Mock(spec=DocumentRepository)
+        self.documents.get_content_revisions.side_effect = lambda ids, owner: {i: 0 for i in ids}
         self.service = RagService(
             embedding_client=self.embedding,
             milvus_repository=self.milvus,
@@ -695,6 +700,7 @@ class RagServiceUserIsolationTest(unittest.TestCase):
     def _doc(self, doc_id: int, status: str) -> Document:
         return Document(
             id=doc_id,
+            content_revision=0,
             filename=f"file-{doc_id}.txt",
             file_path=f"uploads/file-{doc_id}.txt",
             status=status,
@@ -956,6 +962,7 @@ class RagServiceMaxSearchableDocumentsTest(unittest.TestCase):
         self.milvus = Mock(spec=MilvusRepository)
         self.milvus.search.return_value = []
         self.documents = Mock(spec=DocumentRepository)
+        self.documents.get_content_revisions.side_effect = lambda ids, owner: {i: 0 for i in ids}
         self.documents.get_success_document_ids.return_value = []
 
     def _service(
@@ -981,6 +988,7 @@ class RagServiceMaxSearchableDocumentsTest(unittest.TestCase):
     def _doc(self, doc_id: int, status: str) -> Document:
         return Document(
             id=doc_id,
+            content_revision=0,
             filename=f"file-{doc_id}.txt",
             file_path=f"uploads/file-{doc_id}.txt",
             status=status,
@@ -1017,6 +1025,7 @@ class RagServiceMaxSearchableDocumentsTest(unittest.TestCase):
         self.milvus.search.assert_called_once_with(
             _QUERY_VECTOR, limit=10, expr="page_id in [10,9,8]"
         )
+        self.documents.get_content_revisions.assert_called_once_with([10, 9, 8], "plugin-a")
         module_logger.warning.assert_called_once()
         self.assertIn("超过检索上限", module_logger.warning.call_args.args[0])
 

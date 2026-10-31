@@ -199,6 +199,7 @@ class PluginIsolationServiceTest(unittest.TestCase):
     def setUp(self) -> None:
         """构造统一 Mock 依赖集合（各测试按需复用）。"""
         self.document_repo = Mock(spec=DocumentRepository)
+        self.document_repo.get_content_revisions.side_effect = lambda ids, owner: {i: 0 for i in ids}
         self.milvus = Mock(spec=MilvusRepository)
         self.embedding = Mock(spec=EmbeddingClient)
         self.embedding.embed.return_value = [_QUERY_VECTOR]
@@ -435,6 +436,7 @@ class PluginIsolationServiceTest(unittest.TestCase):
     def _doc(self, doc_id: int, status: str) -> Document:
         return Document(
             id=doc_id,
+            content_revision=0,
             plugin_id=PLUGIN_A,
             filename=f"file-{doc_id}.txt",
             file_path=f"uploads/file-{doc_id}.txt",

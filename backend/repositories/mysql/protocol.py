@@ -219,6 +219,10 @@ class DocumentRepository(Protocol):
             DocumentOperationError: SQLAlchemy 执行异常。
         """
 
+    def get_content_revisions(self, document_ids: list[int], plugin_id: str) -> dict[int, int]:
+        """One SQL snapshot of owned SUCCESS document revisions; missing IDs omitted."""
+        ...
+
     def transition_status(
         self, document_id: int, plugin_id: str, expected: set[str], status: str,
         *, embedding_fingerprint: str | None = None,

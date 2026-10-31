@@ -326,6 +326,18 @@ class DocumentRepositoryImpl(DocumentRepository):
                 f"plugin_id={plugin_id!r}, error={_db_error_brief(e)}"
             ) from e
 
+    def get_content_revisions(self, document_ids: list[int], plugin_id: str) -> dict[int, int]:
+        if not document_ids:
+            return {}
+        try:
+            with self._session_factory() as session:
+                return dict(session.execute(select(Document.id, Document.content_revision).where(
+                    Document.id.in_(document_ids), Document.plugin_id == plugin_id,
+                    Document.status == DocumentStatus.SUCCESS,
+                )).all())
+        except (OperationalError, DBAPIError) as exc:
+            raise DocumentOperationError("document revision snapshot failed") from exc
+
     def transition_status(
         self, document_id: int, plugin_id: str, expected: set[str], status: str,
         *, embedding_fingerprint: str | None = None,

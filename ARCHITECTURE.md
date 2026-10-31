@@ -146,6 +146,7 @@ Workspace 隔离不只依赖一个过滤点：
 | 文件 | `filename`、`file_path`、`file_size`、`mime_type` |
 | 来源 | `title`、`url`、`source_type` (`upload` / `webpage`) |
 | 生命周期 | `status`、`chunk_count`、`error_message` |
+| 版本 | `content_revision`，`0015` 迁移增加；应用通过 SQLAlchemy 更新文档时以 SQL 表达式递增 |
 | 时间 | `created_at`、`updated_at` |
 
 数据库还保留旧迁移产生的 `user_id NOT NULL DEFAULT 0` 列以支持回滚；当前 ORM 和业务归属不使用该列。
@@ -245,12 +246,15 @@ POST /rag/ask
   → 按来源逐块填充最多 4000 字符 Context（完整来源头 + 正文片段）
   → System Prompt 约束回答范围、引用编号和资料中的指令
   → 当前 Workspace 配置的 OpenAI-compatible LLM
+  → 批量复查引用文档归属、SUCCESS 状态及检索时版本，失效则丢弃整份回答
   → answer + sources
 ```
 
 没有检索结果、正文为空或预算不足以容纳正文时不调用 LLM，直接返回固定提示和空 Sources。Sources 只包含实际进入 Context 的正文来源，编号与 Context 一致；重复 chunk ID 不重复占用预算。标题和 URL 在提示词内压缩并限制长度，API 返回的来源元数据保持原样。最后一个正文片段可以截短，来源头不会被截断。
 
 回答仅使用本次 retrieval 结果；服务端不读取扩展里的历史会话。空库、越权及非 SUCCESS 文档在调用 Embedding 前就返回或报错。检索和回答的常规日志不记录问题原文。
+
+检索先批量读取有界文档范围的 `content_revision`，向量召回后只保留版本仍相同的 SUCCESS 文档；版本随结果在服务端传递，搜索响应 JSON 不包含该内部字段。LLM 完成后再次校验实际进入提示词的全部来源，任一文档删除、不可用或更新时，返回空 Sources 和重问提示。SQLAlchemy 的 Document UPDATE 通过 SQL 表达式原子递增版本，覆盖 ORM 写入和 Worker 的 Core 状态更新；原始 SQL 或绕过生命周期的外部向量修改不受该机制保障。这是查询时校验，不是跨模型调用持有数据库锁，最后校验后的变化仍可能发生。
 
 当前不启用固定相似度拒答阈值。评测工具中的阈值分析是探索性结果，需在真实数据和所选 Embedding 模型上验证；错误前提问题可能需要检索证据来反驳，不能一律按无答案过滤。提示词约束也不代表已经验证了真实模型的拒答或抗指令干扰能力。
 

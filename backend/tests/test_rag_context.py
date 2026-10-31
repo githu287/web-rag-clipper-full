@@ -14,7 +14,7 @@ from backend.services.rag_context import build_context
 def chunk(index=0, text="evidence", title="Title", url="https://example.com"):
     return RagSearchResult(
         id=f"1_{index}", page_id=1, chunk_index=index, chunk_text=text,
-        distance=0.9, document_id=1, filename="note.md", status="SUCCESS",
+        distance=0.9, document_id=1, filename="note.md", status="SUCCESS", content_revision=0,
         created_at=datetime(2026, 1, 1), title=title, url=url, source_type="webpage",
     )
 
@@ -22,7 +22,7 @@ def chunk(index=0, text="evidence", title="Title", url="https://example.com"):
 def answer(results, budget=4000):
     llm = Mock(generate=Mock(return_value="answer [Source 1]"))
     documents = Mock()
-    documents.get_documents_by_ids.return_value = [SimpleNamespace(id=1, status="SUCCESS")]
+    documents.get_documents_by_ids.return_value = [SimpleNamespace(id=1, status="SUCCESS", content_revision=0)]
     service = RagAnswerService(
         SimpleNamespace(search=AsyncMock(return_value=results)), llm, documents,
         max_context_chars=budget,

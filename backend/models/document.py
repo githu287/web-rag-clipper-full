@@ -37,7 +37,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Final
 
-from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, Text, func, text
+from sqlalchemy import BigInteger, DateTime, ForeignKey, Index, Integer, String, Text, func, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .base import Base
@@ -115,6 +115,14 @@ class Document(Base):
         nullable=False,
         default=0,
         server_default="0",
+    )
+
+    # Atomic SQL increment on every application UPDATE, including Core worker
+    # claims and ORM success/metadata writes. Timestamps can collide within a
+    # second; this counter also detects a full PROCESSING -> SUCCESS cycle.
+    content_revision: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=0, server_default="0",
+        onupdate=text("content_revision + 1"),
     )
 
     # ---- Phase 2.10 Step 2 新增：文件上传元数据 ----

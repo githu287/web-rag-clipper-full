@@ -2,7 +2,7 @@
 
 Blocking model/repository calls run in threads. Only chunks with body text
 actually included in the prompt become sources; empty evidence skips the LLM.
-Source ownership/status is rechecked after generation before returning any answer.
+Source ownership/status/revision is rechecked after generation before returning any answer.
 """
 
 from __future__ import annotations
@@ -24,6 +24,7 @@ logger: logging.Logger = logging.getLogger(__name__)
 # 无检索结果时的固定回答（不调用 LLM；HTTP 200）
 _EMPTY_ANSWER: Final[str] = "当前内容中没有足够信息回答该问题。"
 _UNAVAILABLE_ANSWER: Final[str] = "引用文档已删除或暂不可用，本次回答已丢弃，请重新提问。"
+_CHANGED_ANSWER: Final[str] = "引用文档已更新，本次回答已丢弃，请重新提问。"
 
 # Context 最大字符数默认值（防 Prompt 无限增长；允许测试注入更小值验证截断）
 _DEFAULT_MAX_CONTEXT_CHARS: Final[int] = 4000
@@ -109,7 +110,7 @@ class RagAnswerService:
             RagAskResponse：
                 answer  — LLM 回答；无检索结果时为固定提示语（不调用 LLM）。
                 sources — 引用来源列表（来自真实 retrieval result；无结果时空列表）。
-                生成期间任一引用文档已删除或非 SUCCESS 时，丢弃整份回答并提示重问。
+                生成期间任一引用文档已删除、非 SUCCESS 或版本变化时，丢弃整份回答并提示重问。
 
         Raises:
             ValueError: query 为空字符串（service 层防御）。
@@ -189,6 +190,15 @@ class RagAnswerService:
         if not set(source_ids).issubset(available_ids):
             logger.info("RagAnswerService.ask: source unavailable after generation; answer discarded")
             return RagAskResponse(answer=_UNAVAILABLE_ANSWER, sources=[])
+
+        current_revisions = {document.id: document.content_revision for document in documents}
+        if any(
+            result.content_revision is None
+            or current_revisions[source.document_id] != result.content_revision
+            for result, source in zip(included_results, sources)
+        ):
+            logger.info("RagAnswerService.ask: source revision changed; answer discarded")
+            return RagAskResponse(answer=_CHANGED_ANSWER, sources=[])
 
         return RagAskResponse(answer=answer, sources=sources)
 

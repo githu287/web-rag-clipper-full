@@ -50,6 +50,7 @@ def _make_document(
 ) -> Document:
     return Document(
         id=doc_id,
+        content_revision=0,
         plugin_id="plugin-53",
         filename="clip.html",
         file_path="/tmp/clip.html",
@@ -83,6 +84,7 @@ def _make_result(
         chunk_text=chunk_text,
         distance=distance,
         document_id=document_id,
+        content_revision=0,
         filename="clip.html",
         status=DocumentStatus.SUCCESS,
         created_at=datetime(2026, 8, 23, 10, 0, 0),
@@ -512,6 +514,25 @@ class RagAnswerServiceTest(unittest.TestCase):
         self.document_repository.get_documents_by_ids.side_effect = read_documents
         response = self.ask("问题", plugin_id="owner")
         self.assertEqual(response.answer, self.llm_client.generate.return_value)
+
+    def test_changed_revision_discards_entire_answer_including_other_valid_sources(self) -> None:
+        self.rag_service.search.return_value = [
+            _make_result(), _make_result(pk="54_0", page_id=54, document_id=54),
+        ]
+        changed = _make_document(doc_id=54)
+        changed.content_revision = 2
+        self.document_repository.get_documents_by_ids.return_value = [_make_document(), changed]
+        response = self.ask("问题", plugin_id="owner")
+        self.assertEqual(response.sources, [])
+        self.assertIn("引用文档已更新", response.answer)
+
+    def test_missing_revision_is_not_treated_as_legacy_zero(self) -> None:
+        result = _make_result()
+        result.content_revision = None
+        self.rag_service.search.return_value = [result]
+        response = self.ask("问题", plugin_id="owner")
+        self.assertEqual(response.sources, [])
+        self.assertIn("本次回答已丢弃", response.answer)
 
 
 if __name__ == "__main__":
