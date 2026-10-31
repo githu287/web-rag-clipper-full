@@ -70,13 +70,15 @@ def disagreement(reference, hypothesis):
 
 def compare_reference_text(reference, hypothesis):
     """Chinese-first CER from independent text; never manufacture subtitle times."""
+    if "\ufffd" in reference:
+        raise ValueError("Reference contains Unicode replacement characters; repair its source encoding before scoring")
     def characters(text):
         text = unicodedata.normalize("NFKC", text).casefold().replace("−", "-")
         result = []
         for index, char in enumerate(text):
             previous = text[index - 1] if index else ""
             following = text[index + 1] if index + 1 < len(text) else ""
-            if (unicodedata.category(char)[0] in ("L", "N") or char in "%‰°"
+            if (unicodedata.category(char)[0] in ("L", "N") or char in "%‰°\ufffd"
                 or (char in ".:/" and previous.isdigit() and following.isdigit())
                 or (char in "+-" and following.isdigit())):
                 result.append(char)

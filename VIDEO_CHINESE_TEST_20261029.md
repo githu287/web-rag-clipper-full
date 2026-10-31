@@ -69,12 +69,12 @@
 
 ```powershell
 .venv/Scripts/python.exe scripts/check_video_quality_live.py --help
-.venv/Scripts/python.exe scripts/check_video_quality_live.py .venv/runtime/my-chinese/manifest.json --workspace-id <已有视频配置的空间ID> --allow-paid --with-asr --max-segments 20 --output .venv/runtime/my-chinese/report.json
+.venv/Scripts/python.exe scripts/check_video_quality_live.py .venv/runtime/my-chinese/manifest.json --workspace-id <已有视频配置的空间ID> --allow-paid --with-asr --max-segments 20 --max-questions 6 --output .venv/runtime/my-chinese/report.json
 ```
 
 文字范围应由可核对素材明确设定，不可挑选识别正确的句子来宣传全片准确。`reference_text` 与 `reference_vtt` 二选一；参考内容、范围、时长和阈值在收费调用前校验。工具不修改Workspace、不入库，真实API链路另测。
 
-仓库保留不含媒体与第三方全文的 [中文用例清单](evaluation/datasets/video_zh_eval.json)：4个来源、12个事实/未知问题、初始差异阈值与原文引用要求。按来源准备 `evaluation/private/video-zh/` 中的对应文件后可直接作为维护脚本的manifest执行；真实结果仍需人工审阅，不以关键词匹配替代语义核对。媒体未准备时会在调用模型前失败，不会悄悄改用合成语音。
+仓库保留不含媒体与第三方全文的 [中文用例清单](evaluation/datasets/video_zh_eval.json)：最初4个来源、12个事实/未知问题，后扩展为16问，包含初始差异阈值与原文引用要求。按来源准备 `evaluation/private/video-zh/` 中的对应文件后可作为维护脚本的manifest执行；扩展清单每个素材最多5问，需要显式设置 `--max-questions 6`，默认仍限3问，最高6问，超预算在任何收费调用前拒绝。每问可能包含检索、草稿和引用核对等多次云端请求。真实结果仍需人工审阅，不以关键词匹配替代语义核对。媒体未准备时会在调用模型前失败，不会悄悄改用合成语音。
 
 忽略目录 `.venv/runtime/video-chinese-20261029/` 保存 `baseline-api.json`（含边界失败）、`final-long-api.json`（含初轮格式/限流失败）、`qa-long-final.json`、`qa-final-replay.json`、`wps-api.json`、`quality-runner-chinese.json`、文字参照指标、`grounding-controls-final.json`、`browser-chinese-live.json` 与截图。完整第三方实录、原片和Key不入Git。
 

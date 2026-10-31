@@ -84,6 +84,56 @@ def test_failed_overview_retries_only_overview(service, media):
     assert view["reused"] == {"asr": 2, "summary": 2} and view["unknown_calls"] == 1
 
 
+def test_thirty_minute_resume_preserves_tail_evidence_and_matches_uninterrupted_result(service, monkeypatch):
+    """Distinct content at every cut detects duplicated/skipped cached sections."""
+    service.settings.video_segment_seconds = 90
+    monkeypatch.setattr("backend.workers.video_worker.inspect_video", lambda *_: VideoInfo(1800, True))
+    def derive(_source, output, start, *_args, **_kwargs):
+        output.write_text(str(int(start // 90)))
+    monkeypatch.setattr("backend.workers.video_worker.make_audio", derive)
+    monkeypatch.setattr("backend.workers.video_worker.make_segment", derive)
+
+    def distinct_clients(fail_at=None):
+        cloud, asr = Mock(), Mock()
+        def transcribe(path, *_args):
+            part = int(path.read_text())
+            return [{"start_seconds": .1, "end_seconds": 89.8, "text": f"第{part + 1}段独立事实"}], {"duration_seconds": 90}
+        def summarize(path, *_args):
+            part = int(path.read_text())
+            if part == fail_at:
+                raise VideoError("controlled pre-provider failure", 502)
+            return f"第{part + 1}段独立总结", {"total_tokens": 100 + part}
+        asr.transcribe.side_effect = transcribe
+        cloud.summarize.side_effect = summarize
+        cloud.combine.side_effect = lambda summaries, *_: ("\n".join(summaries), {"total_tokens": 50})
+        return cloud, asr
+
+    job = setup(service)
+    cloud, asr = distinct_clients(fail_at=10)
+    VideoWorker(service, cloud, asr).run_once()
+    failed = service.repo.get("a", job.id)
+    assert processing_view(failed.processing_state)["completed"] == {"asr": 11, "summary": 10}
+    restarted = VideoSummaryService(VideoRepository(service.repo.sessions.kw["bind"]), service.settings)
+    restarted.retry("a", job.id)
+    retry_cloud, retry_asr = distinct_clients()
+    VideoWorker(restarted, retry_cloud, retry_asr).run_once()
+    done = restarted.repo.get("a", job.id)
+    resumed = json.loads(done.result)
+    ledger = processing_view(done.processing_state)
+    assert retry_asr.transcribe.call_count == 9 and retry_cloud.summarize.call_count == 10
+    assert retry_cloud.combine.call_count == 1 and ledger["reused"] == {"asr": 11, "summary": 10}
+    assert ledger["known_usage"] == {"video": {"total_tokens": 2240}, "asr": {"duration_seconds": 1800}}
+    assert ledger["unknown_calls"] == 1
+    assert resumed["transcript"]["sentences"][-1] == {
+        "id": 20, "start_seconds": 1710.1, "end_seconds": 1799.8, "text": "第20段独立事实"}
+    baseline_job = setup(service)
+    baseline_cloud, baseline_asr = distinct_clients()
+    VideoWorker(service, baseline_cloud, baseline_asr).run_once()
+    baseline = json.loads(service.repo.get("a", baseline_job.id).result)
+    assert resumed == baseline  # Including all chapter/ASR times and the final summary.
+    assert not list(service.root.iterdir())
+
+
 def test_overview_checkpoint_survives_final_result_commit_failure(service, media, monkeypatch):
     job = setup(service); cloud, asr = clients()
     finish = service.repo.finish

@@ -51,6 +51,34 @@ def test_chinese_character_scoring_keeps_negations_names_and_numeric_errors():
         compare_reference_text("...", "捏造")
 
 
+def test_chinese_scoring_rejects_damaged_reference_and_counts_unknown_asr_characters():
+    with pytest.raises(ValueError, match="replacement characters"):
+        compare_reference_text("北\ufffd京", "北京")
+    score = compare_reference_text("北京", "北\ufffd京")
+    assert score["edit_distance"] == 1 and score["character_error_rate"] == .5
+
+
+def test_damaged_text_reference_stops_paid_runner_before_config_or_cloud(tmp_path, monkeypatch):
+    import json
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+    from scripts import check_video_quality_live as runner
+    manifest = tmp_path / "manifest.json"
+    (tmp_path / "reference.txt").write_text("北\ufffd京", encoding="utf-8")
+    manifest.write_text(json.dumps([{"file": "fixture.mp4", "reference_text": "reference.txt"}]), encoding="utf-8")
+    service = SimpleNamespace(settings=SimpleNamespace(video_segment_seconds=90), config=Mock())
+    cloud = Mock()
+    monkeypatch.setattr("backend.core.di.get_video_service", lambda: service)
+    monkeypatch.setattr("backend.clients.video.CloudVideoClient", cloud)
+    monkeypatch.setattr("backend.services.video_media.inspect_video", lambda *_: SimpleNamespace(duration=2, has_audio=True))
+    monkeypatch.setattr("sys.argv", ["quality", str(manifest), "--workspace-id", "fixture", "--allow-paid", "--with-asr"])
+    with pytest.raises(SystemExit) as caught:
+        runner.main()
+    assert caught.value.code == 2
+    service.config.assert_not_called()
+    cloud.assert_not_called()
+
+
 @pytest.mark.parametrize("reference,actual", [("退款80%", "退款80"), ("参数0.8", "参数08"), ("温度-3度", "温度3度"), ("比例1:2", "比例12")])
 def test_chinese_scoring_does_not_erase_meaningful_numeric_symbols(reference, actual):
     assert compare_reference_text(reference, actual)["edit_distance"] == 1
@@ -102,3 +130,43 @@ def test_paid_runner_validates_reference_before_cloud_and_reports_scores(tmp_pat
         row = json.loads(output.read_text(encoding="utf-8"))["cases"][0]
         assert row["reference_metrics"]["token_error_rate"] == 0
         assert row["transcript"]["usage"]["duration_seconds"] == 2 and row["passed"]
+
+
+@pytest.mark.parametrize("count,budget,exit_code", [(4, None, 2), (5, 6, 0), (6, 6, 0), (7, 6, 2), (1, 7, 2)])
+def test_paid_runner_extended_chinese_cases_require_explicit_bounded_qa_budget(tmp_path, monkeypatch, count, budget, exit_code):
+    import json
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+    from scripts import check_video_quality_live as runner
+    output, manifest = tmp_path / "report.json", tmp_path / "manifest.json"
+    manifest.write_text(json.dumps([{"file": "fixture.mp4", "questions": [
+        {"query": f"独立问题{i}？", "expected": {"required": [["已核对"]]}} for i in range(count)]}]), encoding="utf-8")
+    cloud = Mock()
+    cloud.summarize.return_value = ("summary", {"total_tokens": 10})
+    history_lengths = []
+    def answer(_evidence, _query, history, _config):
+        history_lengths.append(len(history))
+        return "已核对。[片段 1]", {"total_tokens": 4}
+    cloud.answer.side_effect = answer
+    service = SimpleNamespace(settings=SimpleNamespace(video_segment_seconds=90), config=Mock(return_value={"model": "fixture"}))
+    monkeypatch.setattr("backend.core.di.get_video_service", lambda: service)
+    monkeypatch.setattr("backend.clients.video.CloudVideoClient", lambda: cloud)
+    monkeypatch.setattr("backend.services.video_media.inspect_video", lambda *_: SimpleNamespace(duration=2, has_audio=False))
+    monkeypatch.setattr("backend.services.video_media.make_segment", lambda *_, **kw: None)
+    args = ["quality", str(manifest), "--workspace-id", "fixture", "--allow-paid", "--output", str(output)]
+    if budget is not None:
+        args += ["--max-questions", str(budget)]
+    monkeypatch.setattr("sys.argv", args)
+    with pytest.raises(SystemExit) as caught:
+        runner.main()
+    assert caught.value.code == exit_code
+    if exit_code == 2:
+        cloud.summarize.assert_not_called()
+        cloud.answer.assert_not_called()
+        service.config.assert_not_called()
+        assert not output.exists()
+    else:
+        assert cloud.answer.call_count == count
+        assert json.loads(output.read_text(encoding="utf-8"))["passed"]
+        # The sixth query has at most the API's ten prior messages.
+        assert history_lengths == list(range(0, count * 2, 2))

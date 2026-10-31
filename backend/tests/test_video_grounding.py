@@ -55,6 +55,8 @@ def test_uncited_unknown_and_unselected_ids_do_not_start_a_verification_call(dra
     review(True, True, ids=[1, 1]), review(True, ids=[2]), review("true"), review(1), review(),
     '{"checks":[{"id":1,"reason":"","supported":true}]}',
     '{"checks":[{"id":1,"reason":true,"supported":true}]}',
+    '{"checks":[{"id":1,"reason":"x","supported":false,"supported":true}]}',
+    '{"checks":[],"checks":[{"id":1,"reason":"x","supported":true}]}',
     json.dumps({"checks": [{"id": 1, "reason": "x" * 201, "supported": True}]})])
 def test_malformed_review_cannot_turn_into_an_approved_answer(decision):
     client = CloudVideoClient()
@@ -159,6 +161,8 @@ def test_unknown_overview_mixed_with_valid_source_is_rejected_locally():
 
 
 @pytest.mark.parametrize("draft", ["plain unchecked draft", "null", "[]", "{}", '{"answers":[]}',
+    '{"answers":[{"question":"first","answer":"first","question":"second","answer":"second"}]}',
+    '{"answers":[],"answers":[{"question":"q","answer":"当前资料无法确认。"}]}',
     '{"answers":["text"]}', '{"answers":[{"question":"q","answer":true}]}',
     '{"answers":[{"question":"q","answer":""}]}', '{"answers":[{"question":"q","answer":"x","extra":1}]}',
     json.dumps({"answers": [{"question": "q", "answer": "x"}] * 7}),

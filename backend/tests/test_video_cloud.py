@@ -88,7 +88,7 @@ def test_long_qa_selects_original_ids_and_adds_both_cloud_usages():
     assert "不能断言转写无误" in client.generate.call_args_list[1].kwargs["system_prompt"]
 
 
-@pytest.mark.parametrize("selection", ['{"chapters":[99]}', '{"chapters":[true]}', '{"chapters":[1,1]}', 'not json', '{"chapters":null}', '{"chapters":[1],"answer":"forged"}'])
+@pytest.mark.parametrize("selection", ['{"chapters":[99]}', '{"chapters":[true]}', '{"chapters":[1,1]}', 'not json', '{"chapters":null}', '{"chapters":[1],"answer":"forged"}', '{"chapters":[],"chapters":[1]}'])
 def test_long_qa_rejects_invalid_selection_without_another_paid_call(selection):
     from unittest.mock import Mock
     client = CloudVideoClient()

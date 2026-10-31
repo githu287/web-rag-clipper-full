@@ -41,6 +41,7 @@ def main():
     parser.add_argument("--workspace-id", required=True, help="Existing Workspace with an independent video model config")
     parser.add_argument("--allow-paid", action="store_true", help="Explicitly enable paid cloud requests")
     parser.add_argument("--max-segments", type=int, default=1, help="Opt-in per-file segment budget, 1..40 (default: 1)")
+    parser.add_argument("--max-questions", type=int, default=3, help="Opt-in per-file paid QA budget, 1..6 (default: 3); each QA may also select and verify evidence")
     parser.add_argument("--with-asr", action="store_true", help="Also pay for online ASR and compare optional reference_vtt subtitles")
     parser.add_argument("--output", type=Path, default=ROOT / ".venv/runtime/video-quality/report.json")
     args = parser.parse_args()
@@ -48,6 +49,8 @@ def main():
         parser.error("Live requests require --allow-paid; no requests sent")
     if not 1 <= args.max_segments <= 40:
         parser.error("--max-segments must be between 1 and 40")
+    if not 1 <= args.max_questions <= 6:
+        parser.error("--max-questions must be between 1 and 6")
     # Imports deliberately follow argument parsing so --help never touches config/services.
     from backend.core.di import get_video_service
     from backend.clients.video import CloudVideoClient
@@ -67,8 +70,8 @@ def main():
         count = math.ceil(info.duration / service.settings.video_segment_seconds)
         if count > args.max_segments:
             parser.error("Fixture exceeds --max-segments; increase the explicit paid-call budget")
-        if len(case.get("questions", [])) > 3:
-            parser.error("At most 3 questions per fixture")
+        if len(case.get("questions", [])) > args.max_questions:
+            parser.error("Fixture exceeds --max-questions; increase the explicit paid QA budget (maximum: 6)")
         if any(q.get("require_asr_citation") is not None and type(q["require_asr_citation"]) is not bool for q in case.get("questions", [])):
             parser.error("require_asr_citation must be a boolean")
         if not args.with_asr and any(q.get("require_asr_citation") for q in case.get("questions", [])):
@@ -85,7 +88,10 @@ def main():
             if not args.with_asr:
                 parser.error("reference_text requires --with-asr")
             plain_reference = (args.manifest.parent / case["reference_text"]).read_text(encoding="utf-8-sig")
-            compare_reference_text(plain_reference, "")  # Validate size/content before any paid call.
+            try:
+                compare_reference_text(plain_reference, "")  # Validate size/content before any paid call.
+            except ValueError as exc:
+                parser.error(str(exc))
         if case.get("asr_expected") and not args.with_asr:
             parser.error("asr_expected requires --with-asr")
         if case.get("reference_vtt"):

@@ -14,6 +14,19 @@ from ..core.video_evidence import continuous_transcript
 
 UNSUPPORTED_ANSWER = "当前回答的引用不足以支持结论，暂时无法可靠确认。请回看原文，或缩小问题范围后重试。"
 
+def structured_json(text):
+    # Default json.loads silently overwrites duplicate fields. A real compound
+    # answer put two question/answer pairs in one object, losing the first.
+    def unique(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("Duplicate JSON field")
+            result[key] = value
+        return result
+    return json.loads(text, object_pairs_hook=unique)
+
+
 PROMPT = """请总结这个视频中的声音和画面。分别列出：
 1. 听到的讲解内容和具体建议；
 2. 看到的画面及可读字幕；
@@ -94,7 +107,7 @@ class CloudVideoClient:
             '先逐字摘出用户的各个问句，分别作答。只返回JSON对象，例如'
             '{"answers":[{"question":"第一问？","answer":"第一问的回答。[原文 1][原文 2]"},'
             '{"question":"第二问？","answer":"当前资料无法确认。"}]}。'
-            'answers含1至6个对象，每个仅有question和answer字符串。不能确认的answer只写“当前资料无法确认。”。不要返回代码围栏或额外字段。'
+            'answers含1至6个对象，每个仅有一对question和answer字符串。两问须用两个独立对象，禁止在同一对象重复question或answer键；重复键将被拒绝。不能确认的answer只写“当前资料无法确认。”。不要返回代码围栏或额外字段。'
         )
         # Explicit citation labels avoid confusing a sentence's array position
         # with its persistent ID. The model does not need to invent time ranges.
@@ -112,7 +125,7 @@ class CloudVideoClient:
             raise VideoError("视频问答超时，请稍后重试", 504)
         draft, usage = self.generate(config, [{"type": "text", "text": data}], lambda: True, timeout_seconds=min(50, remaining), system_prompt=prompt)
         try:
-            result = json.loads(draft)
+            result = structured_json(draft)
             parts = result["answers"]
             if (not isinstance(result, dict) or set(result) != {"answers"} or not isinstance(parts, list)
                 or not 1 <= len(parts) <= 6 or any(not isinstance(p, dict) or set(p) != {"question", "answer"}
@@ -200,7 +213,7 @@ class CloudVideoClient:
             text, usage = self.generate(config, [{"type": "text", "text": data}], lambda: True,
                                         timeout_seconds=min(20, remaining), system_prompt=prompt, max_tokens=768)
             try:
-                decision = json.loads(text)
+                decision = structured_json(text)
                 checks = decision["checks"]
                 if (not isinstance(decision, dict) or set(decision) != {"checks"} or not isinstance(checks, list)
                     or len(checks) != len(candidates) or any(not isinstance(item, dict)
@@ -241,7 +254,7 @@ class CloudVideoClient:
         text, usage = self.generate(config, [{"type": "text", "text": json.dumps(data, ensure_ascii=False)}],
                                     lambda: True, system_prompt=prompt, max_tokens=256, timeout_seconds=30)
         try:
-            selection = json.loads(text)
+            selection = structured_json(text)
             numbers = selection["chapters"]
             valid = {c["number"] for c in evidence["chapters"]}
             if (set(selection) != {"chapters"} or not isinstance(numbers, list) or len(numbers) > len(valid)

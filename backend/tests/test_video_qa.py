@@ -174,7 +174,7 @@ def test_unknown_model_citations_do_not_create_fake_source_ranges(service):
     assert service.ask("a", job.id, {"query": "更细的操作"})["sources"] == []
 
 
-@pytest.mark.parametrize("citation", ["[原文 1-3]", "[原文1–3]", "[原文1至3]", "[原文1、2，3]", "[原文1, 2-3]"])
+@pytest.mark.parametrize("citation", ["[原文 1-3]", "[原文1–3]", "[原文1至3]", "[原文1、2，3]", "[原文1, 2-3]", "[原文 1]至[原文 3]"])
 def test_real_model_range_citations_preserve_original_quotes_and_times(service, citation):
     job = completed(service)
     result = json.loads(service.repo.get("a", job.id).result)
