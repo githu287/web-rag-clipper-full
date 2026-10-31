@@ -228,12 +228,14 @@ def test_real_http_sse_keepalives_stop_without_waiting_for_model_text(stop):
     import threading
     import time
     started = threading.Event()
+    request_started_at = []
     class Handler(BaseHTTPRequestHandler):
         def do_POST(self):
             self.rfile.read(int(self.headers["Content-Length"]))
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
             self.end_headers()
+            request_started_at.append(time.monotonic())
             started.set()
             try:
                 for _ in range(40):
@@ -252,9 +254,16 @@ def test_real_http_sse_keepalives_stop_without_waiting_for_model_text(stop):
     try:
         with pytest.raises(VideoError) as caught:
             CloudVideoClient().generate(config, [], lambda: not started.is_set() if stop == "cancel" else True,
-                                        timeout_seconds=0.2)
+                                        # Cancellation begins only when the local
+                                        # server receives the request. Slow SDK/
+                                        # certificate startup must not expire its
+                                        # deadline before cancellation even exists.
+                                        timeout_seconds=5 if stop == "cancel" else 0.2)
         assert caught.value.status == (409 if stop == "cancel" else 504)
-        assert time.monotonic() - before < 1.5
+        if stop == "cancel":
+            assert started.is_set() and time.monotonic() - request_started_at[0] < 1.5
+        else:
+            assert time.monotonic() - before < 1.5
     finally:
         server.shutdown()
         server.server_close()

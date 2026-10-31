@@ -74,7 +74,9 @@ def test_deadline_stops_silent_socket_without_waiting_for_another_sse_block(mode
 def test_cancellation_during_silent_socket_preserves_cancelled_status():
     with provider("body") as (config, requests, connected):
         with pytest.raises(VideoError) as caught:
-            CloudVideoClient().generate(config, [], lambda: not connected.is_set(), timeout_seconds=0.4)
+            # Exercise cancellation after connection, independently of cold SDK
+            # startup on a busy Windows runner. Deadline tests retain 0.4 seconds.
+            CloudVideoClient().generate(config, [], lambda: not connected.is_set(), timeout_seconds=5)
     assert caught.value.status == 409 and len(requests) == 1
 
 
