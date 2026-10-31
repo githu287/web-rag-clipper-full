@@ -160,6 +160,12 @@ def main():
                 assert "蓝色画面" in page.locator("#video-preview-text").input_value()
                 assert not service.input_path(repository.list("video-fixture")[0].id).exists()
                 done("Actual multipart upload, durable queue and FFmpeg reach a preview without automatic ingestion")
+                expect(page.locator("#video-jobs .video-processing-usage")).to_contain_text("42 token")
+                expect(page.locator("#video-jobs .video-stage-usage summary")).to_have_text("阶段用量记录")
+                page.locator("#video-jobs .video-stage-usage summary").click()
+                expect(page.locator("#video-jobs .video-stage-usage")).to_contain_text("整体摘要")
+                assert "fixture-cloud-key" not in page.locator("#video-jobs").inner_text()
+                done("Durable per-stage usage is visible after completion without exposing private checkpoint text or credentials")
                 page.locator("#video-question").fill("这是什么画面？")
                 page.locator("#video-ask").click()
                 expect(page.locator("#video-chat-messages .assistant")).to_have_count(1)
@@ -328,7 +334,7 @@ def main():
         engine.dispose()
         late_release.set()
         ingest_release.set()
-        (args.artifacts / "report.json").write_text(json.dumps({"checks": checks, "passed": len(checks) == 15, "cloud": "fixture (Omni and ASR)", "ingest": "fixture boundary", "media": "real FFmpeg", "errors": errors}, ensure_ascii=False, indent=2), encoding="utf-8")
+        (args.artifacts / "report.json").write_text(json.dumps({"checks": checks, "passed": len(checks) == 16, "cloud": "fixture (Omni and ASR)", "ingest": "fixture boundary", "media": "real FFmpeg", "errors": errors}, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 if __name__ == "__main__":

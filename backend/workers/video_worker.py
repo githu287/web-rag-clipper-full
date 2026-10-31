@@ -5,9 +5,10 @@ import math
 import signal
 import threading
 
-from ..clients.video import CloudVideoClient
+from ..clients.video import CloudVideoClient, PROMPT
 from ..clients.video_asr import CloudAsrClient, ASR_MODEL
 from ..core.video_errors import VideoError
+from ..core.video_processing import processing_fingerprint
 from ..services.video_links import download_platform
 from ..services.video_media import inspect_video, make_segment, make_audio
 
@@ -58,7 +59,7 @@ class VideoWorker:
             config = self.service.config(job.plugin_id, secret=True)
             stage("读取视频素材", 3)
             # All derived media has a single cleanup scope, also on cancellation/errors.
-            with self.service.working_directory() as directory:
+            with self.service.working_directory(job) as directory:
                 title = job.filename
                 source = self.service.input_path(job.id)
                 if job.source_url:
@@ -67,6 +68,25 @@ class VideoWorker:
                 elif not source.is_file():
                     raise VideoError("原始视频不存在或已过期，请重新上传")
                 info = inspect_video(source, self.settings, alive)
+                fingerprint = processing_fingerprint(source, config, self.settings, alive, info, PROMPT + ASR_MODEL)
+                cached = self.repo.begin_processing(job, fingerprint)
+
+                def checkpoint_call(kind, part, action, prepare=None):
+                    key = f"{kind}:{part}"
+                    if key in cached:
+                        self.repo.reuse_stage(job, key, kind)
+                        return cached[key]["data"], cached[key]["usage"]
+                    if prepare is not None:
+                        prepare()
+                    token = self.repo.start_call(job, kind, part)
+                    try:
+                        data, tokens = action()
+                    except Exception:
+                        self.repo.complete_call(job, token, key, failed=True)
+                        raise
+                    self.repo.complete_call(job, token, key, data=data, usage=tokens)
+                    return data, tokens
+
                 count = math.ceil(info.duration / self.settings.video_segment_seconds)
                 chapters, usage = [], {}
                 transcript = {"status": "disabled", "model": ASR_MODEL, "sentences": [], "usage": {"duration_seconds": 0}}
@@ -80,8 +100,9 @@ class VideoWorker:
                         stage(f"云端原文转写 {index + 1}/{count}", 10 + int(75 * index / count))
                         audio = directory / "audio.wav"
                         try:
-                            make_audio(source, audio, start, end - start, self.settings, alive)
-                            rows, tokens = self.asr_client.transcribe(audio, end - start, config, alive)
+                            rows, tokens = checkpoint_call("asr", index,
+                                lambda: self.asr_client.transcribe(audio, end - start, config, alive),
+                                prepare=lambda: make_audio(source, audio, start, end - start, self.settings, alive))
                             transcript["usage"]["duration_seconds"] += tokens.get("duration_seconds", 0)
                             for row in rows:
                                 transcript["sentences"].append({"id": len(transcript["sentences"]) + 1,
@@ -96,19 +117,22 @@ class VideoWorker:
                         finally:
                             audio.unlink(missing_ok=True)
                     stage(f"分段转码 {index + 1}/{count}", 10 + int(75 * index / count))
-                    make_segment(source, segment, start, end - start, self.settings, alive, has_audio=info.has_audio)
-                    stage(f"云端音视频分析 {index + 1}/{count}", 12 + int(75 * index / count))
-                    text, tokens = self.client.summarize(segment, config, alive)
+                    def prepare_segment():
+                        make_segment(source, segment, start, end - start, self.settings, alive, has_audio=info.has_audio)
+                        stage(f"云端音视频分析 {index + 1}/{count}", 12 + int(75 * index / count))
+                    text, tokens = checkpoint_call("summary", index,
+                        lambda: self.client.summarize(segment, config, alive), prepare=prepare_segment)
                     chapters.append({"start_seconds": start, "end_seconds": round(end, 2), "summary": text})
                     for name, value in tokens.items():
                         usage[name] = usage.get(name, 0) + value
-                    segment.unlink()
+                    segment.unlink(missing_ok=True)
                 if transcript["status"] == "processing":
                     transcript["status"] = "ready" if transcript["sentences"] else "no_speech"
                 overview = chapters[0]["summary"]
                 if count > 1:
                     stage("生成整体摘要", 90)
-                    overview, tokens = self.client.combine([chapter["summary"] for chapter in chapters], config, alive)
+                    overview, tokens = checkpoint_call("overview", None,
+                        lambda: self.client.combine([chapter["summary"] for chapter in chapters], config, alive))
                     for name, value in tokens.items():
                         usage[name] = usage.get(name, 0) + value
                 basis = "云端模型分析视频的声音与画面" if info.has_audio else "云端模型分析画面（未检测到音轨）"

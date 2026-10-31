@@ -31,3 +31,4 @@ class VideoJob(Base):
     expires_at: Mapped[datetime] = mapped_column(DateTime, index=True)
     result: Mapped[str | None] = mapped_column(Text().with_variant(LONGTEXT(), "mysql"), nullable=True)
     error: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    processing_state: Mapped[str | None] = mapped_column(Text().with_variant(LONGTEXT(), "mysql"), nullable=True)

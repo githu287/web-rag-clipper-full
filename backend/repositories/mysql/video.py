@@ -8,6 +8,7 @@ from sqlalchemy.orm import sessionmaker
 from ...models.plugin import PluginStatus
 from ...models.video import VideoJob, VideoModelConfig
 from ...core.video_errors import VideoError
+from ...core.video_processing import load_state, dump_state, settle, reported_usage
 from .workspace_lock import lock_workspace
 
 ACTIVE = ("UPLOADING", "QUEUED", "PROCESSING")
@@ -38,6 +39,9 @@ class VideoRepository:
             self._active(session, owner)
             session.execute(delete(VideoModelConfig).where(VideoModelConfig.plugin_id == owner))
             ids = list(session.scalars(select(VideoJob.id).where(VideoJob.plugin_id == owner, VideoJob.status.in_(ACTIVE))))
+            for job in session.scalars(select(VideoJob).where(VideoJob.id.in_(ids)).with_for_update()):
+                if job.processing_state:
+                    job.processing_state = dump_state(settle(load_state(job.processing_state), "cancelled", clear=True))
             session.execute(update(VideoJob).where(VideoJob.plugin_id == owner, VideoJob.status.in_(ACTIVE)).values(
                 status="CANCELLED", stage="配置已移除，任务取消", lease=None, lease_until=None))
             return ids
@@ -88,6 +92,10 @@ class VideoRepository:
 
     def cancel(self, owner, job_id):
         with self.sessions.begin() as session:
+            self._active(session, owner)
+            job = session.scalar(select(VideoJob).where(VideoJob.id == job_id, VideoJob.plugin_id == owner).with_for_update())
+            if job is not None and job.status in ACTIVE and job.processing_state:
+                job.processing_state = dump_state(settle(load_state(job.processing_state), "cancelled", clear=True))
             changed = session.execute(update(VideoJob).where(VideoJob.id == job_id, VideoJob.plugin_id == owner, VideoJob.status.in_(ACTIVE)).values(status="CANCELLED", stage="已取消", lease=None, lease_until=None))
             if not changed.rowcount:
                 # Completed and already cancelled jobs are idempotent; foreign jobs remain 404.
@@ -103,7 +111,11 @@ class VideoRepository:
         now = datetime.utcnow()
         with self.sessions.begin() as session:
             # Deliberately require manual retry after a crash: never silently bill a second request.
-            session.execute(update(VideoJob).where(VideoJob.status == "PROCESSING", VideoJob.lease_until < now).values(status="FAILED", stage="处理已中断", error="视频处理进程中断，请检查结果后手动重试", lease=None, lease_until=None))
+            for stale in session.scalars(select(VideoJob).where(VideoJob.status == "PROCESSING", VideoJob.lease_until < now).with_for_update()):
+                if stale.processing_state:
+                    stale.processing_state = dump_state(settle(load_state(stale.processing_state), "interrupted"))
+                stale.status, stale.stage, stale.error = "FAILED", "处理已中断", "视频处理进程中断，请检查结果后手动重试"
+                stale.lease, stale.lease_until = None, None
             session.execute(update(VideoJob).where(VideoJob.status == "UPLOADING", VideoJob.created_at < now - timedelta(minutes=15)).values(status="FAILED", stage="上传已中断", error="上传中断，请删除任务后重新上传"))
             ids = list(session.scalars(select(VideoJob.id).where(VideoJob.status == "QUEUED", VideoJob.expires_at > now).order_by(VideoJob.created_at).limit(10)))
             for job_id in ids:
@@ -124,10 +136,72 @@ class VideoRepository:
             return result.rowcount == 1
 
     def finish(self, job, *, result=None, error=None, result_days=7):
-        values = dict(status="FAILED" if error else "SUCCEEDED", stage="处理失败" if error else "总结完成", error=error, result=result)
-        if not error:
-            values.update(progress=100, expires_at=datetime.utcnow() + timedelta(days=result_days))
-        return self.heartbeat(job, **values)
+        def complete(row, state):
+            settle(state, "interrupted", clear=not error)
+            row.status, row.stage, row.error, row.result = "FAILED" if error else "SUCCEEDED", "处理失败" if error else "总结完成", error, result
+            row.lease, row.lease_until = None, None
+            if not error:
+                row.progress, row.expires_at = 100, datetime.utcnow() + timedelta(days=result_days)
+            return True
+        try:
+            return self._processing(job, complete)
+        except VideoError as exc:
+            if exc.status == 409:
+                return False
+            raise
+
+    def _processing(self, job, mutate):
+        with self.sessions.begin() as session:
+            self._active(session, job.plugin_id)
+            row = session.scalar(select(VideoJob).where(VideoJob.id == job.id,
+                VideoJob.plugin_id == job.plugin_id, VideoJob.lease == job.lease,
+                VideoJob.status == "PROCESSING", VideoJob.lease_until > datetime.utcnow(),
+                VideoJob.expires_at > datetime.utcnow()).with_for_update())
+            if row is None:
+                raise VideoError("任务已取消或处理租约已失效", 409)
+            state = load_state(row.processing_state)
+            if row.processing_state is None:
+                state["untracked_attempts"] = max(0, row.attempts - 1)
+            result = mutate(row, state)
+            row.processing_state = dump_state(state)
+            return result
+
+    def begin_processing(self, job, fingerprint):
+        def begin(row, state):
+            if state["fingerprint"] != fingerprint:
+                state["cache"], state["completed"] = {}, {}
+            state["fingerprint"], state["reused"] = fingerprint, {}
+            return state["cache"].copy()
+        return self._processing(job, begin)
+
+    def reuse_stage(self, job, key, kind):
+        def reuse(row, state):
+            if key not in state["cache"]:
+                raise VideoError("阶段检查点已失效", 409)
+            state["reused"][kind] = state["reused"].get(kind, 0) + 1
+        self._processing(job, reuse)
+
+    def start_call(self, job, kind, part):
+        token = str(uuid4())
+        def start(row, state):
+            if len(state["calls"]) >= 2500:
+                raise VideoError("视频阶段调用记录超过上限", 413)
+            state["calls"].append({"id": token, "kind": kind, "part": part,
+                "attempt": row.attempts, "status": "running", "usage": {}})
+        self._processing(job, start)
+        return token
+
+    def complete_call(self, job, token, key, data=None, usage=None, failed=False):
+        def complete(row, state):
+            call = next((c for c in state["calls"] if c["id"] == token and c["status"] == "running"), None)
+            if call is None:
+                raise VideoError("阶段调用记录已失效", 409)
+            call["status"] = "failed" if failed else "completed"
+            call["usage"] = reported_usage(call["kind"], usage or {})
+            if not failed:
+                state["cache"][key] = {"data": data, "usage": call["usage"]}
+                state["completed"][call["kind"]] = state["completed"].get(call["kind"], 0) + 1
+        self._processing(job, complete)
 
     def expired(self):
         with self.sessions() as session:

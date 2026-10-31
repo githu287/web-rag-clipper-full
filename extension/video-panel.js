@@ -241,6 +241,7 @@ const webRagVideoPanel = (() => {
     } catch (error) { if (current(ticket)) status(error.message, true); }
   }
   function renderJobs() {
+    const expandedUsage = new Set(Array.from(el("jobs").querySelectorAll("details[open]")).map(node => node.dataset.job));
     el("jobs").replaceChildren();
     if (!jobs.length) { const p = document.createElement("p"); p.className = "hint"; p.textContent = "还没有视频。第一份笔记，从上方开始。"; el("jobs").append(p); }
     for (const job of jobs) {
@@ -249,6 +250,38 @@ const webRagVideoPanel = (() => {
       const info = document.createElement("p"); info.textContent = `${job.stage} · ${job.progress}%`;
       const progress = document.createElement("progress"); progress.max = 100; progress.value = job.progress; progress.setAttribute("aria-label", "视频处理进度");
       card.append(title, info, progress);
+      if (job.processing) {
+        const state = job.processing, known = state.known_usage || {}, video = known.video || {}, asr = known.asr || {};
+        const reused = Object.values(state.reused || {}).reduce((sum, n) => sum + n, 0);
+        const meter = document.createElement("p"); meter.className = "hint video-processing-usage";
+        const completed = state.completed || {};
+        meter.textContent = `已完成：转写 ${completed.asr || 0} 段、分析 ${completed.summary || 0} 段；本次复用 ${reused} 个阶段。`;
+        const usage = [];
+        if (Number.isFinite(video.total_tokens)) usage.push(`视频模型 ${video.total_tokens} token`);
+        if (Number.isFinite(asr.duration_seconds)) usage.push(`转写 ${asr.duration_seconds} 秒`);
+        if (usage.length) meter.textContent += ` 累计已返回用量：${usage.join("，")}。`;
+        if (state.unknown_calls) meter.textContent += ` 另有 ${state.unknown_calls} 次调用用量未确认，可能已产生费用。`;
+        if (state.untracked_attempts) meter.textContent += ` 另有 ${state.untracked_attempts} 次历史处理未记录阶段用量。`;
+        if (job.status === "FAILED") meter.textContent += " 同素材同配置才可复用，未完成阶段仍会调用云服务。";
+        card.append(meter);
+        if ((state.calls || []).length) {
+          const details = document.createElement("details"); details.className = "video-stage-usage";
+          details.dataset.job = job.id; details.open = expandedUsage.has(job.id);
+          const label = document.createElement("summary"); label.textContent = "阶段用量记录"; details.append(label);
+          const names = { asr: "原文转写", summary: "音视频分析", overview: "整体摘要" };
+          const states = { running: "处理中", completed: "已完成", failed: "失败", interrupted: "已中断", cancelled: "已取消" };
+          for (const call of state.calls.slice(-100)) {
+            const line = document.createElement("p"); line.className = "hint";
+            const use = call.usage || {}, amount = [];
+            if (Number.isFinite(use.total_tokens)) amount.push(`${use.total_tokens} token`);
+            if (Number.isFinite(use.duration_seconds)) amount.push(`${use.duration_seconds} 秒`);
+            line.textContent = `第 ${call.attempt} 次处理 · ${names[call.kind] || "云端处理"}${call.part == null ? "" : ` ${call.part + 1}`} · ${states[call.status] || "未知"} · ${amount.length ? amount.join("，") : "用量未确认"}`;
+            details.append(line);
+          }
+          if (state.calls.length > 100) details.append(document.createTextNode("此处展示最近100次调用。"));
+          card.append(details);
+        }
+      }
       if (job.error) { const error = document.createElement("p"); error.className = "err"; error.textContent = job.error; card.append(error); }
       if (job.status === "QUEUED" && Date.now() - Date.parse(job.created_at) > 60000) {
         const wait = document.createElement("p"); wait.className = "hint"; wait.textContent = "排队超过 1 分钟，请检查后端视频处理服务是否运行。"; card.append(wait);
@@ -257,7 +290,7 @@ const webRagVideoPanel = (() => {
       const choices = [["delete", "删除"]];
       if (job.result) choices.unshift(["preview", "查看总结"]);
       if (pending(job)) choices.unshift(["cancel", "取消处理"]);
-      if (job.status === "FAILED" && job.attempts < 3 && Date.parse(job.expires_at) > Date.now()) choices.unshift(["retry", "重试（可能产生模型用量）"]);
+      if (job.status === "FAILED" && job.attempts < 3 && Date.parse(job.expires_at) > Date.now()) choices.unshift(["retry", job.processing ? "重试（同素材同配置复用已完成阶段）" : "重试（可能产生模型用量）"]);
       for (const [verb, label] of choices) {
         const button = document.createElement("button"); button.type = "button"; button.className = "btn-secondary"; button.textContent = label;
         button.disabled = saving; button.addEventListener("click", () => action(job, verb)); actions.append(button);

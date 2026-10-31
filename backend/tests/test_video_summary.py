@@ -325,5 +325,10 @@ def test_video_migration_round_trip_preserves_workspace(service):
         with Operations.context(MigrationContext.configure(connection)):
             module.downgrade()
             module.upgrade()
+            checkpoint_path = path.with_name("0014_video_processing_state.py")
+            checkpoint_spec = importlib.util.spec_from_file_location("video_checkpoint_migration", checkpoint_path)
+            checkpoint_module = importlib.util.module_from_spec(checkpoint_spec)
+            checkpoint_spec.loader.exec_module(checkpoint_module)
+            checkpoint_module.upgrade()
     configure(service)
     assert service.repo.create("a", "video", "https://www.douyin.com/video/123", 24).status == "QUEUED"

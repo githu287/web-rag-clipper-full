@@ -30,6 +30,7 @@ from backend.models.base import Base
 import backend.models.document  # noqa: F401
 import backend.models.ingest_job  # noqa: F401
 import backend.models.plugin  # noqa: F401
+import backend.models.video  # noqa: F401
 
 # alembic 配置实例
 config = context.config

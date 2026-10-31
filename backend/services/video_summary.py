@@ -13,6 +13,7 @@ from uuid import UUID, uuid4
 from ..core.security import decrypt_api_key, encrypt_api_key
 from ..core.video_errors import VideoError
 from ..core.video_citations import citation_ids
+from ..core.video_processing import processing_view
 from .video_links import normalize_link
 from .video_media import ffmpeg_executable
 from ..clients.video_asr import ASR_MODEL
@@ -118,14 +119,19 @@ class VideoSummaryService:
         return self.directory(job_id) / "source.bin"
 
     @contextmanager
-    def working_directory(self):
-        # Crash leftovers stay inside the retained private root, never system temp.
-        directory = self.directory(str(uuid4()))
+    def working_directory(self, job=None):
+        # Keep derived files under their owning job so task/Workspace removal
+        # also removes files left by a hard-killed worker. Leases use disjoint
+        # subdirectories; an old worker cannot remove its successor's files.
+        directory = (self.directory(job.id) / ("work-" + str(UUID(job.lease)))) if job else self.directory(str(uuid4()))
         directory.mkdir(parents=True, exist_ok=False)
         try:
             yield directory
         finally:
-            shutil.rmtree(directory)
+            try:
+                shutil.rmtree(directory)
+            except FileNotFoundError:
+                pass  # Success/cancellation may already have removed the job directory.
 
     def remove_media(self, job_id):
         directory = self.directory(job_id)
@@ -288,4 +294,5 @@ def job_response(job):
     return {"id": job.id, "filename": job.filename, "source_url": job.source_url, "status": job.status,
             "stage": job.stage, "progress": job.progress, "attempts": job.attempts,
             "created_at": job.created_at.isoformat() + "Z", "expires_at": job.expires_at.isoformat() + "Z",
-            "error": job.error, "result": json.loads(job.result) if job.result else None}
+            "error": job.error, "result": json.loads(job.result) if job.result else None,
+            "processing": processing_view(job.processing_state)}
