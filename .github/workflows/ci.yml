@@ -95,3 +95,5 @@ jobs:
         run: python scripts/check_source_history_browser.py --channel chromium
       - name: Exercise original-question drafts, frozen scopes and late replay responses
         run: python scripts/check_question_replay_browser.py --channel chromium
+      - name: Exercise persisted drafts, reopen, original scopes and Workspace isolation
+        run: python scripts/check_question_drafts_browser.py --channel chromium

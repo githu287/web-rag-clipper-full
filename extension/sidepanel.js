@@ -82,6 +82,9 @@ const els = {
   chatReplayLabel: document.getElementById("chat-replay-label"),
   chatReplayCancel: document.getElementById("chat-replay-cancel"),
   chatReplayNotice: document.getElementById("chat-replay-notice"),
+  chatDraftStatus: document.getElementById("chat-draft-status"),
+  chatDraftFind: document.getElementById("chat-draft-find"),
+  chatDraftList: document.getElementById("chat-draft-list"),
   pluginNameField: document.getElementById("plugin-name-field"),
   pluginNameSaveBtn: document.getElementById("plugin-name-save-btn"),
   pluginNameStatus: document.getElementById("plugin-name-status"),
@@ -126,6 +129,7 @@ let isSending = false;
 let activeChatRequest = null;
 let questionReplayDraft = null;
 let questionComposerOwner = null;
+let questionDraftPersistence = null;
 let clipBusy = false;
 let clipCaptureController = null;
 let clipExtractionToken = 0;
@@ -924,6 +928,7 @@ async function confirmDeletePlugin() {
     stopJobMonitors();
     await webRagApiClient.clearPlugin();
     if (pluginId != null) {
+      await questionDraftController().clearPlugin(pluginId);
       await sessionStore.clearTabBindingsByPlugin(pluginId);
       await sessionStore.clearUploadJob(pluginId);
     }
@@ -1805,8 +1810,95 @@ function scrollToBottom(force) {
 }
 
 // ================================================================ 会话
+function questionDraftController() {
+  if (!questionDraftPersistence) questionDraftPersistence = webRagQuestionDrafts.create({
+    owner: () => {
+      const plugin = webRagApiClient.getPlugin();
+      return { pluginId: plugin.pluginId, pluginSecret: plugin.pluginSecret,
+        sessionId: session && session.pluginId === plugin.pluginId ? session.sessionId : null };
+    },
+    query: () => els.chatTextarea.value,
+    status: text => { els.chatDraftStatus.textContent = text; },
+    restore: draft => {
+      const plugin = webRagApiClient.getPlugin();
+      els.chatTextarea.value = draft.query;
+      questionReplayDraft = { query: draft.query, context: webRagQuestionReplay.context(draft.context),
+        pluginId: plugin.pluginId, pluginSecret: plugin.pluginSecret, sessionId: session.sessionId };
+      updateSendState();
+    },
+  });
+  return questionDraftPersistence;
+}
+
+function persistQuestionDraft() {
+  const plugin = webRagApiClient.getPlugin();
+  if (!session || session.pluginId !== plugin.pluginId) return Promise.resolve(false);
+  const replay = activeQuestionReplay();
+  const context = replay ? replay.context : binding &&
+    (binding.mode === "all" || (!binding.stale && !binding.ingestJobId)) ? webRagQuestionReplay.context(binding) : null;
+  return questionDraftController().save(els.chatTextarea.value, context);
+}
+
+async function findQuestionDrafts() {
+  const plugin = webRagApiClient.getPlugin();
+  const owner = { pluginId: plugin.pluginId, pluginSecret: plugin.pluginSecret, sessionId: session && session.sessionId };
+  const valid = () => {
+    const latest = webRagApiClient.getPlugin();
+    return owner.pluginId === latest.pluginId && owner.pluginSecret === latest.pluginSecret &&
+      session && session.sessionId === owner.sessionId;
+  };
+  try {
+    const drafts = await questionDraftController().list();
+    if (!valid()) return;
+    els.chatDraftList.replaceChildren();
+    els.chatDraftList.hidden = false;
+    if (!drafts.length) els.chatDraftList.textContent = "当前空间暂无未发送草稿";
+    for (const draft of drafts) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "draft-restore-btn";
+      button.textContent = draft.query.slice(0, 80) + " · " + replayScopeLabel(draft.context);
+      button.addEventListener("click", async () => {
+        if (!valid() || els.chatTextarea.readOnly) return;
+        els.chatTextarea.readOnly = true;
+        try {
+          const token = ++contextLoadToken;
+          if (els.chatTextarea.value.trim() && !await persistQuestionDraft()) return;
+          await questionDraftController().flush();
+          const target = await sessionStore.getSession(draft.sessionId);
+          if (!valid() || token !== contextLoadToken || !target || target.pluginId !== owner.pluginId) return;
+          // 同会话重试恢复也不能覆盖新输入。
+          if (target.sessionId === session.sessionId && els.chatTextarea.value.trim()) {
+            els.chatDraftStatus.textContent = "当前输入框已有内容，请先发送或清空";
+            return;
+          }
+          await sessionStore.setCurrentSessionId(owner.pluginId, target.sessionId);
+          if (!valid() || token !== contextLoadToken) return;
+          session = target;
+          questionComposerOwner = null;
+          questionDraftPersistence.activate(null);
+          els.chatTextarea.value = "";
+          questionReplayDraft = null;
+          els.chatDraftList.hidden = true;
+          switchView("chat");
+          renderChat();
+          updateSendState();
+        } catch (_err) {
+          if (valid()) els.chatDraftStatus.textContent = "草稿恢复失败，请点击找回草稿重试";
+        } finally {
+          els.chatTextarea.readOnly = false;
+        }
+      });
+      els.chatDraftList.appendChild(button);
+    }
+  } catch (_err) {
+    if (valid()) els.chatDraftStatus.textContent = "草稿读取失败，请点击找回草稿重试";
+  }
+}
+
 function syncQuestionComposerOwner() {
   const plugin = webRagApiClient.getPlugin();
+  const hadSession = questionComposerOwner && questionComposerOwner.sessionId;
   const next = { pluginId: plugin.pluginId, pluginSecret: plugin.pluginSecret, sessionId: session && session.sessionId };
   const changed = questionComposerOwner && (next.pluginId !== questionComposerOwner.pluginId ||
     next.pluginSecret !== questionComposerOwner.pluginSecret ||
@@ -1815,8 +1907,13 @@ function syncQuestionComposerOwner() {
     els.chatTextarea.value = "";
     questionReplayDraft = null;
     els.chatReplayNotice.hidden = true;
+    els.chatDraftList.hidden = true;
   }
   questionComposerOwner = next;
+  questionDraftController().activate({ ...next,
+    sessionId: session && session.pluginId === plugin.pluginId ? session.sessionId : null });
+  // 首次绑定会话时，用户可能已经开始输入；保留并保存，不让恢复读取覆盖它。
+  if (!changed && !hadSession && next.sessionId && els.chatTextarea.value.trim()) persistQuestionDraft();
   return !changed;
 }
 
@@ -1828,7 +1925,9 @@ function activeQuestionReplay() {
 }
 
 function replayScopeLabel(context) {
-  const title = (context.pageTitle || context.pageUrl || "当时选定的资料").replace(/\s+/g, " ").trim();
+  if (!context) return "原范围不可用，请重新选择提问范围";
+  const title = (typeof context.pageTitle === "string" && context.pageTitle ||
+    typeof context.pageUrl === "string" && context.pageUrl || "当时选定的资料").replace(/\s+/g, " ").trim();
   return context.mode === "all" ? "全部知识库" : "原文档 · " + (title.length > 160 ? title.slice(0, 160) + "…" : title);
 }
 
@@ -1844,6 +1943,7 @@ function prepareQuestionReplay(original) {
   questionReplayDraft = { ...original, pluginId: plugin.pluginId, pluginSecret: plugin.pluginSecret, sessionId: session.sessionId };
   els.chatTextarea.value = original.query;
   updateSendState();
+  persistQuestionDraft();
   els.chatTextarea.focus();
 }
 
@@ -1867,19 +1967,37 @@ async function saveCurrentSession(target = session) {
 
 async function newSession() {
   const plugin = webRagApiClient.getPlugin();
-  if (!plugin.pluginId) return;
-  const created = await sessionStore.createSession(plugin.pluginId, { title: "新会话" });
-  await sessionStore.setCurrentSessionId(plugin.pluginId, created.sessionId);
-  await sessionStore.enforceSessionLimit(plugin.pluginId, created.sessionId);
-  session = created;
-  questionReplayDraft = null;
-  els.chatReplayNotice.hidden = true;
-  // 新建聊天只切换全局 Session；当前 Tab 的网页上下文保持不变。
-  switchView("chat");
-  els.chatTextarea.value = "";
-  renderClipView();
-  renderChat();
-  updateSendState();
+  if (!plugin.pluginId || els.chatTextarea.readOnly) return;
+  const token = ++contextLoadToken;
+  const valid = () => token === contextLoadToken && webRagApiClient.getPlugin().pluginId === plugin.pluginId &&
+    webRagApiClient.getPlugin().pluginSecret === plugin.pluginSecret;
+  els.chatTextarea.readOnly = true;
+  try {
+    if (els.chatTextarea.value.trim() && !await persistQuestionDraft()) return;
+    if (!valid()) return;
+    const created = await sessionStore.createSession(plugin.pluginId, { title: "新会话" });
+    if (!valid()) return;
+    // createSession 保留兼容的返回值；必须确认写入成功才离开现有会话。
+    if (!await sessionStore.getSession(created.sessionId)) throw new Error("session save failed");
+    if (!valid()) return;
+    await sessionStore.setCurrentSessionId(plugin.pluginId, created.sessionId);
+    if (!valid()) return;
+    await sessionStore.enforceSessionLimit(plugin.pluginId, created.sessionId);
+    if (!valid()) return;
+    session = created;
+    questionReplayDraft = null;
+    els.chatReplayNotice.hidden = true;
+    // 新建聊天只切换全局 Session；当前 Tab 的网页上下文保持不变。
+    switchView("chat");
+    els.chatTextarea.value = "";
+    renderClipView();
+    renderChat();
+    updateSendState();
+  } catch (_err) {
+    if (valid()) els.chatDraftStatus.textContent = "无法新建会话，当前输入已保留，请重试";
+  } finally {
+    els.chatTextarea.readOnly = false;
+  }
 }
 
 // ================================================================ 提问
@@ -1899,16 +2017,16 @@ async function sendQuestion() {
     renderWelcomeView();
     return;
   }
-  if (isSending || !session || session.pluginId !== plugin.pluginId) return;
+  if (isSending || els.chatTextarea.readOnly || !session || session.pluginId !== plugin.pluginId) return;
   if (!syncQuestionComposerOwner()) { updateSendState(); return; }
   const replay = activeQuestionReplay();
   if (questionReplayDraft && !replay) { updateSendState(); return; }
   if (!replay && !binding) return;
   const query = els.chatTextarea.value.trim();
   if (!query) return;
-  const context = replay ? { ...replay.context } : webRagQuestionReplay.context(binding);
+  const context = webRagQuestionReplay.context(replay ? replay.context : binding);
   if (!context || (!replay && binding.mode === "current" && (binding.stale || binding.ingestJobId))) {
-    showInlineHint("请先剪藏当前网页后再提问");
+    showInlineHint(replay && !context ? "草稿原范围不可用，请重新选择提问范围" : "请先剪藏当前网页后再提问");
     return;
   }
   isSending = true;
@@ -1925,6 +2043,7 @@ async function sendQuestion() {
   els.chatReplayNotice.hidden = true;
   els.chatTextarea.value = "";
   updateSendState();
+  persistQuestionDraft();
 
   const userMsg = {
     id: sessionStore.newId(),
@@ -2475,6 +2594,7 @@ function updateSendState() {
   updateScopeSelector();
   let disabled = !plugin.pluginId || !session || session.pluginId !== plugin.pluginId || isSending;
   if (!disabled && plugin.apiKeyConfigured === false) disabled = true;
+  if (replay && !webRagQuestionReplay.context(replay.context)) disabled = true;
   if (!disabled && !replay && binding && binding.mode === "current") {
     if (!binding.documentId || binding.stale || binding.ingestJobId) disabled = true;
   }
@@ -2498,11 +2618,13 @@ function bindEvents() {
     questionReplayDraft = null;
     updateSendState();
     switchMode("current");
+    persistQuestionDraft();
   });
   els.scopeAll.addEventListener("click", function () {
     questionReplayDraft = null;
     updateSendState();
     switchMode("all");
+    persistQuestionDraft();
   });
   els.gotoChatBtn.addEventListener("click", function () {
     switchView("chat");
@@ -2591,8 +2713,15 @@ function bindEvents() {
   els.chatTextarea.addEventListener("input", function () {
     els.chatReplayNotice.hidden = true;
     updateSendState();
+    persistQuestionDraft();
   });
-  els.chatReplayCancel.addEventListener("click", () => { questionReplayDraft = null; updateSendState(); });
+  els.chatReplayCancel.addEventListener("click", () => {
+    questionReplayDraft = null; updateSendState(); persistQuestionDraft();
+  });
+  els.chatDraftFind.addEventListener("click", () => {
+    if (!els.chatDraftList.hidden) els.chatDraftList.hidden = true;
+    else findQuestionDrafts();
+  });
   els.chatTextarea.addEventListener("keydown", function (e) {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
@@ -2756,6 +2885,7 @@ async function init() {
     clipCaptureController = null;
     stopJobMonitors();
     if (ctx && ctx.pluginId != null) {
+      await questionDraftController().clearPlugin(ctx.pluginId);
       await sessionStore.clearTabBindingsByPlugin(ctx.pluginId);
       await sessionStore.clearUploadJob(ctx.pluginId);
     }

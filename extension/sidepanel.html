@@ -142,6 +142,11 @@
       </main>
 
       <div id="chat-replay-notice" class="chat-replay-notice" role="status" hidden></div>
+      <div class="chat-draft-tools">
+        <span id="chat-draft-status" role="status"></span>
+        <button type="button" id="chat-draft-find" class="btn-secondary">找回草稿</button>
+      </div>
+      <div id="chat-draft-list" class="chat-draft-list" aria-label="当前空间的未发送草稿" hidden></div>
       <div id="chat-replay-context" class="chat-replay-context" hidden>
         <span id="chat-replay-label"></span>
         <button type="button" id="chat-replay-cancel" class="btn-secondary">取消原范围</button>
@@ -360,6 +365,7 @@
   <script src="video-panel.js"></script>
   <script src="source-check.js"></script>
   <script src="question-replay.js"></script>
+  <script src="question-drafts.js"></script>
   <script src="sidepanel.js"></script>
 </body>
 </html>

@@ -691,6 +691,12 @@ input, textarea {
   overflow-wrap: anywhere;
 }
 .chat-replay-context[hidden] { display: none; }
+.chat-draft-tools { display: flex; align-items: center; gap: 8px; padding: 4px 12px; font-size: 12px; color: var(--text-sub); }
+.chat-draft-tools span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.chat-draft-tools button { flex-shrink: 0; font-size: 12px; }
+.chat-draft-list { max-height: 160px; overflow-y: auto; padding: 8px 12px; font-size: 12px; }
+.chat-draft-list[hidden] { display: none; }
+.draft-restore-btn { display: block; width: 100%; text-align: left; padding: 8px; margin-bottom: 4px; border: 1px solid var(--border); border-radius: 6px; background: white; color: var(--text); cursor: pointer; overflow-wrap: anywhere; }
 .chat-replay-context span { flex: 1; min-width: 0; }
 .chat-replay-context button { flex-shrink: 0; font-size: 12px; }
 .chat-replay-notice { padding: 8px 12px; color: #92400e; background: #fffbeb; font-size: 12px; }

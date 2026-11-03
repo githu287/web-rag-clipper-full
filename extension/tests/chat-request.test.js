@@ -8,7 +8,7 @@ const path = require("node:path");
 const vm = require("node:vm");
 const extensionDir = path.resolve(__dirname, "..");
 const source = fs.readFileSync(path.join(extensionDir, "sidepanel.js"), "utf8").replace(/\r\n/g, "\n");
-const handlers = source.slice(source.indexOf("function syncQuestionComposerOwner("), source.indexOf("// ================================================================ 剪藏\n"));
+const handlers = source.slice(source.indexOf("function questionDraftController("), source.indexOf("// ================================================================ 剪藏\n"));
 const render = source.slice(source.indexOf("function renderChat()"), source.indexOf("function emptyText()"));
 const settle = () => new Promise(resolve => setImmediate(resolve));
 function deferred() {
@@ -30,6 +30,7 @@ async function fixture() {
   const context = vm.createContext({
     console,
     crypto: require("node:crypto").webcrypto,
+    TextEncoder,
     chrome: { storage: { local: {
       async get(key) { return { [key]: clone(values[key]) }; },
       async set(items) {
@@ -45,9 +46,11 @@ async function fixture() {
     session: null,
     binding: { mode: "current", documentId: 101, pageUrl: "https://example.com/a", pageTitle: "Page A" },
     isSending: false, activeChatRequest: null, questionReplayDraft: null, questionComposerOwner: null,
+    questionDraftPersistence: null, contextLoadToken: 0,
     els: {
       chatTextarea: { value: "Question A", focus() {} },
       chatReplayNotice: { hidden: true, textContent: "" },
+      chatDraftStatus: { textContent: "" }, chatDraftList: { hidden: true },
       chatEmpty: { style: {} },
       chatArea: { set innerHTML(_value) { drawn.length = 0; } },
     },
@@ -61,6 +64,7 @@ async function fixture() {
   vm.runInContext(fs.readFileSync(path.join(extensionDir, "config.js"), "utf8"), context);
   vm.runInContext(fs.readFileSync(path.join(extensionDir, "session-store.js"), "utf8") + "\nglobalThis.store = sessionStore;", context);
   vm.runInContext(fs.readFileSync(path.join(extensionDir, "question-replay.js"), "utf8"), context);
+  vm.runInContext(fs.readFileSync(path.join(extensionDir, "question-drafts.js"), "utf8"), context);
   vm.runInContext(render + "\n" + handlers, context);
   const original = await context.store.createSession(pluginId, { title: "新会话" });
   await context.store.setCurrentSessionId(pluginId, original.sessionId);
@@ -264,6 +268,8 @@ async function assertOriginalAnswer(f, content) {
     f.context.session = f.original;
     assert.equal(f.context.syncQuestionComposerOwner(), true);
     assert.equal(f.context.els.chatTextarea.value, "Initial draft");
+    await f.context.questionDraftController().flush();
+    assert.equal((await f.context.questionDraftController().list())[0].query, "Initial draft");
   }
   // Identity may change before async session loading finishes; no send may target the old owner.
   {

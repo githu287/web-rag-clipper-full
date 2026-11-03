@@ -20,6 +20,8 @@ const WEB_RAG_CLIPPER_CONFIG = {
     SESSIONS: "webRagSessions",
     // 会话明细前缀：webRagSession_<sessionId>
     SESSION_PREFIX: "webRagSession_",
+    // 每会话一份未发送草稿；与消息分开，避免迟到的回答覆盖编辑。
+    DRAFT_PREFIX: "webRagQuestionDraft_",
     // Tab → 上下文绑定：{ [tabId]: { pluginId, documentId, pageUrl, pageTitle, mode, stale, updatedAt } }
     // Phase 3.6 Step 2-H：Tab Binding 不再包含 sessionId，只负责网页上下文
     TAB_BINDINGS: "webRagTabBindings",

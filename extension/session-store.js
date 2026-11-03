@@ -166,6 +166,7 @@ const sessionStore = (() => {
     // 避免删除与「读-合并-写」交错后把已删会话又写回存储。
     await withStorageLock(SESSION_PREFIX + sessionId, async function () {
       await chrome.storage.local.remove(SESSION_PREFIX + sessionId);
+      await chrome.storage.local.remove(STORAGE_KEYS.DRAFT_PREFIX + sessionId);
       await withStorageLock(STORAGE_KEYS.SESSIONS, async function () {
         const index = await getSessionIndex();
         if (index[sessionId]) {
@@ -201,6 +202,54 @@ const sessionStore = (() => {
       if (id === keepSessionId) continue;
       await deleteSession(id);
       removed++;
+    }
+  }
+
+  // 草稿与会话删除使用同一把详情锁；删除后迟到的草稿写入不会重建会话。
+  async function saveQuestionDraft(pluginId, sessionId, credentialTag, value) {
+    return withStorageLock(SESSION_PREFIX + sessionId, async function () {
+      const target = await getSession(sessionId);
+      if (!target || target.pluginId !== pluginId) return false;
+      const key = STORAGE_KEYS.DRAFT_PREFIX + sessionId;
+      if (!value || !value.query.trim()) {
+        await chrome.storage.local.remove(key);
+        return true;
+      }
+      // 白名单复制，不保存调用方传入的凭证、模型配置或消息对象。
+      const context = value.context;
+      const validContext = context && (context.mode === "all" ||
+        (context.mode === "current" && Number.isSafeInteger(context.documentId) && context.documentId > 0));
+      await chrome.storage.local.set({ [key]: {
+        pluginId, sessionId, credentialTag, query: value.query, updatedAt: Date.now(),
+        context: validContext ? {
+          mode: context.mode, documentId: context.mode === "all" ? null : context.documentId,
+          pageUrl: typeof context.pageUrl === "string" ? context.pageUrl : null,
+          pageTitle: typeof context.pageTitle === "string" ? context.pageTitle : null,
+        } : null,
+      } });
+      return true;
+    });
+  }
+  async function getQuestionDraft(pluginId, sessionId, credentialTag) {
+    const target = await getSession(sessionId);
+    if (!target || target.pluginId !== pluginId) return null;
+    const key = STORAGE_KEYS.DRAFT_PREFIX + sessionId;
+    const value = (await chrome.storage.local.get(key))[key];
+    if (!value || value.pluginId !== pluginId || value.sessionId !== sessionId ||
+      value.credentialTag !== credentialTag || typeof value.query !== "string" || !value.query.trim()) return null;
+    return value;
+  }
+  async function getQuestionDrafts(pluginId, credentialTag) {
+    const result = [];
+    for (const target of await getSessionsByPlugin(pluginId)) {
+      const draft = await getQuestionDraft(pluginId, target.sessionId, credentialTag);
+      if (draft) result.push(draft);
+    }
+    return result.sort((a, b) => b.updatedAt - a.updatedAt);
+  }
+  async function clearQuestionDrafts(pluginId) {
+    for (const target of await getSessionsByPlugin(pluginId)) {
+      await saveQuestionDraft(pluginId, target.sessionId, "", null);
     }
   }
 
@@ -298,6 +347,10 @@ const sessionStore = (() => {
     deleteSession,
     getSessionsByPlugin,
     enforceSessionLimit,
+    saveQuestionDraft,
+    getQuestionDraft,
+    getQuestionDrafts,
+    clearQuestionDrafts,
     getCurrentSessionId,
     setCurrentSessionId,
     clearCurrentSessionId,
