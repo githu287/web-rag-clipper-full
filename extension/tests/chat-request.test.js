@@ -46,13 +46,15 @@ async function fixture() {
     session: null,
     binding: { mode: "current", documentId: 101, pageUrl: "https://example.com/a", pageTitle: "Page A" },
     isSending: false, activeChatRequest: null, questionReplayDraft: null, questionComposerOwner: null,
-    questionDraftPersistence: null, contextLoadToken: 0,
+    questionDraftPersistence: null, contextLoadToken: 0, chatSessionListToken: 0, deletingChatSessionId: null,
     els: {
       chatTextarea: { value: "Question A", focus() {} },
       chatReplayNotice: { hidden: true, textContent: "" },
       chatDraftStatus: { textContent: "" }, chatDraftList: { hidden: true },
+      chatSessions: { hidden: true }, chatSessionsToggle: { setAttribute() {} },
+      chatSessionList: { replaceChildren() {} }, chatSessionsStatus: { textContent: "" },
       chatEmpty: { style: {} },
-      chatArea: { set innerHTML(_value) { drawn.length = 0; } },
+      chatArea: { replaceChildren() { drawn.length = 0; } },
     },
     updateSendState() {}, renderWelcomeView() {}, showInlineHint() {},
     switchView() {}, renderClipView() {}, scrollToBottom() {},
@@ -97,9 +99,10 @@ async function assertOriginalAnswer(f, content) {
     const gate = f.blockWrite();
     const sending = f.context.sendQuestion();
     await settle();
-    await f.context.newSession();
+    const switching = f.context.newSession();
     f.switchTab();
     gate.resolve();
+    await switching;
     await settle();
     assert.equal(f.calls[0].document_id, 101);
     f.reply.resolve({ answer: "Answer A", sources: [] });
@@ -280,6 +283,58 @@ async function assertOriginalAnswer(f, content) {
     f.context.els.chatTextarea.value = "New workspace question";
     await f.context.sendQuestion();
     assert.equal(f.calls.length, 0);
+  }
+  // A deleted conversation must not reappear after either a success or an error.
+  for (const fail of [false, true]) {
+    const f = await fixture();
+    const sending = f.context.sendQuestion();
+    await settle();
+    await f.context.store.deleteSession(f.original.sessionId, "plugin-a");
+    if (fail) f.reply.reject(new Error("Late failure"));
+    else f.reply.resolve({ answer: "Late deleted answer" });
+    await sending;
+    assert.equal(await f.context.store.getSession(f.original.sessionId), null);
+    assert.notEqual(f.context.session.sessionId, f.original.sessionId);
+    assert.equal(f.context.session.messages.length, 0);
+    assert.equal(f.context.isSending, false);
+    assert.equal(f.calls.length, 1);
+  }
+  // Persistence failure before the model call must keep the input and stop billing.
+  {
+    const f = await fixture();
+    f.context.store.saveSession = async () => false;
+    await f.context.sendQuestion();
+    assert.equal(f.calls.length, 0);
+    assert.equal(f.context.els.chatTextarea.value, "Question A");
+    assert.equal(f.context.session.messages.length, 0);
+    assert.match(f.context.els.chatReplayNotice.textContent, /尚未发送/);
+  }
+  // Conversation navigation cannot bypass draft save failures or ownership.
+  {
+    const f = await fixture();
+    const other = await f.context.store.createSession("plugin-a");
+    const foreign = await f.context.store.createSession("plugin-b");
+    f.context.syncQuestionComposerOwner();
+    await f.context.questionDraftController().flush();
+    await f.context.openChatSession(foreign.sessionId);
+    assert.equal(f.context.session.sessionId, f.original.sessionId);
+    f.context.store.saveQuestionDraft = async () => { throw Error("quota"); };
+    await f.context.openChatSession(other.sessionId);
+    assert.equal(f.context.session.sessionId, f.original.sessionId);
+    assert.equal(f.context.els.chatTextarea.value, "Question A");
+    assert.equal(f.context.els.chatTextarea.readOnly, false);
+    assert.equal(f.calls.length, 0);
+  }
+  // Storage reads can also fail while handling a failed save; keep input and settle.
+  {
+    const f = await fixture();
+    f.context.store.saveSession = async () => false;
+    f.context.store.getSession = async () => { throw Error("storage unavailable"); };
+    await f.context.sendQuestion();
+    assert.equal(f.calls.length, 0);
+    assert.equal(f.context.els.chatTextarea.value, "Question A");
+    assert.equal(f.context.isSending, false);
+    assert.equal(f.context.els.chatReplayNotice.hidden, false);
   }
   console.log("chat request races, original-scope replays, durable question links and credential rotation passed");
 })().catch(error => { console.error(error); process.exitCode = 1; });

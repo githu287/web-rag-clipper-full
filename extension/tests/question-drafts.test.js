@@ -19,7 +19,7 @@ async function fixture() {
       if (fail) throw Error("quota");
       Object.assign(values, clone(items));
     },
-    async remove(key) { if (fail) throw Error("quota"); delete values[key]; },
+    async remove(key) { if (fail) throw Error("quota"); for (const item of Array.isArray(key) ? key : [key]) delete values[item]; },
   } } } });
   for (const name of ["config", "session-store", "question-drafts"]) vm.runInContext(fs.readFileSync(path.join(root, name + ".js"), "utf8"), context);
   const store = vm.runInContext("sessionStore", context);

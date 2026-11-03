@@ -696,6 +696,24 @@ input, textarea {
 .chat-draft-tools button { flex-shrink: 0; font-size: 12px; }
 .chat-draft-list { max-height: 160px; overflow-y: auto; padding: 8px 12px; font-size: 12px; }
 .chat-draft-list[hidden] { display: none; }
+.chat-session-bar { display: flex; align-items: center; gap: 12px; padding: 10px 12px 0; }
+.chat-session-bar > div { flex: 1; min-width: 0; }
+.chat-session-kicker { display: block; font-size: 11px; color: var(--text-sub); margin-bottom: 3px; }
+#chat-session-title { display: block; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-session-bar > button { flex-shrink: 0; font-size: 12px; margin-top: 0; }
+.chat-sessions { flex-shrink: 0; max-height: 36%; overflow-y: auto; margin: 8px 12px 0; padding: 8px; background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); }
+.chat-sessions[hidden] { display: none; }
+.chat-sessions-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--text-sub); font-size: 11px; }
+.chat-sessions-heading button { font-size: 11px; padding: 4px 8px; margin-top: 0; }
+#chat-sessions-status { color: var(--text-sub); font-size: 12px; line-height: 1.5; }
+.chat-session-row { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; padding: 6px; margin-top: 5px; border: 1px solid transparent; border-radius: 6px; }
+.chat-session-row[data-current="true"] { border-color: var(--primary); background: #eff6ff; }
+.chat-session-open { flex: 1; min-width: 0; border: 0; background: transparent; text-align: left; color: var(--text); padding: 4px 0; }
+.chat-session-name { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; line-height: 1.5; }
+.chat-session-meta { display: block; color: var(--text-sub); font-size: 11px; margin-top: 3px; line-height: 1.5; }
+.chat-session-delete { border: 0; background: transparent; color: var(--danger); font-size: 12px; padding: 6px; }
+.chat-session-confirm { flex-basis: 100%; padding: 6px 0; font-size: 12px; line-height: 1.6; }
+.chat-session-confirm button { margin: 6px 6px 0 0; font-size: 12px; }
 .draft-restore-btn { display: block; width: 100%; text-align: left; padding: 8px; margin-bottom: 4px; border: 1px solid var(--border); border-radius: 6px; background: white; color: var(--text); cursor: pointer; overflow-wrap: anywhere; }
 .chat-replay-context span { flex: 1; min-width: 0; }
 .chat-replay-context button { flex-shrink: 0; font-size: 12px; }

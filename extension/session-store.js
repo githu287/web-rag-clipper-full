@@ -16,11 +16,13 @@ const sessionStore = (() => {
   function noop() {}
 
   // 同键「读-改-写」串行化：并发异步调用在 await 处交错时会丢失写入，
-  // 用每键一条 promise 链把临界区排成队列（锁仅覆盖本 JS 上下文）
+  // 本上下文用 promise 队列；支持 Web Locks 时，再串行化不同面板与 Service Worker。
   const storageLocks = {};
   function withStorageLock(key, task) {
     const prev = storageLocks[key] || Promise.resolve();
-    const run = prev.then(task, task);
+    const lockedTask = () => typeof navigator !== "undefined" && navigator.locks
+      ? navigator.locks.request("web-rag-store:" + key, task) : task();
+    const run = prev.then(lockedTask, lockedTask);
     storageLocks[key] = run.then(noop, noop);
     return run;
   }
@@ -83,9 +85,6 @@ const sessionStore = (() => {
     const stored = await chrome.storage.local.get(STORAGE_KEYS.SESSIONS);
     return stored[STORAGE_KEYS.SESSIONS] || {};
   }
-  async function setSessionIndex(index) {
-    await chrome.storage.local.set({ [STORAGE_KEYS.SESSIONS]: index });
-  }
   async function getSession(sessionId) {
     if (!sessionId) return null;
     const stored = await chrome.storage.local.get(SESSION_PREFIX + sessionId);
@@ -101,7 +100,7 @@ const sessionStore = (() => {
       updatedAt: now,
       messages: [],
     };
-    await saveSession(session);
+    if (!await writeSession(session, true)) throw new Error("无法保存新会话");
     return session;
   }
   // 会话详情是整份覆盖写，而消息只有「追加」这一种变更方式，
@@ -130,18 +129,22 @@ const sessionStore = (() => {
   }
 
   async function saveSession(session) {
+    return writeSession(session, false);
+  }
+  async function writeSession(session, create) {
     if (!session || !session.sessionId) return false;
     session.updatedAt = Date.now();
     const detailKey = SESSION_PREFIX + session.sessionId;
     try {
       // 锁顺序固定为「详情 → SESSIONS 索引」，deleteSession 等路径不得反向取锁。
-      await withStorageLock(detailKey, async function () {
+      return await withStorageLock(detailKey, async function () {
         const stored = await getSession(session.sessionId);
+        // 只有 createSession 可以创建；迟到回答、旧面板和配额淘汰后的副本不得重建。
+        if (create ? !!stored : !stored || stored.pluginId !== session.pluginId) return false;
         session.messages = mergeSessionMessages(
           stored && stored.messages,
           session.messages
         ).slice(-MAX_MESSAGES_PER_SESSION);
-        await chrome.storage.local.set({ [detailKey]: session });
         await withStorageLock(STORAGE_KEYS.SESSIONS, async function () {
           const index = await getSessionIndex();
           index[session.sessionId] = {
@@ -151,28 +154,40 @@ const sessionStore = (() => {
             updatedAt: session.updatedAt,
             messageCount: (session.messages || []).length,
           };
-          await setSessionIndex(index);
+          // 消息与索引同批提交，避免详情成功而索引失败后产生无法找回的记录。
+          await chrome.storage.local.set({ [detailKey]: session, [STORAGE_KEYS.SESSIONS]: index });
         });
+        return true;
       });
-      return true;
     } catch (_err) {
       // 写失败不崩溃（仅记录）；调用方负责继续当前会话
       return false;
     }
   }
-  async function deleteSession(sessionId) {
-    if (!sessionId) return;
+  async function deleteSession(sessionId, pluginId) {
+    if (!sessionId) return false;
     // 与 saveSession 保持同一锁序（详情 → SESSIONS 索引），
     // 避免删除与「读-合并-写」交错后把已删会话又写回存储。
-    await withStorageLock(SESSION_PREFIX + sessionId, async function () {
-      await chrome.storage.local.remove(SESSION_PREFIX + sessionId);
-      await chrome.storage.local.remove(STORAGE_KEYS.DRAFT_PREFIX + sessionId);
-      await withStorageLock(STORAGE_KEYS.SESSIONS, async function () {
+    return withStorageLock(SESSION_PREFIX + sessionId, async function () {
+      const target = await getSession(sessionId);
+      if (!target || (pluginId && target.pluginId !== pluginId)) return false;
+      return withStorageLock(STORAGE_KEYS.SESSIONS, async function () {
         const index = await getSessionIndex();
-        if (index[sessionId]) {
+        return withStorageLock(STORAGE_KEYS.CURRENT_SESSION, async function () {
+          const current = await getCurrentSessionMap();
           delete index[sessionId];
-          await setSessionIndex(index);
-        }
+          if (current[target.pluginId] === sessionId) delete current[target.pluginId];
+          // 一次提交删除标记、索引及当前指针；失败时不先清空用户内容。
+          await chrome.storage.local.set({
+            [SESSION_PREFIX + sessionId]: null,
+            [STORAGE_KEYS.DRAFT_PREFIX + sessionId]: null,
+            [STORAGE_KEYS.SESSIONS]: index,
+            [STORAGE_KEYS.CURRENT_SESSION]: current,
+          });
+          // null 已不含内容且 getSession 视为删除；清理键失败也不会暴露旧记录。
+          try { await chrome.storage.local.remove([SESSION_PREFIX + sessionId, STORAGE_KEYS.DRAFT_PREFIX + sessionId]); } catch (_err) {}
+          return true;
+        });
       });
     });
   }
@@ -200,7 +215,7 @@ const sessionStore = (() => {
     for (const id of pluginSessions) {
       if (removed >= excess) break;
       if (id === keepSessionId) continue;
-      await deleteSession(id);
+      await deleteSession(id, pluginId);
       removed++;
     }
   }
@@ -255,7 +270,7 @@ const sessionStore = (() => {
 
   // ------------------------------------------------------------ current session (Phase 3.6 Step 2-H)
   // 每个 Plugin Workspace 只有一个当前 Session（全局聊天）。
-  // Tab 切换不改变 currentSessionId，只有用户点击"+"才创建新 Session。
+  // Tab 切换不改变 currentSessionId；新建、选择或删除会话才改变。
   async function getCurrentSessionMap() {
     const stored = await chrome.storage.local.get(STORAGE_KEYS.CURRENT_SESSION);
     return stored[STORAGE_KEYS.CURRENT_SESSION] || {};
@@ -266,11 +281,14 @@ const sessionStore = (() => {
     return map[pluginId] || null;
   }
   async function setCurrentSessionId(pluginId, sessionId) {
-    if (!pluginId) return;
-    await withStorageLock(STORAGE_KEYS.CURRENT_SESSION, async function () {
+    if (!pluginId) return false;
+    return withStorageLock(STORAGE_KEYS.CURRENT_SESSION, async function () {
+      const target = await getSession(sessionId);
+      if (!target || target.pluginId !== pluginId) return false;
       const map = await getCurrentSessionMap();
       map[pluginId] = sessionId;
       await chrome.storage.local.set({ [STORAGE_KEYS.CURRENT_SESSION]: map });
+      return true;
     });
   }
   async function clearCurrentSessionId(pluginId) {

@@ -85,6 +85,12 @@ const els = {
   chatDraftStatus: document.getElementById("chat-draft-status"),
   chatDraftFind: document.getElementById("chat-draft-find"),
   chatDraftList: document.getElementById("chat-draft-list"),
+  chatSessionTitle: document.getElementById("chat-session-title"),
+  chatSessionsToggle: document.getElementById("chat-sessions-toggle"),
+  chatSessions: document.getElementById("chat-sessions"),
+  chatSessionsRefresh: document.getElementById("chat-sessions-refresh"),
+  chatSessionsStatus: document.getElementById("chat-sessions-status"),
+  chatSessionList: document.getElementById("chat-session-list"),
   pluginNameField: document.getElementById("plugin-name-field"),
   pluginNameSaveBtn: document.getElementById("plugin-name-save-btn"),
   pluginNameStatus: document.getElementById("plugin-name-status"),
@@ -130,6 +136,8 @@ let activeChatRequest = null;
 let questionReplayDraft = null;
 let questionComposerOwner = null;
 let questionDraftPersistence = null;
+let chatSessionListToken = 0;
+let deletingChatSessionId = null;
 let clipBusy = false;
 let clipCaptureController = null;
 let clipExtractionToken = 0;
@@ -1429,7 +1437,7 @@ function renderExtractionDiagnostics(trimmedLength) {
 
 // ================================================================ 聊天渲染
 function renderChat() {
-  els.chatArea.innerHTML = "";
+  els.chatArea.replaceChildren(els.chatEmpty, els.backToBottom);
   if (!session || !session.messages || session.messages.length === 0) {
     els.chatEmpty.style.display = "";
     els.chatEmpty.textContent = emptyText();
@@ -1451,8 +1459,8 @@ function renderChat() {
 
 function emptyText() {
   if (!binding) return "暂无对话";
-  if (binding.mode === "current") return "请先剪藏当前网页";
-  return "当前知识库中暂无可用内容";
+  if (binding.mode === "current" && (!binding.documentId || binding.stale || binding.ingestJobId)) return "请先剪藏当前网页，或选择全部知识库提问";
+  return "暂无对话，输入问题开始聊天";
 }
 
 // 渲染回答中的少量行内 Markdown。所有内容最终都写入 textContent，
@@ -1839,6 +1847,206 @@ function persistQuestionDraft() {
   return questionDraftController().save(els.chatTextarea.value, context);
 }
 
+function chatSessionOwner() {
+  const plugin = webRagApiClient.getPlugin();
+  return { pluginId: plugin.pluginId, pluginSecret: plugin.pluginSecret, sessionId: session && session.sessionId };
+}
+
+function chatSessionOwnerValid(owner, identityOnly) {
+  const plugin = webRagApiClient.getPlugin();
+  return !!owner.pluginId && owner.pluginId === plugin.pluginId && owner.pluginSecret === plugin.pluginSecret &&
+    (identityOnly || owner.sessionId === (session && session.sessionId));
+}
+
+function closeChatSessions() {
+  chatSessionListToken++;
+  els.chatSessions.hidden = true;
+  els.chatSessionsToggle.setAttribute("aria-expanded", "false");
+  els.chatSessionList.replaceChildren();
+  els.chatSessionsStatus.textContent = "";
+}
+
+function applyChatSession(target) {
+  session = target;
+  els.chatTextarea.value = "";
+  questionReplayDraft = null;
+  questionComposerOwner = null;
+  questionDraftController().activate(null);
+  els.chatReplayNotice.hidden = true;
+  els.chatDraftList.hidden = true;
+  closeChatSessions();
+  switchView("chat");
+  renderClipView();
+  renderChat();
+  updateSendState();
+}
+
+async function openChatSession(sessionId, options) {
+  const owner = chatSessionOwner();
+  if (!owner.pluginId || els.chatTextarea.readOnly) return;
+  if (sessionId === owner.sessionId && options && options.restore && els.chatTextarea.value.trim()) {
+    els.chatDraftStatus.textContent = "当前输入框已有内容，请先发送或清空";
+    return;
+  }
+  const token = ++contextLoadToken;
+  const valid = () => token === contextLoadToken && chatSessionOwnerValid(owner);
+  els.chatTextarea.readOnly = true;
+  try {
+    if (els.chatTextarea.value.trim() && !await persistQuestionDraft()) return;
+    await questionDraftController().flush();
+    const target = await sessionStore.getSession(sessionId);
+    if (!valid()) return;
+    if (!target || target.pluginId !== owner.pluginId) {
+      els.chatSessionsStatus.textContent = "会话不存在或不属于当前空间，请刷新列表";
+      return;
+    }
+    if (sessionId === owner.sessionId && !(options && options.restore)) {
+      session = target; closeChatSessions(); switchView("chat"); return;
+    }
+    if (!await sessionStore.setCurrentSessionId(owner.pluginId, sessionId) || !valid()) return;
+    applyChatSession(target);
+  } catch (_err) {
+    if (valid()) els.chatDraftStatus.textContent = "会话切换失败，当前输入已保留，请重试";
+  } finally {
+    els.chatTextarea.readOnly = false;
+  }
+}
+
+async function loadChatSessions() {
+  const owner = chatSessionOwner(), token = ++chatSessionListToken;
+  const valid = () => token === chatSessionListToken && !els.chatSessions.hidden && chatSessionOwnerValid(owner);
+  els.chatSessionList.replaceChildren();
+  els.chatSessionsStatus.textContent = "正在读取会话…";
+  try {
+    const [records, drafts] = await Promise.all([
+      sessionStore.getSessionsByPlugin(owner.pluginId), questionDraftController().list(),
+    ]);
+    if (!valid()) return;
+    const draftIds = new Set(drafts.map(draft => draft.sessionId));
+    els.chatSessionsStatus.textContent = records.length ? "共 " + records.length + " 个会话 · 仅保存在本机" : "暂无历史会话";
+    for (const record of records) {
+      const row = document.createElement("div");
+      row.className = "chat-session-row";
+      row.dataset.sessionId = record.sessionId;
+      row.dataset.current = String(record.sessionId === owner.sessionId);
+      const open = document.createElement("button");
+      open.type = "button"; open.className = "chat-session-open";
+      if (record.sessionId === owner.sessionId) open.setAttribute("aria-current", "true");
+      const title = document.createElement("span");
+      title.className = "chat-session-name";
+      title.textContent = typeof record.title === "string" ? record.title : "未命名会话";
+      open.title = title.textContent;
+      const meta = document.createElement("span"); meta.className = "chat-session-meta";
+      const updated = Number(record.updatedAt);
+      meta.textContent = (Array.isArray(record.messages) ? record.messages.length : 0) + " 条消息" +
+        (draftIds.has(record.sessionId) ? " · 有草稿" : "") +
+        (activeChatRequest && activeChatRequest.target.sessionId === record.sessionId ? " · 回答生成中" : "") +
+        (Number.isFinite(updated) ? " · " + new Date(updated).toLocaleString("zh-CN", {
+          month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit",
+        }) : "");
+      open.append(title, meta);
+      open.addEventListener("click", () => {
+        if (valid() && row.isConnected) openChatSession(record.sessionId);
+      });
+      const remove = document.createElement("button");
+      remove.type = "button"; remove.className = "chat-session-delete"; remove.textContent = "删除";
+      remove.setAttribute("aria-label", "删除会话：" + title.textContent);
+      remove.addEventListener("click", () => {
+        if (!valid() || !row.isConnected || row.querySelector(".chat-session-confirm")) return;
+        const confirm = document.createElement("div"); confirm.className = "chat-session-confirm";
+        confirm.setAttribute("role", "group"); confirm.setAttribute("aria-label", "确认删除此会话");
+        const text = document.createElement("p"); text.textContent = "删除此会话及草稿？知识库文档不受影响。";
+        const yes = document.createElement("button");
+        yes.type = "button"; yes.className = "btn-secondary session-delete-confirm"; yes.textContent = "确认删除";
+        const no = document.createElement("button");
+        no.type = "button"; no.className = "btn-secondary session-delete-cancel"; no.textContent = "取消";
+        no.addEventListener("click", () => { confirm.remove(); remove.focus(); });
+        yes.addEventListener("click", () => {
+          if (valid() && row.isConnected) deleteChatSession(record.sessionId);
+        });
+        confirm.append(text, yes, no); row.appendChild(confirm); yes.focus();
+      });
+      row.append(open, remove); els.chatSessionList.appendChild(row);
+    }
+  } catch (_err) {
+    if (valid()) els.chatSessionsStatus.textContent = "会话读取失败，请点击刷新重试";
+  }
+}
+
+function invalidateDeletedChatRequest(sessionId) {
+  if (activeChatRequest && activeChatRequest.target.sessionId === sessionId) {
+    activeChatRequest.deleted = true;
+    activeChatRequest = null;
+    isSending = false;
+  }
+}
+
+async function recoverDeletedChatSession(sessionId, owner) {
+  if (!chatSessionOwnerValid(owner) || owner.sessionId !== sessionId) return;
+  const token = ++contextLoadToken;
+  const valid = () => token === contextLoadToken && chatSessionOwnerValid(owner);
+  els.chatTextarea.readOnly = true;
+  try {
+    const records = await sessionStore.getSessionsByPlugin(owner.pluginId);
+    if (!valid()) return;
+    const preferred = await sessionStore.getCurrentSessionId(owner.pluginId);
+    if (!valid()) return;
+    const target = records.find(record => record.sessionId === preferred) || records[0] ||
+      await sessionStore.createSession(owner.pluginId, { title: "新会话" });
+    if (!valid()) return;
+    if (!await sessionStore.setCurrentSessionId(owner.pluginId, target.sessionId) || !valid()) return;
+    applyChatSession(target);
+    els.chatDraftStatus.textContent = "原会话已删除，已切换到其他会话";
+  } catch (_err) {
+    if (valid()) {
+      session = null; els.chatTextarea.value = ""; questionReplayDraft = null;
+      renderChat(); updateSendState();
+      els.chatDraftStatus.textContent = "会话已删除，无法读取其他会话，请重试新建";
+    }
+  } finally {
+    els.chatTextarea.readOnly = false;
+  }
+}
+
+async function deleteChatSession(sessionId) {
+  const owner = chatSessionOwner();
+  if (!owner.pluginId || els.chatTextarea.readOnly) return;
+  els.chatTextarea.readOnly = true;
+  deletingChatSessionId = sessionId;
+  try {
+    if (sessionId !== owner.sessionId && els.chatTextarea.value.trim() && !await persistQuestionDraft()) return;
+    await questionDraftController().flush();
+    if (!chatSessionOwnerValid(owner)) return;
+    if (!await sessionStore.deleteSession(sessionId, owner.pluginId)) {
+      els.chatSessionsStatus.textContent = "会话不存在或不属于当前空间，请刷新列表";
+      return;
+    }
+    invalidateDeletedChatRequest(sessionId);
+    if (!chatSessionOwnerValid(owner)) return;
+    if (sessionId === owner.sessionId) await recoverDeletedChatSession(sessionId, owner);
+    else if (!els.chatSessions.hidden) await loadChatSessions();
+  } catch (_err) {
+    if (chatSessionOwnerValid(owner)) els.chatSessionsStatus.textContent = "删除失败，记录已保留，请刷新后重试";
+  } finally {
+    deletingChatSessionId = null;
+    els.chatTextarea.readOnly = false;
+  }
+}
+
+function onChatSessionStorageChanged(changes, area) {
+  if (area !== "local") return;
+  const owner = chatSessionOwner();
+  if (activeChatRequest) {
+    const change = changes[STORAGE_KEYS.SESSION_PREFIX + activeChatRequest.target.sessionId];
+    if (change && change.oldValue && !change.newValue) invalidateDeletedChatRequest(activeChatRequest.target.sessionId);
+  }
+  const change = owner.sessionId && changes[STORAGE_KEYS.SESSION_PREFIX + owner.sessionId];
+  if (change && change.oldValue && !change.newValue && deletingChatSessionId !== owner.sessionId) {
+    fireAndForget(recoverDeletedChatSession(owner.sessionId, owner), "删除会话后切换");
+  }
+  if (changes[STORAGE_KEYS.SESSIONS] && !els.chatSessions.hidden) loadChatSessions();
+}
+
 async function findQuestionDrafts() {
   const plugin = webRagApiClient.getPlugin();
   const owner = { pluginId: plugin.pluginId, pluginSecret: plugin.pluginSecret, sessionId: session && session.sessionId };
@@ -1859,35 +2067,7 @@ async function findQuestionDrafts() {
       button.className = "draft-restore-btn";
       button.textContent = draft.query.slice(0, 80) + " · " + replayScopeLabel(draft.context);
       button.addEventListener("click", async () => {
-        if (!valid() || els.chatTextarea.readOnly) return;
-        els.chatTextarea.readOnly = true;
-        try {
-          const token = ++contextLoadToken;
-          if (els.chatTextarea.value.trim() && !await persistQuestionDraft()) return;
-          await questionDraftController().flush();
-          const target = await sessionStore.getSession(draft.sessionId);
-          if (!valid() || token !== contextLoadToken || !target || target.pluginId !== owner.pluginId) return;
-          // 同会话重试恢复也不能覆盖新输入。
-          if (target.sessionId === session.sessionId && els.chatTextarea.value.trim()) {
-            els.chatDraftStatus.textContent = "当前输入框已有内容，请先发送或清空";
-            return;
-          }
-          await sessionStore.setCurrentSessionId(owner.pluginId, target.sessionId);
-          if (!valid() || token !== contextLoadToken) return;
-          session = target;
-          questionComposerOwner = null;
-          questionDraftPersistence.activate(null);
-          els.chatTextarea.value = "";
-          questionReplayDraft = null;
-          els.chatDraftList.hidden = true;
-          switchView("chat");
-          renderChat();
-          updateSendState();
-        } catch (_err) {
-          if (valid()) els.chatDraftStatus.textContent = "草稿恢复失败，请点击找回草稿重试";
-        } finally {
-          els.chatTextarea.readOnly = false;
-        }
+        if (valid()) await openChatSession(draft.sessionId, { restore: true });
       });
       els.chatDraftList.appendChild(button);
     }
@@ -1908,6 +2088,7 @@ function syncQuestionComposerOwner() {
     questionReplayDraft = null;
     els.chatReplayNotice.hidden = true;
     els.chatDraftList.hidden = true;
+    closeChatSessions();
   }
   questionComposerOwner = next;
   questionDraftController().activate({ ...next,
@@ -1948,7 +2129,7 @@ function prepareQuestionReplay(original) {
 }
 
 async function saveCurrentSession(target = session) {
-  if (!target) return;
+  if (!target) return false;
   const firstUser = target.messages.find(function (m) {
     return m.role === "user";
   });
@@ -1963,6 +2144,7 @@ async function saveCurrentSession(target = session) {
       console.error("[web-rag-clipper] session save failed");
     } catch (_err) {}
   }
+  return ok;
 }
 
 async function newSession() {
@@ -1980,19 +2162,10 @@ async function newSession() {
     // createSession 保留兼容的返回值；必须确认写入成功才离开现有会话。
     if (!await sessionStore.getSession(created.sessionId)) throw new Error("session save failed");
     if (!valid()) return;
-    await sessionStore.setCurrentSessionId(plugin.pluginId, created.sessionId);
-    if (!valid()) return;
+    if (!await sessionStore.setCurrentSessionId(plugin.pluginId, created.sessionId) || !valid()) return;
     await sessionStore.enforceSessionLimit(plugin.pluginId, created.sessionId);
     if (!valid()) return;
-    session = created;
-    questionReplayDraft = null;
-    els.chatReplayNotice.hidden = true;
-    // 新建聊天只切换全局 Session；当前 Tab 的网页上下文保持不变。
-    switchView("chat");
-    els.chatTextarea.value = "";
-    renderClipView();
-    renderChat();
-    updateSendState();
+    applyChatSession(created);
   } catch (_err) {
     if (valid()) els.chatDraftStatus.textContent = "无法新建会话，当前输入已保留，请重试";
   } finally {
@@ -2003,12 +2176,31 @@ async function newSession() {
 // ================================================================ 提问
 function chatRequestValid(request) {
   const plugin = webRagApiClient.getPlugin();
-  return activeChatRequest === request && request.target.pluginId === request.pluginId &&
+  return !request.deleted && activeChatRequest === request && request.target.pluginId === request.pluginId &&
     plugin.pluginId === request.pluginId && plugin.pluginSecret === request.pluginSecret;
 }
 
 function chatRequestVisible(request) {
   return chatRequestValid(request) && session && session.sessionId === request.target.sessionId;
+}
+
+async function chatRequestSessionAvailable(request) {
+  if (!chatRequestValid(request)) return false;
+  let stored;
+  try { stored = await sessionStore.getSession(request.target.sessionId); }
+  catch (_err) {
+    if (chatRequestVisible(request)) {
+      els.chatReplayNotice.textContent = "无法确认会话状态，请保留当前面板并重试";
+      els.chatReplayNotice.hidden = false;
+    }
+    return false;
+  }
+  if (!chatRequestValid(request)) return false;
+  if (stored && stored.pluginId === request.pluginId) return true;
+  const visible = chatRequestVisible(request), owner = chatSessionOwner();
+  invalidateDeletedChatRequest(request.target.sessionId);
+  if (visible) await recoverDeletedChatSession(request.target.sessionId, owner);
+  return false;
 }
 
 async function sendQuestion() {
@@ -2055,8 +2247,23 @@ async function sendQuestion() {
   };
   request.target.messages.push(userMsg);
   try {
-    await saveCurrentSession(request.target);
+    const saved = await saveCurrentSession(request.target);
     if (!chatRequestValid(request)) return;
+    if (!saved) {
+      request.target.messages = request.target.messages.filter(message => message.id !== userMsg.id);
+      if (chatRequestVisible(request)) {
+        if (!els.chatTextarea.value.trim()) {
+          els.chatTextarea.value = query;
+          questionReplayDraft = { query, context, pluginId: request.pluginId,
+            pluginSecret: request.pluginSecret, sessionId: request.target.sessionId };
+        }
+        persistQuestionDraft();
+        els.chatReplayNotice.textContent = "会话保存失败，问题尚未发送，请重试";
+        els.chatReplayNotice.hidden = false;
+      }
+      await chatRequestSessionAvailable(request);
+      return;
+    }
     if (chatRequestVisible(request)) {
       session = request.target;
       renderChat();
@@ -2066,6 +2273,7 @@ async function sendQuestion() {
       document_id: request.context.documentId,
     });
     if (!chatRequestValid(request)) return;
+    if (!await chatRequestSessionAvailable(request)) return;
     request.settled = true;
     const answer = data && typeof data.answer === "string" ? data.answer : "";
     const assistantMsg = {
@@ -2079,7 +2287,12 @@ async function sendQuestion() {
       createdAt: Date.now(),
     };
     request.target.messages.push(assistantMsg);
-    await saveCurrentSession(request.target);
+    const answerSaved = await saveCurrentSession(request.target);
+    if (!await chatRequestSessionAvailable(request)) return;
+    if (!answerSaved && chatRequestVisible(request)) {
+      els.chatReplayNotice.textContent = "回答仅保留在当前面板，保存失败，请勿关闭";
+      els.chatReplayNotice.hidden = false;
+    }
     if (chatRequestVisible(request)) {
       session = request.target;
       renderChat();
@@ -2091,6 +2304,7 @@ async function sendQuestion() {
       // 已由 unauthenticatedHandler 处理视图
       return;
     }
+    if (!await chatRequestSessionAvailable(request)) return;
     const text = errorText(err);
     const errorMsg = {
       id: sessionStore.newId(),
@@ -2584,6 +2798,9 @@ function handleSendRequest() {
 function updateSendState() {
   syncQuestionComposerOwner();
   const plugin = webRagApiClient.getPlugin();
+  els.chatSessionTitle.textContent = session && session.pluginId === plugin.pluginId ? session.title || "新会话" : "新会话";
+  els.chatSessionTitle.title = els.chatSessionTitle.textContent;
+  els.chatSessionsToggle.disabled = !plugin.pluginId || !session || session.pluginId !== plugin.pluginId;
   const replay = activeQuestionReplay();
   if (questionReplayDraft && !replay) {
     questionReplayDraft = null;
@@ -2603,6 +2820,18 @@ function updateSendState() {
 
 // ================================================================ 事件绑定
 function bindEvents() {
+  els.chatSessionsToggle.addEventListener("click", () => {
+    if (!els.chatSessions.hidden) closeChatSessions();
+    else {
+      els.chatSessions.hidden = false;
+      els.chatSessionsToggle.setAttribute("aria-expanded", "true");
+      loadChatSessions();
+    }
+  });
+  els.chatSessionsRefresh.addEventListener("click", loadChatSessions);
+  els.chatSessions.addEventListener("keydown", event => {
+    if (event.key === "Escape") { closeChatSessions(); els.chatSessionsToggle.focus(); }
+  });
   els.formRegisterPlugin.addEventListener("submit", function (e) {
     e.preventDefault();
     registerPlugin();
@@ -2879,6 +3108,7 @@ async function validatePlugin() {
 async function init() {
   bindEvents();
   bindRuntimeMessages();
+  chrome.storage.onChanged.addListener(onChatSessionStorageChanged);
   webRagApiClient.setUnauthenticatedHandler(async function (ctx) {
     if (clipCaptureController) clipCaptureController.abort();
     clipExtractionToken += 1;

@@ -130,6 +130,15 @@
 
     <!-- 聊天视图 -->
     <div class="view-inner active" id="view-chat">
+      <div class="chat-session-bar">
+        <div><span class="chat-session-kicker">当前会话</span><strong id="chat-session-title">新会话</strong></div>
+        <button type="button" id="chat-sessions-toggle" class="btn-secondary" aria-controls="chat-sessions" aria-expanded="false">历史会话</button>
+      </div>
+      <section id="chat-sessions" class="chat-sessions" aria-label="当前空间的历史会话" hidden>
+        <div class="chat-sessions-heading"><span>本机最近 20 个会话</span><button type="button" id="chat-sessions-refresh" class="btn-secondary">刷新</button></div>
+        <p id="chat-sessions-status" role="status"></p>
+        <div id="chat-session-list"></div>
+      </section>
       <div class="scope-selector" id="scope-selector">
         <button type="button" class="scope-btn active" id="scope-current">当前网页</button>
         <button type="button" class="scope-btn" id="scope-all">全部知识库</button>

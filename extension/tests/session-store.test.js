@@ -18,7 +18,7 @@ const chrome = {
         Object.assign(values, items);
       },
       async remove(key) {
-        delete values[key];
+        for (const item of Array.isArray(key) ? key : [key]) delete values[item];
       },
     },
   },
@@ -63,14 +63,8 @@ vm.runInContext(
   // ------------------------------------------- saveSession 并发覆盖（roadmap #14）
   {
     const base = [{ id: "m-0", role: "user", content: "第一条", createdAt: 100 }];
-    const shared = {
-      sessionId: "s-concurrent",
-      pluginId: "plugin-a",
-      title: "并发会话",
-      createdAt: 100,
-      updatedAt: 100,
-      messages: base.slice(),
-    };
+    const shared = await store.createSession("plugin-a", { title: "并发会话" });
+    shared.messages = base.slice();
     assert.equal(await store.saveSession(shared), true);
 
     // 两个持有同一份旧副本的调用方各自追加一条消息后同时保存。
@@ -82,7 +76,7 @@ vm.runInContext(
     });
     await Promise.all([store.saveSession(panelOne), store.saveSession(panelTwo)]);
 
-    const saved = await store.getSession("s-concurrent");
+    const saved = await store.getSession(shared.sessionId);
     // 沙箱内构造的数组与宿主数组原型不同，断言用 join 比较值而不是 deepEqual。
     assert.equal(
       saved.messages.map(function (m) { return m.id; }).join(","),
@@ -90,14 +84,14 @@ vm.runInContext(
       "并发保存必须保留双方各自追加的消息"
     );
     assert.equal(
-      values.webRagSessions["s-concurrent"].messageCount,
+      values.webRagSessions[shared.sessionId].messageCount,
       saved.messages.length,
       "索引 messageCount 必须与详情条数一致"
     );
 
     // 重复保存同一份消息不能产生重复项（合并按 id 去重）。
     await store.saveSession(saved);
-    assert.equal((await store.getSession("s-concurrent")).messages.length, 3);
+    assert.equal((await store.getSession(shared.sessionId)).messages.length, 3);
   }
   {
     // 合并后仍受配额约束：100 上限，两个调用方各加一条 → 保留最新 100 条。
@@ -106,16 +100,10 @@ vm.runInContext(
     for (let i = 0; i < MAX_MESSAGES_PER_SESSION; i++) {
       many.push({ id: "c-" + i, role: "user", content: "c" + i, createdAt: i });
     }
-    const seed = {
-      sessionId: "s-cap",
-      pluginId: "plugin-a",
-      title: "配额会话",
-      createdAt: 0,
-      updatedAt: 0,
-      messages: many.slice(),
-    };
+    const seed = await store.createSession("plugin-a", { title: "配额会话" });
+    seed.messages = many.slice();
     await store.saveSession(seed);
-    const storedSeed = await store.getSession("s-cap");
+    const storedSeed = await store.getSession(seed.sessionId);
     const first = Object.assign({}, seed, {
       messages: storedSeed.messages.concat([{ id: "c-new", role: "assistant", content: "新回复", createdAt: 5000 }]),
     });
@@ -124,7 +112,7 @@ vm.runInContext(
     });
     await Promise.all([store.saveSession(first), store.saveSession(second)]);
 
-    const capped = await store.getSession("s-cap");
+    const capped = await store.getSession(seed.sessionId);
     const ids = capped.messages.map(function (m) { return m.id; });
     assert.equal(ids.length, MAX_MESSAGES_PER_SESSION);
     assert.equal(new Set(ids).size, MAX_MESSAGES_PER_SESSION, "合并不得产生重复消息");
@@ -132,7 +120,7 @@ vm.runInContext(
     assert.ok(ids.indexOf("c-new-2") !== -1);
     assert.equal(ids[ids.length - 1], "c-new-2", "必须按 createdAt 保留最新一条");
     assert.ok(ids.indexOf("c-0") === -1, "最旧的消息应被裁掉");
-    assert.equal(values.webRagSessions["s-cap"].messageCount, MAX_MESSAGES_PER_SESSION);
+    assert.equal(values.webRagSessions[seed.sessionId].messageCount, MAX_MESSAGES_PER_SESSION);
   }
   console.log("session-store save concurrency tests passed");
 })().catch(function (error) {
