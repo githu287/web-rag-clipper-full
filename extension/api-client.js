@@ -424,6 +424,10 @@ const webRagApiClient = (() => {
       },
     },
     rag: {
+      async checkSources(sources) {
+        const result = await request("/rag/sources/check", { method: "POST", body: { sources: sources } });
+        return result.data;
+      },
       // 全部知识库模式：不传 document_id（后端按 X-Plugin-ID → plugin_id → SUCCESS documents）
       // 当前网页模式：传 document_id（仅当前 tab 的有效绑定）
       async ask(queryObj) {

@@ -226,7 +226,7 @@ class RagAskApiTest(unittest.TestCase):
 
     # ----------------------------------------------------- 8. response schema
     def test_ask_response_schema(self) -> None:
-        """8：response schema 恰好 {answer, sources}；source 字段恰好 5 个。"""
+        """响应包含答案、引用与可选的历史核对版本；不泄漏其他内部字段。"""
         self.fake_answer_service.ask.return_value = self._make_response()
 
         resp = self.client.post("/rag/ask", json={"query": "问题", "document_id": 53})
@@ -236,7 +236,7 @@ class RagAskApiTest(unittest.TestCase):
         self.assertEqual(set(body.keys()), {"answer", "sources"})
         self.assertEqual(
             set(body["sources"][0].keys()),
-            {"document_id", "title", "url", "chunk_id", "score"},
+            {"document_id", "title", "url", "chunk_id", "score", "content_revision"},
         )
 
     def test_ask_response_extra_field_rejected(self) -> None:

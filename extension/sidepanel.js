@@ -1628,12 +1628,18 @@ function buildSources(sources) {
   head.type = "button";
   head.className = "sources-head";
   head.setAttribute("aria-expanded", "false");
-  head.textContent = "来源 (" + sources.length + ") ▼";
+  head.textContent = "来源 (" + sources.length + ") · 未核对 ▼";
   const list = document.createElement("div");
   list.className = "sources-list";
   list.hidden = true;
   let expanded = false;
-  sources.forEach(function (s) {
+  const sourceStates = [];
+  const summary = document.createElement("div");
+  summary.className = "sources-summary";
+  summary.setAttribute("role", "status");
+  summary.textContent = "展开来源时核对当前版本";
+  list.appendChild(summary);
+  sources.forEach(function (s, index) {
     if (!s || typeof s !== "object") return;
     const card = document.createElement("div");
     card.className = "source-card";
@@ -1660,14 +1666,61 @@ function buildSources(sources) {
       score.textContent = "相关度：" + Number(s.score).toFixed(2);
       card.appendChild(score);
     }
+    const state = document.createElement("div");
+    state.className = "source-status";
+    state.textContent = "当前状态未核对";
+    card.appendChild(state);
+    sourceStates.push({ index: index, element: state });
     list.appendChild(card);
   });
+  const recheck = document.createElement("button");
+  recheck.type = "button";
+  recheck.className = "btn-secondary sources-recheck";
+  recheck.textContent = "重新核对来源";
+  list.appendChild(recheck);
+  const owner = webRagApiClient.getPlugin();
+  let checking = false, checkState = "unchecked";
+  const badges = { unchecked: "未核对", checking: "核对中", current: "版本一致", changed: "已更新",
+    missing: "来源不可访问", unavailable: "暂不可用", unversioned: "版本未记录", unknown: "未完成核对" };
+  function current() {
+    const now = webRagApiClient.getPlugin();
+    return wrap.isConnected && owner.pluginId && now.pluginId === owner.pluginId && now.pluginSecret === owner.pluginSecret;
+  }
+  function updateHead() {
+    head.textContent = "来源 (" + sources.length + ") · " + badges[checkState] + " " + (expanded ? "▲" : "▼");
+    head.dataset.state = checkState;
+  }
+  async function check() {
+    if (checking || !current()) return;
+    checking = true; checkState = "checking"; recheck.disabled = true; updateHead();
+    summary.textContent = "正在核对来源…";
+    sourceStates.forEach(item => { item.element.textContent = "正在核对…"; item.element.dataset.state = "unknown"; });
+    try {
+      const states = await webRagSourceCheck.query(sources, refs => webRagApiClient.rag.checkSources(refs), current);
+      if (!states || !current()) return;
+      checkState = webRagSourceCheck.overall(states);
+      summary.textContent = webRagSourceCheck.summary(states) + " · 核对于 " + new Date().toLocaleString();
+      sourceStates.forEach(item => {
+        item.element.textContent = webRagSourceCheck.labels[states[item.index]];
+        item.element.dataset.state = states[item.index];
+      });
+    } catch (_error) {
+      if (!current()) return;
+      checkState = "unknown";
+      summary.textContent = "暂时无法核对来源，请重试。";
+      sourceStates.forEach(item => { item.element.textContent = webRagSourceCheck.labels.unknown; });
+    } finally {
+      checking = false;
+      if (current()) { recheck.disabled = false; updateHead(); }
+    }
+  }
+  recheck.addEventListener("click", check);
   head.addEventListener("click", function () {
     expanded = !expanded;
     list.hidden = !expanded;
     head.setAttribute("aria-expanded", String(expanded));
-    head.textContent = "来源 (" + sources.length + ") " + (expanded ? "▲" : "▼");
-    if (expanded) scrollToBottom(false);
+    updateHead();
+    if (expanded) { void check(); scrollToBottom(false); }
   });
   wrap.appendChild(head);
   wrap.appendChild(list);

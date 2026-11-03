@@ -660,6 +660,17 @@ input, textarea {
   color: var(--text-sub);
 }
 
+.source-status, .sources-summary {
+  margin-top: 5px;
+  font-size: 12px;
+  color: var(--text-sub);
+  overflow-wrap: anywhere;
+}
+.source-status[data-state="changed"], .source-status[data-state="missing"],
+.source-status[data-state="unavailable"], .sources-head[data-state="changed"],
+.sources-head[data-state="missing"], .sources-head[data-state="unavailable"] { color: #92400e; }
+.sources-recheck { align-self: flex-start; font-size: 12px; }
+
 /* ---------------- 回到底部 ---------------- */
 .back-to-bottom {
   position: sticky;

@@ -421,6 +421,17 @@ async function expectApiError(promise, status, code, messagePattern) {
     assert.equal(api.getPlugin().pluginId, "plugin-b");
   }
 
+  // Source checks use the regular authenticated read channel, without model policy/config lookup.
+  {
+    const calls = [];
+    const api = loadApiClient(async (url, init) => { calls.push({ url, init }); return makeResponse(200, { sources: [] }); });
+    api.setPluginDetails({ pluginId: "plugin-a", pluginSecret: "secret-a" });
+    await api.rag.checkSources([{ document_id: 1, content_revision: 2 }]);
+    assert.equal(calls.length, 1);
+    assert.ok(calls[0].url.endsWith("/rag/sources/check"));
+    assert.equal(calls[0].init.headers["X-Plugin-ID"], "plugin-a");
+    assert.deepEqual(JSON.parse(calls[0].init.body), { sources: [{ document_id: 1, content_revision: 2 }] });
+  }
   console.log("api-client error classification and deadline tests passed");
 })().catch(function (error) {
   console.error(error);

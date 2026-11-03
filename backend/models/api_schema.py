@@ -18,7 +18,7 @@ API Schema 定义（Phase 2.7 Step 2；Phase 2.13 Step 2 增 RAG Document Metada
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Final
+from typing import Final, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -238,6 +238,7 @@ class RagAnswerSource(BaseModel):
 
     字段：
         document_id : 来源 Document ID（= page_id，1:1）。
+        content_revision : 回答所使用的版本；旧历史记录可能没有此字段。
         title       : 来源标题（网页剪藏；上传文档为 None）。
         url         : 来源 URL（网页剪藏；上传文档为 None）。
         chunk_id    : 来源 chunk ID（如 "53_0"；= RagSearchResult.id）。
@@ -250,6 +251,9 @@ class RagAnswerSource(BaseModel):
         ...,
         ge=1,
         description="来源 Document ID（= page_id，1:1）",
+    )
+    content_revision: int | None = Field(
+        default=None, ge=0, description="回答所使用的文档版本；旧回答可能未记录",
     )
     title: str | None = Field(
         default=None,
@@ -270,6 +274,26 @@ class RagAnswerSource(BaseModel):
         ...,
         description="相似度分数（Milvus COSINE similarity，越大越相似；= RagSearchResult.distance）",
     )
+
+
+class RagSourceReference(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    document_id: int = Field(gt=0, strict=True)
+    content_revision: int | None = Field(default=None, ge=0, strict=True)
+
+
+class RagSourceCheckRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    sources: list[RagSourceReference] = Field(min_length=1, max_length=100)
+
+
+class RagSourceStatus(RagSourceReference):
+    state: Literal["current", "changed", "missing", "unavailable", "unversioned"]
+
+
+class RagSourceCheckResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    sources: list[RagSourceStatus]
 
 
 class RagAskResponse(BaseModel):

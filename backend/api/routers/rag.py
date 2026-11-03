@@ -4,6 +4,7 @@ RAG Router：RAG 检索 + RAG 问答 HTTP 接口（Phase 2.7 Step 2；Phase 3.3 
 路由：
     POST /rag/search — RAG 检索（保留原契约，行为不变）
     POST /rag/ask    — RAG 问答（Phase 3.3 Step 3 新增）
+    POST /rag/sources/check — 批量核对历史引用版本，不解密模型 Key、不调用模型
 
 依赖注入：
     - 每个端点先 Depends(get_current_plugin) 解析当前插件工作空间
@@ -28,19 +29,24 @@ RAG Router：RAG 检索 + RAG 问答 HTTP 接口（Phase 2.7 Step 2；Phase 3.3 
 
 from __future__ import annotations
 
+import asyncio
 from fastapi import APIRouter, Depends, status
 
-from ...core.di import get_plugin_service, get_rag_answer_service, get_rag_service
+from ...core.di import get_plugin_service, get_rag_answer_service, get_rag_service, get_document_repository
 from ...models import PluginWorkspace
 from ...models.api_schema import (
     RagAskRequest,
     RagAskResponse,
     RagSearchRequest,
     RagSearchResponse,
+    RagSourceCheckRequest,
+    RagSourceCheckResponse,
 )
+from ...repositories.mysql import DocumentRepository
 from ...services.plugin_service import PluginService
 from ...services.rag import RagService
 from ...services.rag_answer import RagAnswerService
+from ...services.rag_sources import check_sources
 from ..deps import get_current_plugin
 
 # 创建 Router（prefix + tags 严格按 Phase 2.7 Step 2 要求）
@@ -48,6 +54,16 @@ router: APIRouter = APIRouter(
     prefix="/rag",
     tags=["rag"],
 )
+
+
+@router.post("/sources/check", response_model=RagSourceCheckResponse, summary="核对历史回答的来源版本")
+async def rag_check_sources(
+    request: RagSourceCheckRequest,
+    current_plugin: PluginWorkspace = Depends(get_current_plugin),
+    repository: DocumentRepository = Depends(get_document_repository),
+) -> RagSourceCheckResponse:
+    results = await asyncio.to_thread(check_sources, request.sources, current_plugin.plugin_id, repository)
+    return RagSourceCheckResponse(sources=results)
 
 
 @router.post(

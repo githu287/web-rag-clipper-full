@@ -214,6 +214,7 @@ def test_stable_revision_is_carried_internally_without_changing_search_json(stor
     assert "content_revision" not in RagSearchResult.model_json_schema(mode="serialization")["properties"]
     response = asyncio.run(service.ask("编号", plugin_id="a"))
     assert "806" in response.answer and response.sources[0].document_id == doc.id
+    assert response.sources[0].content_revision == doc.content_revision
     llm.generate.assert_called_once()
 
 

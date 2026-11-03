@@ -223,6 +223,7 @@ class RagAnswerService:
                 if result.document_id is not None
                 else result.page_id
             ),
+            content_revision=result.content_revision,
             title=result.title,
             url=result.url,
             chunk_id=result.id,

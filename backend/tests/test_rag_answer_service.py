@@ -127,6 +127,7 @@ class RagAnswerServiceTest(unittest.TestCase):
         source = response.sources[0]
         self.assertIsInstance(source, RagAnswerSource)
         self.assertEqual(source.document_id, 53)
+        self.assertEqual(source.content_revision, 0)
         self.assertEqual(source.title, "测试标题")
         self.assertEqual(source.url, "https://example.com/page")
         self.assertEqual(source.chunk_id, "53_0")
