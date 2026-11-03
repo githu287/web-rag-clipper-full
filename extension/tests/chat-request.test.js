@@ -8,7 +8,7 @@ const path = require("node:path");
 const vm = require("node:vm");
 const extensionDir = path.resolve(__dirname, "..");
 const source = fs.readFileSync(path.join(extensionDir, "sidepanel.js"), "utf8").replace(/\r\n/g, "\n");
-const handlers = source.slice(source.indexOf("async function saveCurrentSession("), source.indexOf("// ================================================================ 剪藏\n"));
+const handlers = source.slice(source.indexOf("function syncQuestionComposerOwner("), source.indexOf("// ================================================================ 剪藏\n"));
 const render = source.slice(source.indexOf("function renderChat()"), source.indexOf("function emptyText()"));
 const settle = () => new Promise(resolve => setImmediate(resolve));
 function deferred() {
@@ -24,6 +24,7 @@ async function fixture() {
   const calls = [];
   const drawn = [];
   let pluginId = "plugin-a";
+  let pluginSecret = "secret-a";
   let writeGate = null;
   class ApiRequestError extends Error {}
   const context = vm.createContext({
@@ -38,14 +39,15 @@ async function fixture() {
       async remove(key) { delete values[key]; },
     } } },
     webRagApiClient: {
-      getPlugin: () => ({ pluginId }), ApiRequestError,
+      getPlugin: () => ({ pluginId, pluginSecret }), ApiRequestError,
       rag: { ask: payload => { calls.push(payload); return reply.promise; } },
     },
     session: null,
     binding: { mode: "current", documentId: 101, pageUrl: "https://example.com/a", pageTitle: "Page A" },
-    isSending: false, activeChatRequest: null,
+    isSending: false, activeChatRequest: null, questionReplayDraft: null, questionComposerOwner: null,
     els: {
       chatTextarea: { value: "Question A", focus() {} },
+      chatReplayNotice: { hidden: true, textContent: "" },
       chatEmpty: { style: {} },
       chatArea: { set innerHTML(_value) { drawn.length = 0; } },
     },
@@ -58,6 +60,7 @@ async function fixture() {
   });
   vm.runInContext(fs.readFileSync(path.join(extensionDir, "config.js"), "utf8"), context);
   vm.runInContext(fs.readFileSync(path.join(extensionDir, "session-store.js"), "utf8") + "\nglobalThis.store = sessionStore;", context);
+  vm.runInContext(fs.readFileSync(path.join(extensionDir, "question-replay.js"), "utf8"), context);
   vm.runInContext(render + "\n" + handlers, context);
   const original = await context.store.createSession(pluginId, { title: "新会话" });
   await context.store.setCurrentSessionId(pluginId, original.sessionId);
@@ -67,6 +70,7 @@ async function fixture() {
     blockWrite() { writeGate = deferred(); return writeGate; },
     resetIdentity(id = null) { pluginId = id; context.session = null; context.activeChatRequest = null; context.isSending = false; },
     switchTab() { context.binding = { mode: "all", documentId: 202, pageUrl: "https://example.com/b", pageTitle: "Page B" }; },
+    rotateSecret() { pluginSecret = "rotated-secret"; },
   };
 }
 
@@ -187,5 +191,89 @@ async function assertOriginalAnswer(f, content) {
     assert.equal(saved.messages[1].mode, "all");
     assert.equal(saved.messages[1].documentId, null);
   }
-  console.log("chat request race tests passed (8 scenarios)");
+  // A replay captures its old document scope even after the active tab changes.
+  {
+    const f = await fixture();
+    const original = { query: "Old question", context: { mode: "current", documentId: 77, pageTitle: "Old document", pageUrl: "https://example.com/old" } };
+    f.context.questionReplayDraft = { ...original, pluginId: "plugin-a", pluginSecret: "secret-a", sessionId: f.original.sessionId };
+    f.context.els.chatTextarea.value = "Edited old question";
+    f.switchTab();
+    const sending = f.context.sendQuestion();
+    await settle();
+    assert.equal(f.calls[0].document_id, 77);
+    assert.equal(f.calls[0].query, "Edited old question");
+    f.reply.resolve({ answer: "New answer", sources: [] });
+    await sending;
+    const saved = await f.context.store.getSession(f.original.sessionId);
+    assert.equal(saved.messages[1].question, "Edited old question");
+    assert.equal(saved.messages[1].replyTo, saved.messages[0].id);
+    assert.equal(saved.messages[1].documentId, 77);
+    assert.equal(saved.messages[1].pageTitle, "Old document");
+    assert.equal(f.context.questionReplayDraft, null);
+  }
+  // A global replay cannot inherit the new tab's document, including stale bindings.
+  {
+    const f = await fixture();
+    f.context.questionReplayDraft = { context: { mode: "all", documentId: null }, pluginId: "plugin-a", pluginSecret: "secret-a", sessionId: f.original.sessionId };
+    f.context.binding.stale = true;
+    const sending = f.context.sendQuestion();
+    await settle();
+    assert.equal(f.calls[0].document_id, null);
+    f.reply.resolve({ answer: "All-library replay" });
+    await sending;
+  }
+  // Expired replay drafts never fall through into the new session/workspace scope.
+  for (const change of ["session", "workspace", "secret"]) {
+    const f = await fixture();
+    f.context.questionReplayDraft = { context: { mode: "current", documentId: 77 }, pluginId: "plugin-a", pluginSecret: "secret-a", sessionId: f.original.sessionId };
+    if (change === "session") f.context.session = { sessionId: "other", messages: [] };
+    else if (change === "workspace") f.resetIdentity("plugin-b");
+    else f.rotateSecret();
+    await f.context.sendQuestion();
+    assert.equal(f.calls.length, 0);
+  }
+  // A secret rotation also invalidates a late model reply and removes its spinner.
+  {
+    const f = await fixture();
+    const sending = f.context.sendQuestion();
+    await settle();
+    f.rotateSecret();
+    f.reply.resolve({ answer: "Discard old-credential answer" });
+    await sending;
+    const saved = await f.context.store.getSession(f.original.sessionId);
+    assert.equal(saved.messages.length, 1);
+    assert.equal(f.drawn.some(message => message.loading), false);
+    assert.equal(f.context.isSending, false);
+  }
+  // Even after cancelling a replay scope, its input cannot cross an identity boundary.
+  {
+    const f = await fixture();
+    f.context.syncQuestionComposerOwner();
+    f.context.els.chatTextarea.value = "Private unsent question";
+    f.rotateSecret();
+    await f.context.sendQuestion();
+    assert.equal(f.calls.length, 0);
+    assert.equal(f.context.els.chatTextarea.value, "");
+  }
+  // Attaching the initial session does not erase typing in the same workspace.
+  {
+    const f = await fixture();
+    f.context.session = null;
+    f.context.syncQuestionComposerOwner();
+    f.context.els.chatTextarea.value = "Initial draft";
+    f.context.session = f.original;
+    assert.equal(f.context.syncQuestionComposerOwner(), true);
+    assert.equal(f.context.els.chatTextarea.value, "Initial draft");
+  }
+  // Identity may change before async session loading finishes; no send may target the old owner.
+  {
+    const f = await fixture();
+    f.resetIdentity("plugin-b");
+    f.context.session = f.original;
+    f.context.syncQuestionComposerOwner();
+    f.context.els.chatTextarea.value = "New workspace question";
+    await f.context.sendQuestion();
+    assert.equal(f.calls.length, 0);
+  }
+  console.log("chat request races, original-scope replays, durable question links and credential rotation passed");
 })().catch(error => { console.error(error); process.exitCode = 1; });

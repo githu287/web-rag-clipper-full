@@ -93,3 +93,5 @@ jobs:
         run: python scripts/check_video_browser.py --channel chromium
       - name: Exercise historical source status, retries and Workspace response isolation
         run: python scripts/check_source_history_browser.py --channel chromium
+      - name: Exercise original-question drafts, frozen scopes and late replay responses
+        run: python scripts/check_question_replay_browser.py --channel chromium

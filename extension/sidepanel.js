@@ -78,6 +78,10 @@ const els = {
   backToBottom: document.getElementById("back-to-bottom"),
   chatTextarea: document.getElementById("chat-textarea"),
   chatSend: document.getElementById("chat-send"),
+  chatReplayContext: document.getElementById("chat-replay-context"),
+  chatReplayLabel: document.getElementById("chat-replay-label"),
+  chatReplayCancel: document.getElementById("chat-replay-cancel"),
+  chatReplayNotice: document.getElementById("chat-replay-notice"),
   pluginNameField: document.getElementById("plugin-name-field"),
   pluginNameSaveBtn: document.getElementById("plugin-name-save-btn"),
   pluginNameStatus: document.getElementById("plugin-name-status"),
@@ -120,6 +124,8 @@ let binding = null;
 let session = null;
 let isSending = false;
 let activeChatRequest = null;
+let questionReplayDraft = null;
+let questionComposerOwner = null;
 let clipBusy = false;
 let clipCaptureController = null;
 let clipExtractionToken = 0;
@@ -214,9 +220,10 @@ function updateNav() {
 }
 
 function updateScopeSelector() {
+  const replay = activeQuestionReplay();
   const mode = binding ? binding.mode : "current";
-  els.scopeCurrent.classList.toggle("active", mode === "current");
-  els.scopeAll.classList.toggle("active", mode === "all");
+  els.scopeCurrent.classList.toggle("active", !replay && mode === "current");
+  els.scopeAll.classList.toggle("active", !replay && mode === "all");
   updateScopeDesc();
 }
 
@@ -224,6 +231,11 @@ function updateScopeDesc() {
   if (!els.scopeDesc) return;
   const mode = binding ? binding.mode : "current";
   if (currentView === "chat") {
+    const replay = activeQuestionReplay();
+    if (replay) {
+      els.scopeDesc.textContent = "原提问范围：" + replayScopeLabel(replay.context);
+      return;
+    }
     els.scopeDesc.textContent = mode === "all"
       ? "检索范围：你的全部已剪藏文档"
       : "检索范围：当前剪藏的网页";
@@ -1570,7 +1582,7 @@ function appendMessageToDom(message) {
 
   const meta = document.createElement("div");
   meta.className = "msg-meta";
-  const modeText = msgMode === "all" ? "全部知识库" : "当前网页";
+  const modeText = msgMode === "all" ? "全部知识库" : "指定文档";
   if (message.role === "user") {
     meta.textContent = "你 · " + modeText;
   } else {
@@ -1606,6 +1618,24 @@ function appendMessageToDom(message) {
 
   if (message.role === "assistant" && Array.isArray(message.sources) && message.sources.length > 0) {
     msg.appendChild(buildSources(message.sources));
+  }
+
+  if (message.role === "assistant") {
+    const original = webRagQuestionReplay.resolve(session && session.messages, message);
+    const owner = webRagApiClient.getPlugin(), sessionId = session && session.sessionId;
+    const replay = document.createElement("button");
+    replay.type = "button";
+    replay.className = "msg-replay";
+    replay.textContent = original ? "填入原问题" : "原问题不可恢复";
+    replay.disabled = !original || isSending;
+    replay.title = original ? "保留原检索范围，编辑后点击发送" : "原问题或提问范围未完整保留";
+    replay.addEventListener("click", () => {
+      const now = webRagApiClient.getPlugin();
+      if (!msg.isConnected || now.pluginId !== owner.pluginId || now.pluginSecret !== owner.pluginSecret ||
+          !session || session.sessionId !== sessionId) return;
+      prepareQuestionReplay(original);
+    });
+    msg.appendChild(replay);
   }
 
   els.chatArea.appendChild(msg);
@@ -1775,6 +1805,48 @@ function scrollToBottom(force) {
 }
 
 // ================================================================ 会话
+function syncQuestionComposerOwner() {
+  const plugin = webRagApiClient.getPlugin();
+  const next = { pluginId: plugin.pluginId, pluginSecret: plugin.pluginSecret, sessionId: session && session.sessionId };
+  const changed = questionComposerOwner && (next.pluginId !== questionComposerOwner.pluginId ||
+    next.pluginSecret !== questionComposerOwner.pluginSecret ||
+    (questionComposerOwner.sessionId && next.sessionId !== questionComposerOwner.sessionId));
+  if (changed) {
+    els.chatTextarea.value = "";
+    questionReplayDraft = null;
+    els.chatReplayNotice.hidden = true;
+  }
+  questionComposerOwner = next;
+  return !changed;
+}
+
+function activeQuestionReplay() {
+  const plugin = webRagApiClient.getPlugin();
+  return questionReplayDraft && session && session.pluginId === plugin.pluginId && questionReplayDraft.sessionId === session.sessionId &&
+    questionReplayDraft.pluginId === plugin.pluginId && questionReplayDraft.pluginSecret === plugin.pluginSecret
+    ? questionReplayDraft : null;
+}
+
+function replayScopeLabel(context) {
+  const title = (context.pageTitle || context.pageUrl || "当时选定的资料").replace(/\s+/g, " ").trim();
+  return context.mode === "all" ? "全部知识库" : "原文档 · " + (title.length > 160 ? title.slice(0, 160) + "…" : title);
+}
+
+function prepareQuestionReplay(original) {
+  const plugin = webRagApiClient.getPlugin();
+  if (!original || !session || !plugin.pluginId || session.pluginId !== plugin.pluginId || isSending) return;
+  if (els.chatTextarea.value.trim() && els.chatTextarea.value.trim() !== original.query) {
+    els.chatReplayNotice.textContent = "输入框已有未发送内容，请先发送或清空后再填入原问题。";
+    els.chatReplayNotice.hidden = false;
+    return;
+  }
+  els.chatReplayNotice.hidden = true;
+  questionReplayDraft = { ...original, pluginId: plugin.pluginId, pluginSecret: plugin.pluginSecret, sessionId: session.sessionId };
+  els.chatTextarea.value = original.query;
+  updateSendState();
+  els.chatTextarea.focus();
+}
+
 async function saveCurrentSession(target = session) {
   if (!target) return;
   const firstUser = target.messages.find(function (m) {
@@ -1800,6 +1872,8 @@ async function newSession() {
   await sessionStore.setCurrentSessionId(plugin.pluginId, created.sessionId);
   await sessionStore.enforceSessionLimit(plugin.pluginId, created.sessionId);
   session = created;
+  questionReplayDraft = null;
+  els.chatReplayNotice.hidden = true;
   // 新建聊天只切换全局 Session；当前 Tab 的网页上下文保持不变。
   switchView("chat");
   els.chatTextarea.value = "";
@@ -1810,7 +1884,9 @@ async function newSession() {
 
 // ================================================================ 提问
 function chatRequestValid(request) {
-  return activeChatRequest === request && webRagApiClient.getPlugin().pluginId === request.pluginId;
+  const plugin = webRagApiClient.getPlugin();
+  return activeChatRequest === request && request.target.pluginId === request.pluginId &&
+    plugin.pluginId === request.pluginId && plugin.pluginSecret === request.pluginSecret;
 }
 
 function chatRequestVisible(request) {
@@ -1823,11 +1899,15 @@ async function sendQuestion() {
     renderWelcomeView();
     return;
   }
-  if (isSending || !binding || !session) return;
+  if (isSending || !session || session.pluginId !== plugin.pluginId) return;
+  if (!syncQuestionComposerOwner()) { updateSendState(); return; }
+  const replay = activeQuestionReplay();
+  if (questionReplayDraft && !replay) { updateSendState(); return; }
+  if (!replay && !binding) return;
   const query = els.chatTextarea.value.trim();
   if (!query) return;
-  const mode = binding.mode;
-  if (mode === "current" && (!binding.documentId || binding.stale)) {
+  const context = replay ? { ...replay.context } : webRagQuestionReplay.context(binding);
+  if (!context || (!replay && binding.mode === "current" && (binding.stale || binding.ingestJobId))) {
     showInlineHint("请先剪藏当前网页后再提问");
     return;
   }
@@ -1835,16 +1915,14 @@ async function sendQuestion() {
   // Capture before the first storage/network await; tabs and sessions remain usable.
   const request = {
     pluginId: plugin.pluginId,
+    pluginSecret: plugin.pluginSecret,
     target: session,
-    context: {
-      mode: mode,
-      documentId: mode === "current" ? binding.documentId : null,
-      pageUrl: binding.pageUrl || null,
-      pageTitle: binding.pageTitle || null,
-    },
+    context: context,
     settled: false,
   };
   activeChatRequest = request;
+  questionReplayDraft = null;
+  els.chatReplayNotice.hidden = true;
   els.chatTextarea.value = "";
   updateSendState();
 
@@ -1875,6 +1953,8 @@ async function sendQuestion() {
       id: sessionStore.newId(),
       role: "assistant",
       content: answer || "当前内容中没有足够信息回答该问题。",
+      question: query,
+      replyTo: userMsg.id,
       ...request.context,
       sources: Array.isArray(data && data.sources) ? data.sources : [],
       createdAt: Date.now(),
@@ -1897,6 +1977,8 @@ async function sendQuestion() {
       id: sessionStore.newId(),
       role: "assistant",
       content: text,
+      question: query,
+      replyTo: userMsg.id,
       ...request.context,
       sources: null,
       createdAt: Date.now(),
@@ -1910,9 +1992,12 @@ async function sendQuestion() {
   } finally {
     if (activeChatRequest === request) {
       const visible = chatRequestVisible(request);
+      const sameConversation = session && session.sessionId === request.target.sessionId &&
+        session.pluginId === request.pluginId &&
+        webRagApiClient.getPlugin().pluginId === request.pluginId;
       activeChatRequest = null;
       isSending = false;
-      if (visible) renderChat();
+      if (visible || sameConversation) renderChat();
       updateSendState();
       if (visible) {
         try { els.chatTextarea.focus(); } catch (_err) {}
@@ -2369,7 +2454,7 @@ function handleSendRequest() {
     switchView("settings");
     return;
   }
-  if (binding && binding.mode === "current" && (!binding.documentId || binding.stale)) {
+  if (!activeQuestionReplay() && binding && binding.mode === "current" && (!binding.documentId || binding.stale)) {
     showInlineHint("请先剪藏当前网页后再提问");
     return;
   }
@@ -2378,10 +2463,19 @@ function handleSendRequest() {
 
 // ================================================================ 发送状态
 function updateSendState() {
+  syncQuestionComposerOwner();
   const plugin = webRagApiClient.getPlugin();
-  let disabled = !plugin.pluginId || isSending;
+  const replay = activeQuestionReplay();
+  if (questionReplayDraft && !replay) {
+    questionReplayDraft = null;
+    els.chatTextarea.value = "";
+  }
+  els.chatReplayContext.hidden = !replay;
+  if (replay) els.chatReplayLabel.textContent = "编辑后点击发送 · " + replayScopeLabel(replay.context);
+  updateScopeSelector();
+  let disabled = !plugin.pluginId || !session || session.pluginId !== plugin.pluginId || isSending;
   if (!disabled && plugin.apiKeyConfigured === false) disabled = true;
-  if (!disabled && binding && binding.mode === "current") {
+  if (!disabled && !replay && binding && binding.mode === "current") {
     if (!binding.documentId || binding.stale || binding.ingestJobId) disabled = true;
   }
   els.chatSend.disabled = disabled;
@@ -2401,9 +2495,13 @@ function bindEvents() {
     switchView("chat");
   });
   els.scopeCurrent.addEventListener("click", function () {
+    questionReplayDraft = null;
+    updateSendState();
     switchMode("current");
   });
   els.scopeAll.addEventListener("click", function () {
+    questionReplayDraft = null;
+    updateSendState();
     switchMode("all");
   });
   els.gotoChatBtn.addEventListener("click", function () {
@@ -2491,8 +2589,10 @@ function bindEvents() {
     handleSendRequest();
   });
   els.chatTextarea.addEventListener("input", function () {
+    els.chatReplayNotice.hidden = true;
     updateSendState();
   });
+  els.chatReplayCancel.addEventListener("click", () => { questionReplayDraft = null; updateSendState(); });
   els.chatTextarea.addEventListener("keydown", function (e) {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();

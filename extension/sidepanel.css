@@ -671,6 +671,31 @@ input, textarea {
 .sources-head[data-state="missing"], .sources-head[data-state="unavailable"] { color: #92400e; }
 .sources-recheck { align-self: flex-start; font-size: 12px; }
 
+.msg-replay {
+  margin-top: 7px;
+  padding: 3px 0;
+  border: 0;
+  background: transparent;
+  color: var(--primary);
+  font-size: 12px;
+}
+.msg-replay:disabled { color: var(--text-sub); cursor: default; }
+.chat-replay-context {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--border);
+  background: var(--panel);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.chat-replay-context[hidden] { display: none; }
+.chat-replay-context span { flex: 1; min-width: 0; }
+.chat-replay-context button { flex-shrink: 0; font-size: 12px; }
+.chat-replay-notice { padding: 8px 12px; color: #92400e; background: #fffbeb; font-size: 12px; }
+.chat-replay-notice[hidden] { display: none; }
+
 /* ---------------- 回到底部 ---------------- */
 .back-to-bottom {
   position: sticky;

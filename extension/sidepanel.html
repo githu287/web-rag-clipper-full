@@ -141,6 +141,11 @@
         <button type="button" class="back-to-bottom" id="back-to-bottom" hidden>↓ 回到底部</button>
       </main>
 
+      <div id="chat-replay-notice" class="chat-replay-notice" role="status" hidden></div>
+      <div id="chat-replay-context" class="chat-replay-context" hidden>
+        <span id="chat-replay-label"></span>
+        <button type="button" id="chat-replay-cancel" class="btn-secondary">取消原范围</button>
+      </div>
       <footer class="chat-input">
         <textarea id="chat-textarea" placeholder="输入你的问题…（Enter 发送，Shift+Enter 换行）" rows="2"></textarea>
         <button type="button" class="primary-btn" id="chat-send">发送</button>
@@ -354,6 +359,7 @@
   <script src="image-ocr.js"></script>
   <script src="video-panel.js"></script>
   <script src="source-check.js"></script>
+  <script src="question-replay.js"></script>
   <script src="sidepanel.js"></script>
 </body>
 </html>
