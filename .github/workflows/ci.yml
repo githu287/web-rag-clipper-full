@@ -99,3 +99,5 @@ jobs:
         run: python scripts/check_question_drafts_browser.py --channel chromium
       - name: Exercise conversation history, deletion and cross-panel storage races
         run: python scripts/check_chat_sessions_browser.py --channel chromium
+      - name: Exercise actual Markdown downloads, frozen exports and identity isolation
+        run: python scripts/check_chat_export_browser.py --channel chromium

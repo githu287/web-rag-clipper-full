@@ -91,6 +91,8 @@ const els = {
   chatSessionsRefresh: document.getElementById("chat-sessions-refresh"),
   chatSessionsStatus: document.getElementById("chat-sessions-status"),
   chatSessionList: document.getElementById("chat-session-list"),
+  chatExport: document.getElementById("chat-export"),
+  chatExportStatus: document.getElementById("chat-export-status"),
   pluginNameField: document.getElementById("plugin-name-field"),
   pluginNameSaveBtn: document.getElementById("plugin-name-save-btn"),
   pluginNameStatus: document.getElementById("plugin-name-status"),
@@ -138,6 +140,8 @@ let questionComposerOwner = null;
 let questionDraftPersistence = null;
 let chatSessionListToken = 0;
 let deletingChatSessionId = null;
+let chatExportBusy = false;
+let chatExportToken = 0;
 let clipBusy = false;
 let clipCaptureController = null;
 let clipExtractionToken = 0;
@@ -1858,6 +1862,57 @@ function chatSessionOwnerValid(owner, identityOnly) {
     (identityOnly || owner.sessionId === (session && session.sessionId));
 }
 
+function resetChatExport() {
+  chatExportToken++;
+  chatExportBusy = false;
+  els.chatExportStatus.textContent = "";
+  els.chatExportStatus.hidden = true;
+}
+
+async function exportChatSession() {
+  const owner = chatSessionOwner();
+  if (chatExportBusy || !owner.pluginId || !session || session.pluginId !== owner.pluginId ||
+    !webRagChatExport.hasMessages(session)) return;
+  const token = ++chatExportToken;
+  const valid = () => token === chatExportToken && chatSessionOwnerValid(owner);
+  // 点击时冻结正文及来源；await 后只校验归属与存在性，不读取新会话的内容。
+  const copy = webRagChatExport.snapshot(session, {
+    workspace: webRagApiClient.getPlugin().pluginName,
+    inProgress: !!(activeChatRequest && !activeChatRequest.settled && chatRequestVisible(activeChatRequest)),
+  });
+  chatExportBusy = true;
+  els.chatExportStatus.hidden = false;
+  els.chatExportStatus.textContent = "正在生成 Markdown…";
+  updateSendState();
+  try {
+    const stored = await sessionStore.getSession(owner.sessionId);
+    if (!valid()) return;
+    if (!stored || stored.pluginId !== owner.pluginId) {
+      els.chatExportStatus.textContent = "会话已删除或不属于当前空间，无法导出";
+      return;
+    }
+    copy.unsaved = webRagChatExport.containsUnsaved(copy, stored);
+    const result = webRagChatExport.render(copy);
+    const url = URL.createObjectURL(new Blob([result.content], { type: "text/markdown;charset=utf-8" }));
+    const link = document.createElement("a");
+    link.href = url; link.download = result.filename;
+    document.body.appendChild(link);
+    try { link.click(); }
+    finally {
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    }
+    els.chatExportStatus.textContent = "已发起 Markdown 下载 · " + result.count + " 条消息，不含未发送草稿";
+  } catch (_err) {
+    if (valid()) els.chatExportStatus.textContent = "导出失败，原会话与草稿已保留，请重试";
+  } finally {
+    if (token === chatExportToken) {
+      chatExportBusy = false;
+      updateSendState();
+    }
+  }
+}
+
 function closeChatSessions() {
   chatSessionListToken++;
   els.chatSessions.hidden = true;
@@ -1867,6 +1922,7 @@ function closeChatSessions() {
 }
 
 function applyChatSession(target) {
+  resetChatExport();
   session = target;
   els.chatTextarea.value = "";
   questionReplayDraft = null;
@@ -2084,6 +2140,7 @@ function syncQuestionComposerOwner() {
     next.pluginSecret !== questionComposerOwner.pluginSecret ||
     (questionComposerOwner.sessionId && next.sessionId !== questionComposerOwner.sessionId));
   if (changed) {
+    resetChatExport();
     els.chatTextarea.value = "";
     questionReplayDraft = null;
     els.chatReplayNotice.hidden = true;
@@ -2267,6 +2324,7 @@ async function sendQuestion() {
     if (chatRequestVisible(request)) {
       session = request.target;
       renderChat();
+      updateSendState();
     }
     const data = await webRagApiClient.rag.ask({
       query: query,
@@ -2801,6 +2859,8 @@ function updateSendState() {
   els.chatSessionTitle.textContent = session && session.pluginId === plugin.pluginId ? session.title || "新会话" : "新会话";
   els.chatSessionTitle.title = els.chatSessionTitle.textContent;
   els.chatSessionsToggle.disabled = !plugin.pluginId || !session || session.pluginId !== plugin.pluginId;
+  els.chatExport.disabled = chatExportBusy || !plugin.pluginId || !session || session.pluginId !== plugin.pluginId ||
+    !webRagChatExport.hasMessages(session);
   const replay = activeQuestionReplay();
   if (questionReplayDraft && !replay) {
     questionReplayDraft = null;
@@ -2820,6 +2880,7 @@ function updateSendState() {
 
 // ================================================================ 事件绑定
 function bindEvents() {
+  els.chatExport.addEventListener("click", exportChatSession);
   els.chatSessionsToggle.addEventListener("click", () => {
     if (!els.chatSessions.hidden) closeChatSessions();
     else {

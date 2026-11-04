@@ -132,8 +132,12 @@
     <div class="view-inner active" id="view-chat">
       <div class="chat-session-bar">
         <div><span class="chat-session-kicker">当前会话</span><strong id="chat-session-title">新会话</strong></div>
-        <button type="button" id="chat-sessions-toggle" class="btn-secondary" aria-controls="chat-sessions" aria-expanded="false">历史会话</button>
+        <div class="chat-session-actions">
+          <button type="button" id="chat-export" class="btn-secondary" title="导出当前会话为 Markdown" aria-label="导出当前会话为 Markdown">导出</button>
+          <button type="button" id="chat-sessions-toggle" class="btn-secondary" aria-controls="chat-sessions" aria-expanded="false">历史会话</button>
+        </div>
       </div>
+      <p id="chat-export-status" class="chat-export-status" role="status" hidden></p>
       <section id="chat-sessions" class="chat-sessions" aria-label="当前空间的历史会话" hidden>
         <div class="chat-sessions-heading"><span>本机最近 20 个会话</span><button type="button" id="chat-sessions-refresh" class="btn-secondary">刷新</button></div>
         <p id="chat-sessions-status" role="status"></p>
@@ -375,6 +379,7 @@
   <script src="source-check.js"></script>
   <script src="question-replay.js"></script>
   <script src="question-drafts.js"></script>
+  <script src="chat-export.js"></script>
   <script src="sidepanel.js"></script>
 </body>
 </html>

@@ -701,6 +701,9 @@ input, textarea {
 .chat-session-kicker { display: block; font-size: 11px; color: var(--text-sub); margin-bottom: 3px; }
 #chat-session-title { display: block; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chat-session-bar > button { flex-shrink: 0; font-size: 12px; margin-top: 0; }
+.chat-session-bar > .chat-session-actions { display: flex; flex: 0 0 auto; gap: 6px; }
+.chat-session-actions button { margin-top: 0; font-size: 12px; padding: 7px 9px; }
+.chat-export-status { padding: 6px 12px 0; font-size: 12px; line-height: 1.5; color: var(--text-sub); overflow-wrap: anywhere; }
 .chat-sessions { flex-shrink: 0; max-height: 36%; overflow-y: auto; margin: 8px 12px 0; padding: 8px; background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); }
 .chat-sessions[hidden] { display: none; }
 .chat-sessions-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--text-sub); font-size: 11px; }
