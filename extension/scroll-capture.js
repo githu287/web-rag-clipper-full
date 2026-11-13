@@ -88,7 +88,10 @@
     function snapshot() {
       check(signal, url);
       latest = webRagPageExtractor.extract(document, { mode: options.mode, collectImages: !!options.collectImages });
-      for (const image of latest.images || []) if (images.size < 33 && !images.has(image.url)) images.set(image.url, image);
+      for (const image of latest.images || []) if (!images.has(image.url)) {
+        if (images.size < 33) images.set(image.url, image);
+        else warnings.add("capture_image_limit");
+      }
       for (const warning of latest.diagnostics.quality_warnings || []) warnings.add(warning);
       merged = accumulator.add(latest.text);
       options.progress({ phase: "scroll", steps, max_steps: maxSteps, elapsed_ms: Date.now() - start,

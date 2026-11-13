@@ -51,7 +51,10 @@
     for (const item of ordered) {
       const response = item.response;
       if (!response || !response.ok) continue;
-      for (const image of response.images || []) if (images.size < 33 && !images.has(image.url)) images.set(image.url, image);
+      for (const image of response.images || []) if (!images.has(image.url)) {
+        if (images.size < 33) images.set(image.url, image);
+        else warnings.add("capture_image_limit");
+      }
       const text = String(response.raw_text || "").trim();
       if (!text) continue;
       const fingerprint = text.replace(/\s+/g, " ");

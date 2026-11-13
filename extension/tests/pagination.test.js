@@ -61,6 +61,10 @@ function page(n, total = 3) {
   assert.equal(result.diagnostics.pagination_stop_reason,"complete");
   assert.match(result.raw_text,/第 1 页[\s\S]*独立正文1[\s\S]*第 2 页[\s\S]*独立正文2[\s\S]*第 3 页[\s\S]*独立正文3/);
   assert.equal(result.images.length,3); assert.equal(removed.length,2); assert(disconnected);
+  const imageHeavy = {...page(1),images:Array.from({length:33},(_,index)=>({url:`https://example.com/initial-${index}.png`}))};
+  const boundedImages = await capture.expand(1,imageHeavy,opts());
+  assert.equal(boundedImages.images.length,33);
+  assert(boundedImages.diagnostics.quality_warnings.includes("capture_image_limit"),"cross-page image overflow must be reported");
 
   total=20;created=[];removed=[];
   result=await capture.expand(1,page(1,20),opts({limits:{maxPages:100,maxMs:1000000}}));

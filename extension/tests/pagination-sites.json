@@ -2,6 +2,57 @@
   "description": "Opt-in real public pages, not local fixtures. HTTPS certificate failures and hidden/JS pagination are recorded as access/support boundaries; no certificate or login bypass.",
   "samples": [
     {
+      "id": "gamersky-pc-faq",
+      "url": "https://www.gamersky.com/handbook/201511/680884.shtml",
+      "root": ".Mid2L_con",
+      "image_root": ".Mid2L_con",
+      "exclude": ".post_ding_top,.post_ding,.pagecss,.gs_ccs_solve,.gs_nc_editor,.recommend-app-btn-wrap,[id^='gsincome_']",
+      "expected_pages": 5,
+      "expected_stop": "page_limit",
+      "continued_pages": {
+        "1": 10,
+        "2": 15
+      }
+    },
+    {
+      "id": "gamersky-pc-faq-middle",
+      "url": "https://www.gamersky.com/handbook/201511/680884_6.shtml",
+      "root": ".Mid2L_con",
+      "image_root": ".Mid2L_con",
+      "exclude": ".post_ding_top,.post_ding,.pagecss,.gs_ccs_solve,.gs_nc_editor,.recommend-app-btn-wrap,[id^='gsincome_']",
+      "expected_pages": 5,
+      "expected_stop": "page_limit",
+      "continued_pages": {
+        "1": 10,
+        "2": 12
+      },
+      "continued_stops": {"2": "repeated_content"},
+      "continued_boundaries": {"2": "The site's pages 17 and 18 both contain only the same missing-content notice. Capture retains pages 6-17 and stops before accepting repeated page 18."}
+    },
+    {
+      "id": "gamersky-gallery",
+      "url": "https://www.gamersky.com/handbook/201803/1019303.shtml",
+      "root": ".Mid2L_con",
+      "image_root": ".Mid2L_con",
+      "exclude": ".post_ding_top,.post_ding,.pagecss,.gs_ccs_solve,.gs_nc_editor,.recommend-app-btn-wrap,[id^='gsincome_']",
+      "expected_pages": 5,
+      "expected_stop": "page_limit",
+      "continued_pages": {
+        "1": 10,
+        "2": 15
+      }
+    },
+    {
+      "id": "gamersky-http-next-boundary",
+      "url": "https://www.gamersky.com/handbook/201007/162084.shtml",
+      "root": ".Mid2L_con",
+      "image_root": ".Mid2L_con",
+      "exclude": ".post_ding_top,.post_ding,.pagecss,.gs_ccs_solve,.gs_nc_editor,.recommend-app-btn-wrap,[id^='gsincome_']",
+      "expected_pages": 1,
+      "expected_stop": "unsupported",
+      "boundary": "The next-page link uses HTTP on an HTTPS page. Same-origin rules reject the protocol change; current-page extraction remains available."
+    },
+    {
       "id": "people-beijing-three-pages",
       "url": "http://bj.people.com.cn/n2/2026/0125/c14540-41482429.html",
       "root": ".rm_txt_con",

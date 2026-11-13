@@ -6,7 +6,7 @@
   if (typeof module === "object" && module.exports) module.exports = api;
   if (root) root.webRagPageExtractor = api;
 })(typeof globalThis !== "undefined" ? globalThis : this, function () {
-  const VERSION = "1.7.2";
+  const VERSION = "1.7.3";
   const MIN_MEANINGFUL_CHARS = 180;
   const MAX_EXTRACTED_CHARS = 500000;
 
@@ -67,13 +67,16 @@
     { id: "xinhua", hosts: ["www.news.cn", "news.cn"], root: "#detail", title: "h1" },
     { id: "ndrc", hosts: ["www.ndrc.gov.cn", "ndrc.gov.cn"], root: ".TRS_Editor, .TRS_UEDITOR", title: ".article_title" },
     { id: "people-photo", hosts: ["pic.people.com.cn", "lianghui.people.com.cn"], root: ".content.clear", title: "h1", require: "#picG" },
+    { id: "gamersky-handbook", hosts: ["www.gamersky.com", "gamersky.com"], path: /^\/handbook\/\d{6}\/\d+(?:_\d+)?\.shtml$/i,
+      root: ".Mid2L_con", title: "h1", require: "h1",
+      remove: ".post_ding_top,.post_ding,.pagecss,.gs_ccs_solve,.gs_nc_editor,.recommend-app-btn-wrap,[id^='gsincome_']" },
   ];
 
   function findSiteRoot(doc) {
-    let host;
-    try { host = new URL(doc.URL).hostname; } catch (_error) { return null; }
+    let host, path;
+    try { const url = new URL(doc.URL); host = url.hostname; path = url.pathname; } catch (_error) { return null; }
     const profile = SITE_PROFILES.find(function (item) { return item.hosts.includes(host); });
-    if (!profile || profile.require && !doc.querySelector(profile.require)) return null;
+    if (!profile || profile.path && !profile.path.test(path) || profile.require && !doc.querySelector(profile.require)) return null;
     const roots = Array.from(doc.querySelectorAll(profile.root)).filter(function (element) {
       return !isEffectivelyHidden(element, doc.defaultView) &&
         ((element.textContent || "").trim() || element.querySelector("img"));
@@ -83,7 +86,7 @@
     const title = Array.from(doc.querySelectorAll(profile.title)).find(function (element) {
       return !isEffectivelyHidden(element, doc.defaultView);
     });
-    return { element: roots[0], profile: profile.id, title: title && (title.textContent || "").replace(/\s+/g, " ").trim() };
+    return { element: roots[0], profile: profile.id, title: title && (title.textContent || "").replace(/\s+/g, " ").trim(), remove: profile.remove };
   }
 
   function hasAccessBarrier(doc) {
@@ -346,7 +349,8 @@
       const inCode = source.closest && source.closest("pre,code");
       const namedNoise = !explicit && !inCode && isNoiseElement(source);
       const semanticNoise = !explicit && shouldRemoveSemanticContainer(source, rootElement);
-      if (!hidden && !hardNoise && !namedNoise && !semanticNoise) return;
+      const siteNoise = !explicit && !inCode && options && options.remove && source.matches(options.remove);
+      if (!hidden && !hardNoise && !namedNoise && !semanticNoise && !siteNoise) return;
       marked.add(target);
       if (hidden) hiddenRemovedNodes += 1;
       else noiseRemovedNodes += 1;
@@ -372,8 +376,8 @@
     };
   }
 
-  function prepareCandidate(element, doc) {
-    const cleaned = cleanClone(element, doc);
+  function prepareCandidate(element, doc, remove) {
+    const cleaned = cleanClone(element, doc, { mode: "article", remove });
     const metrics = collectMetrics(cleaned.clone, element);
     return {
       element,
@@ -414,7 +418,7 @@
   function selectRoot(doc) {
     const site = findSiteRoot(doc);
     if (site) {
-      const candidate = prepareCandidate(site.element, doc);
+      const candidate = prepareCandidate(site.element, doc, site.remove);
       candidate.candidateCount = 1;
       candidate.fallback = false;
       candidate.expandedFrom = null;
@@ -840,12 +844,14 @@
     const imageNodes = (cleaned.clone.matches && cleaned.clone.matches("img") ? [cleaned.clone] : [])
       .concat(Array.from(cleaned.clone.querySelectorAll("img")));
     const images = [];
+    let imageLimitReached = false;
     if (options.collectImages) {
       for (const image of imageNodes) {
         if (mode === "article" && image.getAttribute("data-web-rag-small-image") === "true") continue;
         const url = image.getAttribute("data-web-rag-image");
-        if (url && !images.some(function (item) { return item.url === url; }) && images.length < 33) {
-          images.push({ url, alt: String(image.getAttribute("alt") || "").slice(0, 160) });
+        if (url && !images.some(function (item) { return item.url === url; })) {
+          if (images.length >= 33) imageLimitReached = true;
+          else images.push({ url, alt: String(image.getAttribute("alt") || "").slice(0, 160) });
         }
       }
     }
@@ -889,6 +895,7 @@
     const pendingCollapsed = mode === "selection" ? 0 : pendingCollapsedCount(selected.element, doc);
     if (includedCollapsedCount) qualityWarnings.push("collapsed_content_included");
     if (pendingCollapsed) qualityWarnings.push("collapsed_content_pending");
+    if (imageLimitReached) qualityWarnings.push("capture_image_limit");
     if (options.collectImages && imageNodes.some(function (image) { return !image.getAttribute("data-web-rag-image"); })) qualityWarnings.push("ocr_unsupported_source");
     return {
       text,

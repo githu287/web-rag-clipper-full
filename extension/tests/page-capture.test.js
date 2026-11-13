@@ -19,6 +19,13 @@ const page = { url: "https://example.com/article", title: "Top page" };
   assert.equal(large.raw_text.length, 500000);
   assert.equal(large.diagnostics.truncated, true);
   assert.throws(() => capture.merge([], "selection", page), /选中文字/);
+  const imageTop = result(0, "正文");
+  imageTop.response.images = Array.from({length:33}, (_,index)=>({url:`https://images.example/${index}.jpg`}));
+  const imageChild = result(1, "内嵌正文");
+  imageChild.response.images = [{url:"https://images.example/34.jpg"}];
+  const boundedImages = capture.merge([imageTop,imageChild],"article",page);
+  assert.equal(boundedImages.images.length,33);
+  assert(boundedImages.diagnostics.quality_warnings.includes("capture_image_limit"),"frame image overflow must be reported");
 
   const frames = {
     0: { url: page.url, visible: true, frames: ["https://frame.example/content"] },

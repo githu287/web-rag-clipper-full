@@ -126,13 +126,13 @@ def main() -> None:
                 def capture(tab_id, mode):
                     return driver.evaluate("""async data => webRagPageCapture.capture(data.id, {mode: data.mode})""", {"id": tab_id, "mode": mode})
 
-                def begin(tab_id, mode):
+                def begin(tab_id, mode, collect_images=False):
                     driver.evaluate("""data => {
                       globalThis.captureResult = null; globalThis.captureError = null;
                       globalThis.captureAbort = new AbortController();
-                      webRagPageCapture.capture(data.id, {mode:data.mode, signal:captureAbort.signal})
+                      webRagPageCapture.capture(data.id, {mode:data.mode, collectImages:data.images, signal:captureAbort.signal})
                         .then(r => {globalThis.captureResult=r;}, e => {globalThis.captureError=e.message;});
-                    }""", {"id": tab_id, "mode": mode})
+                    }""", {"id": tab_id, "mode": mode, "images": collect_images})
 
                 regression = context.new_page()
                 # The fixture contains an inline runner; serve it as an ordinary
@@ -275,7 +275,7 @@ def main() -> None:
                     source.goto(fixture_url)
                     source.wait_for_load_state("networkidle")
                     tab = driver.evaluate("async url=>(await chrome.tabs.query({})).find(t=>t.url===url).id", source.url)
-                    begin(tab, "article")
+                    begin(tab, "article", "image_urls" in case)
                     wait_js(driver, "captureResult !== null || captureError !== null")
                     if case.get("error"):
                         assert case["error"] in (driver.evaluate("captureError") or ""), case["id"]
@@ -286,8 +286,10 @@ def main() -> None:
                             assert expected in result["raw_text"], (case["id"], "missing", expected)
                         for excluded in case.get("excludes", []):
                             assert excluded not in result["raw_text"], (case["id"], "noise", excluded)
-                        if case.get("profile"):
+                        if "profile" in case:
                             assert result["diagnostics"]["site_profile"] == case["profile"], case["id"]
+                        if "image_urls" in case:
+                            assert [image["url"] for image in result["images"]] == case["image_urls"], case["id"]
                         if case.get("warning"):
                             assert case["warning"] in result["diagnostics"]["quality_warnings"], case["id"]
                     source.unroute(fixture_url, fixture_route)

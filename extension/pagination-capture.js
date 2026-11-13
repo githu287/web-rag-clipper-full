@@ -123,7 +123,10 @@
           text += appended;
           additionText += appended;
           pages.push(next.url);
-          for (const image of next.images || []) if (images.size < 33 && !images.has(image.url)) images.set(image.url, image);
+          for (const image of next.images || []) if (!images.has(image.url)) {
+            if (images.size < 33) images.set(image.url, image);
+            else warnings.add("capture_image_limit");
+          }
           for (const warning of next.diagnostics.quality_warnings || []) warnings.add(warning);
           previous = next;
           if (stop === "size_limit") break;

@@ -2,6 +2,112 @@
   "description": "Original synthetic fixtures reproducing observed site DOM patterns, not copies of third-party articles. URLs are intercepted locally by the browser regression runner.",
   "cases": [
     {
+      "id": "gamersky-short-body-images",
+      "url": "https://www.gamersky.com/handbook/202611/123456_6.shtml",
+      "html": "<h1>原创分页标题GAME_TITLE</h1><div class='Mid2L_con'><div class='post_ding_top'>TOP_INDEX_NOISE</div><p>短页正文GAME_BODY，第六页图文说明。</p><p><img src='https://images.fixture.test/body.jpg' width='600' height='300' alt='BODY_IMAGE'></p><table><tr><th>参数</th><th>说明</th></tr><tr><td>开启</td><td>保留表格GAME_TABLE</td></tr></table><span class='pagecss'>PAGER_NOISE</span><div class='post_ding'>FULL_INDEX_NOISE</div><p class='gs_nc_editor'>EDITOR_NOISE</p><div class='gs_ccs_solve'>VOTE_NOISE</div><div id='gsincome_www_load2'>AD_NOISE</div><p class='recommend-app-btn-wrap'><img src='https://images.fixture.test/promo.jpg' width='600' height='300' alt='PROMO_IMAGE'></p></div><footer>{{padding}}COPYRIGHT_NOISE{{padding}}</footer>",
+      "contains": [
+        "# 原创分页标题GAME_TITLE",
+        "GAME_BODY",
+        "BODY_IMAGE",
+        "GAME_TABLE"
+      ],
+      "excludes": [
+        "TOP_INDEX_NOISE",
+        "PAGER_NOISE",
+        "FULL_INDEX_NOISE",
+        "EDITOR_NOISE",
+        "VOTE_NOISE",
+        "AD_NOISE",
+        "PROMO_IMAGE",
+        "COPYRIGHT_NOISE"
+      ],
+      "profile": "gamersky-handbook",
+      "image_urls": [
+        "https://images.fixture.test/body.jpg"
+      ]
+    },
+    {
+      "id": "gamersky-other-host",
+      "url": "https://example.com/handbook/202611/123456.shtml",
+      "html": "<h1>其他站点</h1><div class='Mid2L_con'><p>UNRELATED_ROOT</p></div><article><h1>普通正文</h1>{{padding}}<p>GENERIC_BODY</p></article>",
+      "contains": [
+        "GENERIC_BODY"
+      ],
+      "excludes": [
+        "UNRELATED_ROOT"
+      ],
+      "profile": null
+    },
+    {
+      "id": "gamersky-other-path",
+      "url": "https://www.gamersky.com/news/202611/123456.shtml",
+      "html": "<div class='Mid2L_con'><p>UNRELATED_ROOT</p></div><article><h1>新闻正文</h1>{{padding}}<p>NEWS_BODY</p></article>",
+      "contains": [
+        "NEWS_BODY"
+      ],
+      "excludes": [
+        "UNRELATED_ROOT"
+      ],
+      "profile": null
+    },
+    {
+      "id": "gamersky-hidden-root",
+      "url": "https://www.gamersky.com/handbook/202611/123457.shtml",
+      "html": "<div class='Mid2L_con' hidden><p>HIDDEN_BODY</p></div><article><h1>普通备用正文</h1>{{padding}}<p>VISIBLE_BODY</p></article>",
+      "contains": [
+        "VISIBLE_BODY"
+      ],
+      "excludes": [
+        "HIDDEN_BODY"
+      ],
+      "profile": null
+    },
+    {
+      "id": "gamersky-image-pool-limit",
+      "url": "https://www.gamersky.com/handbook/202611/123458.shtml",
+      "html": "<h1>原创图片上限样本</h1><div class='Mid2L_con'><p>IMAGE_POOL_BODY</p><img src='https://images.fixture.test/grid-0.jpg' width='600' height='300'><img src='https://images.fixture.test/grid-1.jpg' width='600' height='300'><img src='https://images.fixture.test/grid-2.jpg' width='600' height='300'><img src='https://images.fixture.test/grid-3.jpg' width='600' height='300'><img src='https://images.fixture.test/grid-4.jpg' width='600' height='300'><img src='https://images.fixture.test/grid-5.jpg' width='600' height='300'><img src='https://images.fixture.test/grid-6.jpg' width='600' height='300'><img src='https://images.fixture.test/grid-7.jpg' width='600' height='300'><img src='https://images.fixture.test/grid-8.jpg' width='600' height='300'><img src='https://images.fixture.test/grid-9.jpg' width='600' height='300'><img src='https://images.fixture.test/grid-10.jpg' width='600' height='300'><img src='https://images.fixture.test/grid-11.jpg' width='600' height='300'><img src='https://images.fixture.test/grid-12.jpg' width='600' height='300'><img src='https://images.fixture.test/grid-13.jpg' width='600' height='300'><img src='https://images.fixture.test/grid-14.jpg' width='600' height='300'><img src='https://images.fixture.test/grid-15.jpg' width='600' height='300'><img src='https://images.fixture.test/grid-16.jpg' width='600' height='300'><img src='https://images.fixture.test/grid-17.jpg' width='600' height='300'><img src='https://images.fixture.test/grid-18.jpg' width='600' height='300'><img src='https://images.fixture.test/grid-19.jpg' width='600' height='300'><img src='https://images.fixture.test/grid-20.jpg' width='600' height='300'><img src='https://images.fixture.test/grid-21.jpg' width='600' height='300'><img src='https://images.fixture.test/grid-22.jpg' width='600' height='300'><img src='https://images.fixture.test/grid-23.jpg' width='600' height='300'><img src='https://images.fixture.test/grid-24.jpg' width='600' height='300'><img src='https://images.fixture.test/grid-25.jpg' width='600' height='300'><img src='https://images.fixture.test/grid-26.jpg' width='600' height='300'><img src='https://images.fixture.test/grid-27.jpg' width='600' height='300'><img src='https://images.fixture.test/grid-28.jpg' width='600' height='300'><img src='https://images.fixture.test/grid-29.jpg' width='600' height='300'><img src='https://images.fixture.test/grid-30.jpg' width='600' height='300'><img src='https://images.fixture.test/grid-31.jpg' width='600' height='300'><img src='https://images.fixture.test/grid-32.jpg' width='600' height='300'><img src='https://images.fixture.test/grid-33.jpg' width='600' height='300'></div>",
+      "contains": [
+        "IMAGE_POOL_BODY"
+      ],
+      "profile": "gamersky-handbook",
+      "image_urls": [
+        "https://images.fixture.test/grid-0.jpg",
+        "https://images.fixture.test/grid-1.jpg",
+        "https://images.fixture.test/grid-2.jpg",
+        "https://images.fixture.test/grid-3.jpg",
+        "https://images.fixture.test/grid-4.jpg",
+        "https://images.fixture.test/grid-5.jpg",
+        "https://images.fixture.test/grid-6.jpg",
+        "https://images.fixture.test/grid-7.jpg",
+        "https://images.fixture.test/grid-8.jpg",
+        "https://images.fixture.test/grid-9.jpg",
+        "https://images.fixture.test/grid-10.jpg",
+        "https://images.fixture.test/grid-11.jpg",
+        "https://images.fixture.test/grid-12.jpg",
+        "https://images.fixture.test/grid-13.jpg",
+        "https://images.fixture.test/grid-14.jpg",
+        "https://images.fixture.test/grid-15.jpg",
+        "https://images.fixture.test/grid-16.jpg",
+        "https://images.fixture.test/grid-17.jpg",
+        "https://images.fixture.test/grid-18.jpg",
+        "https://images.fixture.test/grid-19.jpg",
+        "https://images.fixture.test/grid-20.jpg",
+        "https://images.fixture.test/grid-21.jpg",
+        "https://images.fixture.test/grid-22.jpg",
+        "https://images.fixture.test/grid-23.jpg",
+        "https://images.fixture.test/grid-24.jpg",
+        "https://images.fixture.test/grid-25.jpg",
+        "https://images.fixture.test/grid-26.jpg",
+        "https://images.fixture.test/grid-27.jpg",
+        "https://images.fixture.test/grid-28.jpg",
+        "https://images.fixture.test/grid-29.jpg",
+        "https://images.fixture.test/grid-30.jpg",
+        "https://images.fixture.test/grid-31.jpg",
+        "https://images.fixture.test/grid-32.jpg"
+      ],
+      "warning": "capture_image_limit"
+    },
+    {
       "id": "wps-course-body",
       "url": "https://www.wps.cn/learning/course/detail/id/fixture.html",
       "html": "<article class='default-layout-content'><h1 class='mobile-player-title'>表格操作测试</h1><div class='player'>加载完成: 0% 音量 手机观看</div><article class='course-detail-description-content'><p>先点击编辑，再点击工具，在查看中找到冻结窗格。</p><p>可冻结当前位置、首行或首列。</p><img alt='操作步骤示意' src='data:image/png;base64,AA=='></article><section>看了此视频的人还看了这些 推荐学习课程</section>{{padding}}</article>",
