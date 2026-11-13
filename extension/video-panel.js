@@ -9,6 +9,12 @@ const webRagVideoPanel = (() => {
   const chats = new Map();
   const localMedia = new Map();
   let transcriptJob = null, pendingSeek = null;
+  const captions = webRagVideoCaptions.create(el("player"), (state, count) => {
+    el("captions-enabled").checked = state === "loading" || state === "shown";
+    el("captions-status").textContent = state === "shown" ? `已显示 ${count} 条转写字幕，文字与时间可能有ASR误差。` :
+      state === "loading" ? "正在加载本机转写字幕…" : state === "failed" ? "字幕预览加载失败，可重新开启或下载VTT核对。" :
+      "选择同一原视频后可开启；使用已有ASR原文与时间，不重新转写。";
+  });
   const pending = job => ["UPLOADING", "QUEUED", "PROCESSING"].includes(job.status);
   const identity = () => {
     const plugin = webRagApiClient.getPlugin();
@@ -30,7 +36,7 @@ const webRagVideoPanel = (() => {
     if (chatBusy) el("chat-status").textContent = "已停止等待回答；云端请求可能仍在处理中，可稍后重新提问。";
     chatToken++; chatBusy = false;
   }
-  function leave() { active = false; epoch++; clearTimeout(timer); stopWaitingForAnswer(); el("player").pause(); }
+  function leave() { active = false; epoch++; clearTimeout(timer); stopWaitingForAnswer(); el("player").pause(); captions.clear(); }
   function reset() {
     leave(); owner = null; jobs = []; selected = null; ingestId = null; config = null;
     submitting = false; saving = false; saved = false; edited = false;
@@ -60,6 +66,9 @@ const webRagVideoPanel = (() => {
     el("subtitle-srt").disabled = !subtitles;
     el("subtitle-vtt").disabled = !subtitles;
     el("subtitle-scope").disabled = !subtitles;
+    const player = el("player");
+    el("captions-enabled").disabled = !active || !subtitles || player.dataset.job !== selected || !localMedia.has(selected) ||
+      player.error || player.readyState < 1 || !Number.isFinite(player.duration) || Math.abs(player.duration - job.result.duration_seconds) > 1;
   }
   function clearChatView() {
     chatToken++; chatBusy = false;
@@ -93,6 +102,7 @@ const webRagVideoPanel = (() => {
     return `${String(Math.floor(value / 60)).padStart(2, "0")}:${String(value % 60).padStart(2, "0")}.${Math.floor((seconds - value) * 10)}`;
   }
   function clearPlayer() {
+    captions.clear(); el("captions-enabled").disabled = true;
     const player = el("player"); player.pause(); player.removeAttribute("src"); player.load(); player.hidden = true;
     player.dataset.job = ""; pendingSeek = null; el("local-source").value = "";
     el("playback-status").textContent = "请选择同一原视频用于定位，文件不会再次上传。";
@@ -139,10 +149,22 @@ const webRagVideoPanel = (() => {
       const media = localMedia.get(selected); if (media) URL.revokeObjectURL(media.url);
       localMedia.delete(selected); clearPlayer(); el("playback-status").textContent = "所选视频时长与当前任务不一致，请选择同一原视频。"; return;
     }
+    buttons();
     if (pendingSeek != null) { const time = pendingSeek; pendingSeek = null; seekTo(time); }
   });
   el("player").addEventListener("error", () => {
+    captions.clear(); buttons();
     if (el("player").getAttribute("src")) el("playback-status").textContent = "浏览器无法播放该视频格式，可在外部播放器按时间核对；建议使用 MP4。";
+  });
+  el("captions-enabled").addEventListener("change", () => {
+    if (!el("captions-enabled").checked) { captions.clear(); return; }
+    const ticket = epoch, jobId = selected, player = el("player"), job = jobs.find(item => item.id === jobId);
+    const valid = () => current(ticket) && selected === jobId && transcriptJob === jobId && player.dataset.job === jobId &&
+      localMedia.has(jobId) && !player.error && player.readyState >= 1 && Number.isFinite(player.duration) && job?.result &&
+      Math.abs(player.duration - job.result.duration_seconds) <= 1;
+    if (!valid()) { captions.clear(); buttons(); return; }
+    try { captions.show(job, valid); }
+    catch (error) { captions.clear(); el("captions-status").textContent = error.message; }
   });
   el("local-source").addEventListener("change", () => {
     const file = el("local-source").files[0], job = jobs.find(item => item.id === selected);
@@ -371,6 +393,7 @@ const webRagVideoPanel = (() => {
     const now = identity();
     if (!owner || owner.id !== now.id || owner.secret !== now.secret) { reset(); owner = now; }
     stopWaitingForAnswer();
+    captions.clear();
     active = true; const ticket = ++epoch;
     submitting = false; buttons();
     try {

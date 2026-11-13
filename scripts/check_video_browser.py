@@ -231,6 +231,15 @@ def main():
                 expect(page.locator("#video-transcript-list .video-transcript-row")).to_have_count(2)
                 expect(page.locator("#video-transcript-list img")).to_have_count(0)
                 expect(page.locator("#video-player")).to_be_hidden()
+                expect(page.locator("#video-captions-enabled")).to_be_disabled()
+                wrong_media = args.artifacts / "wrong-duration.webm"
+                subprocess.run([ffmpeg_executable(settings), "-nostdin", "-loglevel", "error", "-y", "-protocol_whitelist", "file,pipe",
+                    "-i", str(media), "-t", "1", "-c", "copy", str(wrong_media)], check=True, timeout=20)
+                page.locator("#video-local-source").set_input_files(str(wrong_media))
+                expect(page.locator("#video-playback-status")).to_contain_text("时长与当前任务不一致")
+                expect(page.locator("#video-player")).to_be_hidden()
+                expect(page.locator("#video-captions-enabled")).to_be_disabled()
+                done("Caption preview stays unavailable without a local source or when the source duration mismatches the job")
                 page.locator("#video-local-source").set_input_files(str(media))
                 expect(page.locator("#video-player")).to_be_visible()
                 # Inspect real media state before seeking; no injected player API.
@@ -309,6 +318,40 @@ def main():
                 page.locator("#video-subtitle-scope").select_option("all")
                 page.screenshot(path=str(args.artifacts / "subtitles.png"), full_page=True)
                 done("Subtitle selection keeps original video offsets; empty selection creates no file, API request, model call or ingestion")
+
+                player = page.locator("#video-player")
+                player.evaluate("v=>v.pause()")
+                position_before = player.evaluate("v=>v.currentTime")
+                subtitle_requests.clear()
+                page.locator("#video-captions-enabled").check()
+                expect(page.locator("#video-captions-status")).to_contain_text("已显示 2 条")
+                assert player.evaluate("v=>v.paused") and abs(player.evaluate("v=>v.currentTime") - position_before) < .001
+                assert player.locator("track[data-asr]").count() == 1
+                player.evaluate("v=>{v.pause();v.currentTime=.3}")
+                page.wait_for_function("()=>{const t=document.querySelector('#video-player track[data-asr]');return t?.track.activeCues?.length===1&&Math.abs(t.track.activeCues[0].startTime-.235)<.000001}")
+                assert player.evaluate("v=>v.textTracks[0].activeCues[0].getCueAsHTML().textContent") == "蓝色演示原文 <img src=x onerror=alert(1)>"
+                page.screenshot(path=str(args.artifacts / "captions.png"), full_page=True)
+                player.evaluate("v=>{v.pause();v.currentTime=10.4}")
+                page.wait_for_function("()=>{const t=document.querySelector('#video-player track[data-asr]');return t?.track.activeCues?.length===1&&Math.abs(t.track.activeCues[0].startTime-10.235)<.000001}")
+                page.locator("#video-captions-enabled").uncheck()
+                expect(player.locator("track[data-asr]")).to_have_count(0)
+                page.locator("#video-captions-enabled").check()
+                expect(page.locator("#video-captions-status")).to_contain_text("已显示")
+                player.evaluate("v=>v.textTracks[0].mode='disabled'")
+                expect(page.locator("#video-captions-enabled")).not_to_be_checked()
+                expect(player.locator("track[data-asr]")).to_have_count(0)
+                assert subtitle_requests == [], subtitle_requests
+                assert counters == (len(questions), len(uploaded_summaries), len(repository.list("video-fixture")))
+                done("Real native captions follow both ASR time ranges without changing playback, uploading media or calling models; native-off clears the track")
+                page.locator("#video-captions-enabled").check()
+                expect(page.locator("#video-captions-status")).to_contain_text("已显示")
+                page.locator("#nav-chat").click()
+                expect(player.locator("track[data-asr]")).to_have_count(0)
+                expect(page.locator("#video-captions-enabled")).not_to_be_checked()
+                page.locator("#nav-video").click()
+                expect(page.locator("#video-captions-enabled")).to_be_enabled()
+                expect(page.locator("#video-captions-enabled")).not_to_be_checked()
+                done("Leaving the video view clears caption data; returning keeps captions off until explicitly enabled again")
                 page.locator("#video-question").fill("视频只有蓝色，对吗？还讲了什么？")
                 page.locator("#video-ask").click()
                 expect(page.locator("#video-chat-messages .assistant")).to_have_count(2)
@@ -400,6 +443,10 @@ def main():
                 expect(page.locator("#video-status")).to_contain_text("目前支持")
                 assert len(repository.list("video-fixture")) == 1
                 done("Unsupported/private links fail without creating a task")
+                page.locator("#video-local-source").set_input_files(str(media))
+                expect(page.locator("#video-captions-enabled")).to_be_enabled()
+                page.locator("#video-captions-enabled").check()
+                expect(page.locator("#video-captions-status")).to_contain_text("已显示")
                 page.locator("#video-question").fill("延迟回答")
                 page.locator("#video-ask").click()
                 assert late_started.wait(3)
@@ -417,6 +464,10 @@ def main():
                 page.locator("#video-subtitle-vtt").dispatch_event("click")
                 assert len(subtitle_downloads) == 3
                 done("Workspace changes clear subtitle actions; a stale export click cannot download another Workspace's transcript")
+                expect(page.locator("#video-captions-enabled")).not_to_be_checked()
+                expect(page.locator("#video-captions-enabled")).to_be_disabled()
+                expect(page.locator("#video-player track[data-asr]")).to_have_count(0)
+                done("Workspace changes remove native caption tracks and disable preview before late responses resolve")
 
                 page.evaluate("webRagApiClient.setPluginDetails({pluginId:'video-fixture',pluginSecret:'ephemeral-video-secret'});webRagVideoPanel.enter()")
                 expect(page.locator("#video-jobs .video-job")).to_have_count(1)
@@ -448,7 +499,7 @@ def main():
         engine.dispose()
         late_release.set()
         ingest_release.set()
-        (args.artifacts / "report.json").write_text(json.dumps({"checks": checks, "passed": len(checks) == 22, "cloud": "fixture (video and ASR)", "ingest": "fixture boundary", "media": "real FFmpeg", "errors": errors}, ensure_ascii=False, indent=2), encoding="utf-8")
+        (args.artifacts / "report.json").write_text(json.dumps({"checks": checks, "passed": len(checks) == 26, "cloud": "fixture (video and ASR)", "ingest": "fixture boundary", "media": "real FFmpeg", "errors": errors}, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 if __name__ == "__main__":
