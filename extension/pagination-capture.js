@@ -56,6 +56,8 @@
     throw new Error("分页加载超时");
   }
   async function expand(sourceTabId, first, options) {
+    const resume = options.resume && first.pagination_resume;
+    if (options.resume && !resume) throw new Error("没有可用的分页续采位置，请重新提取");
     const controller = new AbortController();
     let stop = "complete", timedOut = false, lost = false;
     const abort = function () { controller.abort(); };
@@ -64,11 +66,13 @@
     const maxPages = Math.min(5, Math.max(1, Math.floor(Number(options.limits && options.limits.maxPages) || 5)));
     const maxMs = Math.min(60000, Math.max(100, Number(options.limits && options.limits.maxMs) || 60000));
     const timer = setTimeout(function () { timedOut = true; abort(); }, maxMs);
-    const pages = [first.url], warnings = new Set(first.diagnostics.quality_warnings || []);
+    const pages = resume ? [...first.diagnostics.pagination_urls] : [first.url], warnings = new Set(first.diagnostics.quality_warnings || []);
+    warnings.delete("pagination_incomplete"); warnings.delete("pagination_none");
+    const batchStart = pages.length, maxTotal = 30;
     const images = new Map((first.images || []).map(function (image) { return [image.url, image]; }));
-    const fingerprints = new Set([String(first.raw_text || "").replace(/\s+/g, " ")]);
-    const visited = new Set([webRagPagination.key(first.url)]);
-    let text = first.raw_text || "", previous = first, lease = null;
+    const fingerprints = new Set(resume ? resume.fingerprints : [String(first.raw_text || "").replace(/\s+/g, " ")]);
+    const visited = new Set(pages.map(url => webRagPagination.key(url)));
+    let text = first.raw_text || "", previous = resume ? resume.last : first, lease = null, additionText = "";
     async function guard() {
       if (options.signal.aborted) throw new Error("已取消提取");
       if (options.guard) await options.guard();
@@ -87,12 +91,14 @@
         const target = webRagPagination.nextURL(previous.url, metadata.next_url);
         if (!target) { stop = "unsupported"; break; }
         if (visited.has(webRagPagination.key(target))) { stop = "loop"; break; }
-        if (pages.length >= maxPages) { stop = "page_limit"; break; }
+        if (pages.length >= maxTotal) { stop = "total_page_limit"; break; }
+        if (pages.length >= (resume ? batchStart + maxPages : maxPages)) { stop = "page_limit"; break; }
         const firstPrefix = pages.length === 1 ? "分页来源（第 1 页）：" + first.url + "\n\n" : "";
         const nextPrefix = "\n\n---\n\n分页来源（第 " + (pages.length + 1) + " 页）：" + target + "\n\n";
         if (text.length + firstPrefix.length + nextPrefix.length >= 500000) { stop = "size_limit"; break; }
         if (!lease) lease = connect(function () { lost = true; abort(); });
-        options.onProgress({ phase: "pagination", current: pages.length + 1, collected: pages.length, max_pages: maxPages });
+        options.onProgress({ phase: "pagination", current: pages.length + 1, collected: pages.length,
+          max_pages: Math.min(maxTotal, resume ? batchStart + maxPages : maxPages) });
         let tempId;
         try {
           if (controller.signal.aborted) throw new Error("已取消提取");
@@ -113,7 +119,9 @@
           if (pages.length === 1) text = firstPrefix + text;
           const addition = nextPrefix + next.raw_text;
           if (text.length + addition.length > 500000) { warnings.add("truncated"); stop = "size_limit"; }
-          text = (text + addition).slice(0, 500000);
+          const appended = addition.slice(0, Math.max(0, 500000 - text.length));
+          text += appended;
+          additionText += appended;
           pages.push(next.url);
           for (const image of next.images || []) if (images.size < 33 && !images.has(image.url)) images.set(image.url, image);
           for (const warning of next.diagnostics.quality_warnings || []) warnings.add(warning);
@@ -135,11 +143,14 @@
         pagination_enabled: true, pagination_page_count: pages.length, pagination_stop_reason: stop,
         pagination_urls: pages, extracted_char_count: text.length, truncated: first.diagnostics.truncated || stop === "size_limit",
         quality_warnings: Array.from(warnings),
-      }) });
+      }), capture_addition: additionText,
+        pagination_resume: ["page_limit", "time_limit", "page_failed", "interrupted"].includes(stop) && metadataReady(previous) && text.length < 500000 ?
+          { last: previous, fingerprints: Array.from(fingerprints) } : null });
     } finally {
       clearTimeout(timer); options.signal.removeEventListener("abort", abort); controller.abort();
       if (lease) lease.close();
     }
   }
+  function metadataReady(page) { return page.pagination && page.pagination.status === "ready" && !!page.pagination.next_url; }
   return { expand };
 });

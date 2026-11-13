@@ -176,12 +176,13 @@
         catch (_error) {}
       };
       const result = scroll ? await webRagScrollCapture.run({ mode, signal: controller.signal,
-        limits: options.scrollLimits, collectImages: !!options.collectImages, progress, cancel: function () { controller.abort(); } })
+        limits: options.scrollLimits, resume: options.scrollResume, collectImages: !!options.collectImages, progress, cancel: function () { controller.abort(); } })
         : webRagPageExtractor.extract(document, { mode, root, collectImages: !!options.collectImages });
       if (!samePage(startUrl)) throw new Error("页面已变化，请重新提取");
       Object.assign(result.diagnostics, waiting);
       return { ok: true, url: document.URL, title: document.title || "", raw_text: result.text, images: result.images || [],
-        pagination: options.collectPagination ? webRagPagination.detect(document) : null, diagnostics: result.diagnostics };
+        pagination: options.collectPagination ? webRagPagination.detect(document) : null, diagnostics: result.diagnostics,
+        scroll_resume: result.scroll_resume || null, capture_addition: result.capture_addition || "" };
     } finally {
       clearTimeout(deadline);
       if (active === controller) active = null;

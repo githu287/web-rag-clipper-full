@@ -266,6 +266,23 @@
             <span class="clip-preview-count" id="clip-preview-count">0 字</span>
           </div>
           <div class="clip-preview-diagnostics" id="clip-preview-diagnostics" hidden></div>
+          <section class="clip-completeness" aria-labelledby="clip-completeness-title">
+            <h3 id="clip-completeness-title">本次采集范围与停止原因</h3>
+            <p class="hint">只说明本次读取范围，不代表原网页全文已完整采集。续采沿用本次提取设置，新增内容需确认合并。</p>
+            <ul id="clip-completeness-list"></ul>
+            <details><summary>已读取的页面与图片处理状态</summary><ol id="clip-source-pages"></ol><ul id="clip-source-images"></ul></details>
+            <div class="clip-preview-actions">
+              <button type="button" class="btn-secondary" id="clip-continue-scroll" hidden>继续加载当前页</button>
+              <button type="button" class="btn-secondary" id="clip-continue-pages" hidden>继续读取后续页</button>
+              <button type="button" class="btn-secondary" id="clip-retry-images" hidden>重试失败/未处理图片</button>
+            </div>
+            <section id="clip-continuation-pending" hidden>
+              <label for="clip-continuation-text">新增内容（待合并，可修改）</label>
+              <textarea id="clip-continuation-text" rows="6" maxlength="500000"></textarea>
+              <p class="hint">当前标题和正文不会被覆盖。确认后仅追加新增内容并更新采集进度；放弃则保留原续采位置。</p>
+              <div class="clip-preview-actions"><button type="button" class="btn-secondary" id="clip-continuation-apply">确认追加到当前预览</button><button type="button" class="btn-secondary" id="clip-continuation-discard">放弃本轮新增内容</button></div>
+            </section>
+          </section>
           <label class="clip-preview-label" for="clip-preview-title">标题</label>
           <input
             type="text"
@@ -428,6 +445,7 @@
   <script src="pagination.js"></script>
   <script src="pagination-capture.js"></script>
   <script src="image-ocr.js"></script>
+  <script src="clip-completeness.js"></script>
   <script src="video-subtitles.js"></script>
   <script src="video-captions.js"></script>
   <script src="video-transcript-playback.js"></script>

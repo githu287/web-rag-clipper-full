@@ -1,0 +1,38 @@
+"use strict";
+const assert = require("node:assert/strict");
+const merge = require("../snapshot-merge.js");
+const completeness = require("../clip-completeness.js");
+
+const rolling = merge.create();
+rolling.add("# 长文\n\n第一段\n\n第二段\n\n重复\n\n重复");
+rolling.add("# 长文\n\n第二段\n\n重复\n\n重复\n\n第三段");
+const seed = structuredClone(rolling.checkpoint());
+const resumed = merge.create(500000, seed);
+const next = resumed.add("# 长文\n\n重复\n\n第三段\n\n第四段");
+assert.equal(next.text, "# 长文\n\n第一段\n\n第二段\n\n重复\n\n重复\n\n第三段\n\n第四段");
+assert.equal(next.uncertain_overlaps, 0);
+assert.equal(seed.snapshots, 2, "resume must not mutate the original cursor before confirmation");
+assert.equal(rolling.checkpoint().text, seed.text);
+assert.equal(completeness.append("用户修改后的正文\n保留金额80%", "\n\n第四段"), "用户修改后的正文\n保留金额80%\n\n第四段");
+assert.equal(completeness.append("原文", ""), "原文");
+assert.throws(() => completeness.append("x".repeat(499999), "额外内容"), /50万/);
+assert.deepEqual(completeness.actions({ raw_text: "原文", scroll_resume: {}, pagination_resume: {} }, {}), { scroll: true, pagination: true, ocr: false });
+assert.equal(completeness.actions({ scroll_resume: {} }, { pagination_page_count: 2 }).scroll, false);
+assert.equal(completeness.actions({ pagination_resume: {} }, { truncated: true }).pagination, false);
+const original = { ocr_enabled: true, included_frame_count: 2, ocr_images: [{ url: "a", status: "recognized" }, { url: "b", status: "failed" }, { url: "c", status: "pending" }],
+  quality_warnings: ["ocr_failed", "ocr_image_limit", "pagination_incomplete", "frames_incomplete"], pagination_stop_reason: "page_limit" };
+const refreshed = completeness.mergeDiagnostics(original, { included_frame_count: 0,
+  ocr_images: [{ url: "b", status: "recognized" }, { url: "c", status: "empty" }], pagination_stop_reason: "complete", quality_warnings: [] });
+assert.equal(refreshed.ocr_recognized, 2);
+assert.equal(refreshed.ocr_empty, 1);
+assert.equal(refreshed.ocr_failed, 0);
+assert.equal(refreshed.ocr_pending, 0);
+assert.deepEqual(refreshed.quality_warnings, ["frames_incomplete"]);
+assert.equal(refreshed.included_frame_count, 2);
+assert.equal(original.ocr_images[1].status, "failed", "pending OCR changes cannot overwrite accepted state");
+assert.equal(completeness.actions({ raw_text: "x" }, original).ocr, true);
+assert.equal(completeness.actions({ raw_text: "x" }, refreshed).ocr, false);
+assert(completeness.describe({ pagination_enabled: true, pagination_page_count: 5, pagination_stop_reason: "page_limit" }).some(line => line.includes("可继续")));
+assert(completeness.describe({ pagination_enabled: true, pagination_page_count: 30, pagination_stop_reason: "total_page_limit" }).some(line => line.includes("30页")));
+assert(completeness.describe({ pagination_enabled: true, pagination_stop_reason: "complete" }).some(line => line.includes("不能据此证明")));
+console.log("Capture completeness: serialized rolling checkpoints, real repetition, immutable review state, edited append, bounds, scope and unique OCR retry accounting passed");

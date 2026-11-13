@@ -47,13 +47,13 @@
     return matched;
   }
 
-  function create(maxChars) {
+  function create(maxChars, seed) {
     const limit = Math.min(500000, Math.max(1, Number(maxChars) || 500000));
-    let previous = [];
-    let text = "";
-    let count = 0;
-    let uncertain = 0;
-    let truncated = false;
+    let previous = seed ? units(seed.previous) : [];
+    let text = seed ? String(seed.text || "").slice(0, limit) : "";
+    let count = seed ? Math.max(0, Number(seed.snapshots) || 0) : 0;
+    let uncertain = seed ? Math.max(0, Number(seed.uncertain_overlaps) || 0) : 0;
+    let truncated = !!(seed && seed.truncated);
     return {
       add(snapshot) {
         const next = units(String(snapshot || "").slice(0, limit));
@@ -70,6 +70,10 @@
         previous = next;
         count += 1;
         return { text: text.trim(), snapshots: count, uncertain_overlaps: uncertain, truncated };
+      },
+      checkpoint() {
+        return { text, previous: previous.map(function (item) { return item.text; }).join(""), snapshots: count,
+          uncertain_overlaps: uncertain, truncated };
       },
     };
   }

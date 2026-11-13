@@ -89,6 +89,8 @@ jobs:
         run: python scripts/check_ocr_browser.py --channel chromium
       - name: Exercise bounded article pagination and temporary-tab cleanup
         run: python scripts/check_pagination_browser.py --channel chromium
+      - name: Exercise capture continuation, explicit append review and missing-image retries
+        run: python scripts/check_capture_continuation_browser.py --channel chromium
       - name: Exercise video transcripts, source seeking, optional persistence and isolation
         run: python scripts/check_video_browser.py --channel chromium
       - name: Exercise historical source status, retries and Workspace response isolation

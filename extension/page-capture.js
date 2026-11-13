@@ -74,7 +74,8 @@
     Object.assign(diagnostics, { mode, included_frame_count: includedFrames,
       extracted_char_count: rawText.length, truncated, quality_warnings: Array.from(warnings) });
     return { url: page.url, title: page.title || "", raw_text: rawText, images: Array.from(images.values()),
-      pagination: main && main.response.pagination || null, diagnostics };
+      pagination: main && main.response.pagination || null, diagnostics,
+      scroll_resume: main && main.response.scroll_resume || null, capture_addition: main && main.response.capture_addition || "" };
   }
 
   async function capture(tabId, options) {
@@ -122,7 +123,7 @@
       // are not appended blindly just because allFrames injection succeeded.
       const selected = [top];
       const accepted = new Set([0]);
-      for (let index = 0; index < selected.length && selected.length < MAX_FRAMES; index += 1) {
+      for (let index = 0; !options.scrollResume && index < selected.length && selected.length < MAX_FRAMES; index += 1) {
         const urls = new Set(selected[index].info.frames || []);
         descriptions.forEach(function (frame) {
           if (selected.length >= MAX_FRAMES) { limited = true; return; }
@@ -138,7 +139,7 @@
         capturedIds.push(frame.frameId);
         const response = await message(tabId, frame.frameId,
           { type: "WEB_CLIP_CAPTURE_V4", options: { mode, requestId, autoScroll: autoScroll && frame.frameId === 0,
-            scrollLimits: options.scrollLimits, collectImages: !!options.collectImages,
+            scrollLimits: options.scrollLimits, scrollResume: options.scrollResume, collectImages: !!options.collectImages,
             collectPagination: !!options.collectPagination && frame.frameId === 0 } }, mode === "region" ? 60000 : autoScroll ? 40000 : 10000, signal);
         if (!response || !response.ok) throw new Error(response && response.error || "页面内容提取失败");
         if ((mode === "selection" || mode === "region") && !String(response.raw_text || "").trim() && !(response.images || []).length) throw new Error("所选内容为空");
@@ -164,7 +165,7 @@
         }
       } else {
         const settled = await Promise.allSettled(requests);
-        if (settled[0] && settled[0].status === "rejected" && /访问限制|取消|页面已变化/.test(settled[0].reason.message || "")) throw settled[0].reason;
+        if (settled[0] && settled[0].status === "rejected" && (options.scrollResume || /访问限制|取消|页面已变化/.test(settled[0].reason.message || ""))) throw settled[0].reason;
         results = settled.filter(function (item) { return item.status === "fulfilled"; }).map(function (item) { return item.value; });
         if (settled.some(function (item) { return item.status === "rejected"; })) limited = true;
       }

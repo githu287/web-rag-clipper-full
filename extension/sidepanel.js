@@ -150,6 +150,7 @@ let clipBusyAction = null;
 let clipErrorMsg = null;
 let clipDraft = null;
 let clipDraftTabId = null;
+let clipCaptureSession = null, clipContinuationPending = null;
 let activeClipJob = null;
 let clipJobPollToken = 0;
 // 世代令牌：快速切 Tab 时多个 loadTabContext 并发执行，过期实例在写共享状态前必须中止
@@ -1125,6 +1126,13 @@ async function switchMode(mode) {
 }
 
 function renderClipView() {
+  if (clipCaptureSession) {
+    const identity = clipSessionOwner(), expected = clipCaptureSession.owner;
+    if (identity.id !== expected.id || identity.secret !== expected.secret || identity.server !== expected.server) {
+      if (clipCaptureController) clipCaptureController.abort();
+      clipExtractionToken++; clipBusy = false; clipBusyAction = null; clipCaptureController = null; clearClipDraft();
+    }
+  }
   if (!binding) {
     clearClipDraft();
     return;
@@ -1136,7 +1144,7 @@ function renderClipView() {
     activeClipJob &&
     (activeClipJob.status === "QUEUED" || activeClipJob.status === "RUNNING")
   );
-  els.clipBtn.disabled = clipBusy || jobIsActive;
+  els.clipBtn.disabled = clipBusy || jobIsActive || !!clipContinuationPending;
   els.clipMode.disabled = clipBusy || jobIsActive;
   els.clipAutoScroll.disabled = clipBusy || jobIsActive || !["article", "page"].includes(els.clipMode.value || "article");
   els.clipImageOcr.disabled = clipBusy || jobIsActive;
@@ -1156,7 +1164,7 @@ function renderClipView() {
   els.clipPreviewTitle.disabled = clipBusy || jobIsActive;
   els.clipPreviewText.disabled = clipBusy || jobIsActive;
   els.clipPreviewCancelBtn.disabled = clipBusy || jobIsActive;
-  els.clipPreviewRefreshBtn.disabled = clipBusy || jobIsActive;
+  els.clipPreviewRefreshBtn.disabled = clipBusy || jobIsActive || !!clipContinuationPending;
   const hasDoc = binding.documentId != null && !binding.stale;
   els.gotoChatBtn.hidden = !hasDoc;
   if (clipBusy) {
@@ -1336,6 +1344,11 @@ async function completeClipJob(job, tabId, token) {
 }
 
 function clearClipDraft() {
+  if (clipCaptureController) clipCaptureController.abort();
+  clipCaptureSession = null; clipContinuationPending = null;
+  if (typeof document !== "undefined") for (const id of ["clip-continuation-text", "clip-completeness-list", "clip-source-pages", "clip-source-images"]) {
+    const node = document.getElementById(id); if (node) { if (id === "clip-continuation-text") node.value = ""; else node.replaceChildren(); }
+  }
   clipDraft = null;
   clipDraftTabId = null;
   if (els.clipPreview) {
@@ -1360,8 +1373,44 @@ function renderClipDraftMeta() {
   const text = clipDraft ? clipDraft.raw_text : "";
   const trimmedLength = text.trim().length;
   els.clipPreviewCount.textContent = trimmedLength.toLocaleString("zh-CN") + " 字";
-  els.clipPreviewSaveBtn.disabled = clipBusy || trimmedLength === 0;
+  els.clipPreviewSaveBtn.disabled = clipBusy || !!clipContinuationPending || trimmedLength === 0;
   renderExtractionDiagnostics(trimmedLength);
+  renderClipCompleteness();
+}
+
+function clipSessionOwner() {
+  const p = webRagApiClient.getPlugin();
+  return { id: p.pluginId, secret: p.pluginSecret, server: webRagApiClient.getServerUrl() };
+}
+function clipSessionCurrent() {
+  const s = clipCaptureSession, p = clipSessionOwner();
+  return s && clipDraft && clipDraftTabId === currentTabId && p.id === s.owner.id && p.secret === s.owner.secret && p.server === s.owner.server &&
+    binding && isSameNormalizedWebUrl(binding.pageUrl, s.source.url);
+}
+function renderClipCompleteness() {
+  const list = document.getElementById("clip-completeness-list");
+  if (!list) return;
+  const d = clipDraft && clipDraft.diagnostics || {};
+  list.replaceChildren();
+  for (const line of webRagClipCompleteness.describe(d)) { const li = document.createElement("li"); li.textContent = line; list.append(li); }
+  const pages = document.getElementById("clip-source-pages"); pages.replaceChildren();
+  for (const url of d.pagination_urls || [clipDraft.url]) {
+    const li = document.createElement("li"); const a = document.createElement("a");
+    try { const parsed = new URL(url); if (!["http:", "https:"].includes(parsed.protocol) || parsed.username || parsed.password) continue; a.href = parsed.href; } catch (_error) { continue; }
+    a.textContent = url; a.target = "_blank"; a.rel = "noopener noreferrer"; li.append(a); pages.append(li);
+  }
+  const images = document.getElementById("clip-source-images"); images.replaceChildren();
+  const states = { recognized: "已识别文字", empty: "未发现文字", failed: "读取或识别失败", pending: "本轮未处理" };
+  for (const [index, image] of (d.ocr_images || []).entries()) {
+    const li = document.createElement("li"); li.textContent = `图片 ${index + 1}：${states[image.status] || "未确认"} · ${image.url}`; images.append(li);
+  }
+  const actions = webRagClipCompleteness.actions(clipSessionCurrent() ? clipCaptureSession.source : null, d);
+  for (const [kind, id] of [["scroll", "clip-continue-scroll"], ["pagination", "clip-continue-pages"], ["ocr", "clip-retry-images"]]) {
+    const node = document.getElementById(id); node.hidden = !actions[kind]; node.disabled = clipBusy || !!clipContinuationPending || els.clipMode.disabled;
+  }
+  document.getElementById("clip-continuation-pending").hidden = !clipContinuationPending;
+  document.getElementById("clip-continuation-apply").disabled = clipBusy;
+  document.getElementById("clip-continuation-discard").disabled = clipBusy;
 }
 
 function renderExtractionDiagnostics(trimmedLength) {
@@ -1385,7 +1434,8 @@ function renderExtractionDiagnostics(trimmedLength) {
     collapsed_content_pending: "正文仍有未展开区域，请在原网页展开全文后重新提取",
     frames_incomplete: "部分内嵌页面受权限或数量限制，未完整提取",
     image_heavy: "页面以图片为主，尚未识别出图片正文，可勾选图片文字识别后重试",
-    ocr_image_limit: "图片超过 8 张，仅处理前 8 张，可分区域继续剪藏",
+    ocr_image_limit: "本轮最多识别 8 张，未处理图片可在下方手动继续",
+    capture_image_limit: "累计图片候选达到 33 张上限，后续图片可分区域另行剪藏",
     ocr_byte_limit: "图片总量达到 24 MiB，后续图片未识别",
     ocr_time_limit: "图片识别达到 2 分钟，后续图片未识别",
     ocr_failed: "部分图片读取或识别失败，可能需要登录、防盗链或超出限制",
@@ -1422,7 +1472,7 @@ function renderExtractionDiagnostics(trimmedLength) {
   if (diagnostics.ocr_enabled) parts.push("图片识别：" + diagnostics.ocr_recognized + " 张有文字 / " + diagnostics.ocr_empty + " 张未发现文字 / " + diagnostics.ocr_failed + " 张失败；候选 " + diagnostics.ocr_candidates + " 张，请核对结果");
   if (diagnostics.pagination_enabled) parts.push("分页：" + diagnostics.pagination_page_count + " 页，" + ({
     complete: "未再发现下一页", unsupported: "下一页链接不符合支持规则", ambiguous: "存在多个不同的下一页",
-    loop: "链接循环", page_limit: "达到页数上限", time_limit: "达到读取时间上限", size_limit: "达到字符上限",
+    loop: "链接循环", page_limit: "达到本轮页数上限", total_page_limit: "达到预览30页总上限", time_limit: "达到读取时间上限", size_limit: "达到字符上限",
     different_article: "后续标题或文章身份不一致", repeated_content: "后续页面内容重复", interrupted: "后台标签页被接管或连接中断", page_failed: "后续页面读取失败或受限",
   }[diagnostics.pagination_stop_reason] || diagnostics.pagination_stop_reason));
   if (diagnostics.included_frame_count) parts.push("包含 " + diagnostics.included_frame_count + " 个内嵌页面");
@@ -2438,6 +2488,7 @@ async function prepareClipPreview() {
   clipScrollProgress = null;
   renderClipView();
   try {
+    const settings = { mode: els.clipMode.value || "article", scroll: !!els.clipAutoScroll.checked, pagination: !!els.clipPagination.checked && els.clipMode.value === "article", ocr: !!els.clipImageOcr.checked };
     let page = await extractCurrentPage();
     const guard = async function () {
       if (controller.signal.aborted) throw new Error("已取消提取");
@@ -2452,6 +2503,8 @@ async function prepareClipPreview() {
       signal: controller.signal, guard, collectImages: !!els.clipImageOcr.checked,
       onProgress: function (progress) { if (clipCaptureController === controller && token === clipExtractionToken) { clipScrollProgress = progress; renderClipView(); } },
     });
+    page.images = (page.images || []).map((image, index) => ({ ...image, capture_index: index + 1 }));
+    const source = page;
     if (els.clipImageOcr.checked) page = await webRagImageOcr.enrich(page, {
       signal: controller.signal, guard, recognize: webRagApiClient.ocr.image,
       onProgress: function (progress) { if (clipCaptureController === controller && token === clipExtractionToken) { clipScrollProgress = progress; renderClipView(); } },
@@ -2461,8 +2514,12 @@ async function prepareClipPreview() {
         webRagApiClient.getPlugin().pluginId !== plugin.pluginId) {
       return;
     }
-    clipDraft = page;
+    // Edits belong to the preview, never to the accepted source used for
+    // pagination identity, limits and subsequent continuation checkpoints.
+    clipDraft = { ...page };
     clipDraftTabId = extractionTabId;
+    clipCaptureSession = { source, settings, owner: clipSessionOwner(), report: page.diagnostics };
+    clipContinuationPending = null;
   } catch (err) {
     if (token === clipExtractionToken && currentTabId === extractionTabId && webRagApiClient.getPlugin().pluginId === plugin.pluginId) {
       // Keep an edited draft if a replacement extraction is cancelled or fails.
@@ -2479,13 +2536,98 @@ async function prepareClipPreview() {
   }
 }
 
+async function continueClipCapture(kind) {
+  if (clipBusy || clipContinuationPending || !clipSessionCurrent() || els.clipMode.disabled) return;
+  const s = clipCaptureSession;
+  if (!webRagClipCompleteness.actions(s.source, s.report)[kind]) return;
+  syncClipDraftFromInputs();
+  const tabId = currentTabId, token = ++clipExtractionToken, controller = new AbortController();
+  clipCaptureController = controller; clipBusy = true; clipBusyAction = "extract"; clipErrorMsg = null; clipScrollProgress = null;
+  async function guard() {
+    if (controller.signal.aborted) throw new Error("已取消提取");
+    if (token !== clipExtractionToken || clipCaptureSession !== s || !clipSessionCurrent()) throw new Error("页面或工作空间已变化，请重新提取");
+    const tab = await chrome.tabs.get(tabId);
+    if (controller.signal.aborted || token !== clipExtractionToken || !clipSessionCurrent() || !isSameNormalizedWebUrl(tab.url, s.source.url)) throw new Error("页面或工作空间已变化，请重新提取");
+  }
+  function onProgress(progress) { if (token === clipExtractionToken && !controller.signal.aborted) { clipScrollProgress = progress; renderClipView(); } }
+  renderClipView();
+  try {
+    await guard();
+    let source = s.source, addition = "", images = [];
+    if (kind === "pagination") {
+      source = await webRagPaginationCapture.expand(tabId, s.source, { resume: true, signal: controller.signal, guard, collectImages: s.settings.ocr, onProgress });
+      addition = source.capture_addition;
+    } else if (kind === "scroll") {
+      source = await webRagPageCapture.capture(tabId, { mode: s.settings.mode, autoScroll: true, scrollResume: s.source.scroll_resume,
+        signal: controller.signal, collectImages: s.settings.ocr, collectPagination: s.settings.pagination, onProgress });
+      addition = source.capture_addition;
+      if (s.settings.pagination) {
+        // Only a single-page preview can resume scrolling. Recheck its current
+        // next-page metadata so scrolling cannot silently lose a failed or
+        // newly revealed pagination cursor from the original capture settings.
+        source = await webRagPaginationCapture.expand(tabId, source, { signal: controller.signal, guard, collectImages: s.settings.ocr, onProgress });
+        addition += source.capture_addition;
+      }
+    }
+    await guard();
+    if (kind === "ocr") {
+      const pending = new Set((s.report.ocr_images || []).filter(image => ["failed", "pending"].includes(image.status)).map(image => image.url));
+      images = (s.source.images || []).filter(image => pending.has(image.url));
+      const failed = new Set((s.report.ocr_images || []).filter(image => image.status === "failed").map(image => image.url));
+      images.sort((a, b) => Number(failed.has(a.url)) - Number(failed.has(b.url)));
+    } else {
+      const old = new Map((s.source.images || []).map(image => [image.url, image]));
+      const combined = new Map(old);
+      let limited = false;
+      for (const image of source.images || []) {
+        if (combined.has(image.url)) continue;
+        if (combined.size >= 33) { limited = true; continue; }
+        combined.set(image.url, image);
+      }
+      const combinedImages = [...combined.values()].map((image, index) => ({ ...image, capture_index: index + 1 }));
+      images = combinedImages.filter(image => !old.has(image.url));
+      source = { ...source, images: combinedImages, diagnostics: { ...source.diagnostics,
+        quality_warnings: [...new Set([...(source.diagnostics.quality_warnings || []), ...(limited ? ["capture_image_limit"] : [])])] } };
+    }
+    let report = webRagClipCompleteness.mergeDiagnostics(s.report, source.diagnostics);
+    if (s.settings.ocr && images.length) {
+      const delta = await webRagImageOcr.enrich({ url: source.url, title: source.title, raw_text: addition, images, diagnostics: source.diagnostics }, {
+        signal: controller.signal, guard, onProgress, allowEmpty: true, recognize: webRagApiClient.ocr.image });
+      addition = delta.raw_text;
+      report = webRagClipCompleteness.mergeDiagnostics(report, delta.diagnostics);
+    }
+    await guard();
+    clipContinuationPending = { session: { ...s, source, report }, addition };
+    document.getElementById("clip-continuation-text").value = addition;
+  } catch (error) {
+    if (token === clipExtractionToken && clipCaptureSession === s && clipSessionCurrent()) clipErrorMsg = error.message || "续采失败，原预览已保留";
+  } finally {
+    if (token === clipExtractionToken) { clipBusy = false; clipBusyAction = null; clipCaptureController = null; clipScrollProgress = null; renderClipView(); }
+  }
+}
+
+async function applyClipContinuation() {
+  if (clipBusy || !clipContinuationPending) return;
+  if (!clipSessionCurrent()) { renderClipView(); return; }
+  const pending = clipContinuationPending, tabId = currentTabId;
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    if (pending !== clipContinuationPending || tabId !== currentTabId || !clipSessionCurrent() || !isSameNormalizedWebUrl(tab.url, clipDraft.url)) throw new Error("来源已变化，未合并新增内容");
+    syncClipDraftFromInputs();
+    const raw = webRagClipCompleteness.append(clipDraft.raw_text, document.getElementById("clip-continuation-text").value);
+    clipDraft = { ...clipDraft, raw_text: raw, diagnostics: pending.session.report };
+    clipCaptureSession = pending.session; clipContinuationPending = null; clipErrorMsg = null;
+  } catch (error) { clipErrorMsg = error.message; }
+  renderClipView();
+}
+
 async function submitClipDraft() {
   const plugin = webRagApiClient.getPlugin();
   if (!plugin.pluginId) {
     renderWelcomeView();
     return;
   }
-  if (clipBusy || !clipDraft || clipDraftTabId !== currentTabId) return;
+  if (clipBusy || clipContinuationPending || !clipDraft || clipDraftTabId !== currentTabId) return;
   const submitTabId = currentTabId;
   const previousJobId = binding && binding.ingestJobId;
   syncClipDraftFromInputs();
@@ -2877,6 +3019,9 @@ function updateSendState() {
 
 // ================================================================ 事件绑定
 function bindEvents() {
+  for (const [id, kind] of [["clip-continue-scroll", "scroll"], ["clip-continue-pages", "pagination"], ["clip-retry-images", "ocr"]]) document.getElementById(id).addEventListener("click", () => continueClipCapture(kind));
+  document.getElementById("clip-continuation-apply").addEventListener("click", applyClipContinuation);
+  document.getElementById("clip-continuation-discard").addEventListener("click", () => { if (!clipBusy) { clipContinuationPending = null; renderClipView(); } });
   els.chatExport.addEventListener("click", exportChatSession);
   els.chatSessionsToggle.addEventListener("click", () => {
     if (!els.chatSessions.hidden) closeChatSessions();

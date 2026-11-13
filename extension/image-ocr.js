@@ -55,6 +55,7 @@
     const diagnostics = Object.assign({}, page.diagnostics);
     const warnings = new Set(diagnostics.quality_warnings || []);
     const images = Array.from(new Map((page.images || []).map(function (image) { return [image.url, image]; })).values());
+    const results = images.map(image => ({ url: image.url, status: "pending" }));
     let text = page.raw_text || "";
     let processed = 0, recognized = 0, failed = 0, bytes = 0, empty = 0;
     const notices = new Set();
@@ -79,16 +80,18 @@
           const content = String(result.text || "").trim();
           if (content) {
             const label = String(image.alt || "").replace(/[\r\n]/g, " ").slice(0, 100);
-            const addition = "\n\n---\n\n### 图片文字识别 " + (processed + 1) + (label ? "：" + label : "") + "\n\n" + content;
+            const addition = "\n\n---\n\n### 图片文字识别 " + (image.capture_index || processed + 1) + (label ? "：" + label : "") + "\n\n" + content;
             if (text.length + addition.length > MAX_CHARS) warnings.add("truncated");
             text = (text + addition).slice(0, MAX_CHARS);
             recognized += 1;
-          } else empty += 1;
+            results[processed].status = "recognized";
+          } else { empty += 1; results[processed].status = "empty"; }
         } catch (error) {
           if (options.signal.aborted) throw new Error("已取消提取");
           // Never continue under another tab, route or workspace identity.
           await options.guard();
           failed += 1;
+          results[processed].status = "failed";
           if (error && error.code === "OCR_BYTE_LIMIT") { warnings.add("ocr_byte_limit"); break; }
           if (error && (error.status === 401 || error.status === 403)) throw error;
           if (error && error.status === 503) { warnings.add("ocr_unavailable"); break; }
@@ -102,9 +105,9 @@
       if (notices.size) warnings.add("ocr_review");
       if (recognized) warnings.delete("image_heavy");
       if (!images.length) warnings.add("ocr_no_images");
-      if (!text.trim()) throw new Error("未识别到可保存的文字，请选择其他区域或检查图片访问权限");
+      if (!text.trim() && !options.allowEmpty) throw new Error("未识别到可保存的文字，请选择其他区域或检查图片访问权限");
       Object.assign(diagnostics, { ocr_enabled: true, ocr_recognized: recognized, ocr_failed: failed,
-        ocr_empty: empty, ocr_candidates: images.length, ocr_notices: Array.from(notices),
+        ocr_empty: empty, ocr_candidates: images.length, ocr_images: results, ocr_notices: Array.from(notices),
         extracted_char_count: text.length, quality_warnings: Array.from(warnings) });
       // Source image URLs/bytes are ephemeral and never enter saved content.
       return Object.assign({}, page, { raw_text: text, images: [], diagnostics });

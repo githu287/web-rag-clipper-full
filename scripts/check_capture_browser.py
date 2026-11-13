@@ -264,11 +264,15 @@ def main() -> None:
                 # including unexpected assets or redirects to a live origin.
                 source.route("**/*", lambda route: route.abort())
                 for case in fixtures:
+                    # These are intercepted DOM fixtures, not HTTP transport
+                    # tests. Use HTTPS to avoid browser HTTPS-first upgrading
+                    # a synthetic HTTP URL into the deny-all fallback route.
+                    fixture_url = case["url"].replace("http://", "https://", 1)
                     fixture_html = "<!doctype html><meta charset='utf-8'><title>Local site-pattern fixture</title>" + case["html"].replace("{{padding}}", "<p>" + PARAGRAPH + "</p>")
                     def fixture_route(route, _request, data=fixture_html):
                         route.fulfill(status=200, content_type="text/html; charset=utf-8", body=data)
-                    source.route(case["url"], fixture_route)
-                    source.goto(case["url"])
+                    source.route(fixture_url, fixture_route)
+                    source.goto(fixture_url)
                     source.wait_for_load_state("networkidle")
                     tab = driver.evaluate("async url=>(await chrome.tabs.query({})).find(t=>t.url===url).id", source.url)
                     begin(tab, "article")
@@ -286,7 +290,7 @@ def main() -> None:
                             assert result["diagnostics"]["site_profile"] == case["profile"], case["id"]
                         if case.get("warning"):
                             assert case["warning"] in result["diagnostics"]["quality_warnings"], case["id"]
-                    source.unroute(case["url"], fixture_route)
+                    source.unroute(fixture_url, fixture_route)
                 done(f"Site-pattern regressions: {len(fixtures)} original fixtures passed without live site requests")
                 report["passed"] = True
             finally:

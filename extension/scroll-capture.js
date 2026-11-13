@@ -48,6 +48,12 @@
     const url = document.URL;
     const chosen = selectScroller();
     const scroller = chosen.element;
+    const resume = options.resume;
+    if (!scroller.__webRagScrollKey) scroller.__webRagScrollKey = String(Date.now()) + ":" + Math.random().toString(36).slice(2);
+    if (resume && (!samePage(resume.url) || resume.target !== scroller.__webRagScrollKey || resume.mode !== options.mode ||
+      !Number.isFinite(resume.top) || resume.top < 0 || resume.top > scroller.scrollHeight - scroller.clientHeight + 8)) {
+      throw new Error("原滚动区域或续采位置已变化，请重新提取；原预览未修改");
+    }
     const original = { left: scroller.scrollLeft, top: scroller.scrollTop };
     const hadInlineStyle = scroller.hasAttribute("style");
     const pageOriginal = { left: scrollX, top: scrollY };
@@ -60,9 +66,11 @@
     const maxSteps = Math.min(20, Math.max(1, Number(requested.maxSteps) || 20));
     const maxMs = Math.min(25000, Math.max(500, Number(requested.maxMs) || 25000));
     const start = Date.now();
-    const accumulator = webRagSnapshotMerge.create(webRagPageExtractor.MAX_EXTRACTED_CHARS);
-    const warnings = new Set();
-    const images = new Map();
+    const accumulator = webRagSnapshotMerge.create(webRagPageExtractor.MAX_EXTRACTED_CHARS, resume && resume.merge);
+    const previousTextLength = resume ? String(resume.merge.text || "").trim().length : 0;
+    const warnings = new Set(resume && resume.warnings || []);
+    warnings.delete("scroll_incomplete");
+    const images = new Map((resume && resume.images || []).map(image => [image.url, image]));
     if (chosen.multiple) warnings.add("scroll_other_containers");
     let latest;
     let merged;
@@ -88,7 +96,7 @@
     }
     try {
       check(signal, url);
-      scroller.scrollTo({ left: original.left, top: 0, behavior: "instant" });
+      scroller.scrollTo({ left: original.left, top: resume ? resume.top : 0, behavior: "instant" });
       await pause(550, signal);
       snapshot();
       for (let turn = 1; turn <= maxSteps; turn += 1) {
@@ -116,11 +124,18 @@
       const framesAfter = Array.from(document.querySelectorAll("iframe,frame"));
       if (framesAfter.length > framesBefore.length || framesAfter.some(function (frame) { return !framesBefore.includes(frame.src); })) warnings.add("scroll_new_frames");
       if (merged.truncated || reason === "size_limit") warnings.add("truncated");
-      return { text: merged.text, images: Array.from(images.values()), diagnostics: Object.assign({}, latest.diagnostics, {
+      const state = { url, mode: options.mode, target: scroller.__webRagScrollKey, top: scroller.scrollTop, merge: accumulator.checkpoint(),
+        warnings: Array.from(warnings), images: Array.from(images.values()),
+        steps: (resume && resume.steps || 0) + Math.min(steps, maxSteps), elapsed_ms: (resume && resume.elapsed_ms || 0) + Date.now() - start };
+      return { text: merged.text, images: Array.from(images.values()),
+        scroll_resume: ["step_limit", "time_limit"].includes(reason) && !merged.truncated ? state : null,
+        capture_addition: resume ? merged.text.slice(previousTextLength) : "",
+        diagnostics: Object.assign({}, latest.diagnostics, {
         extracted_char_count: merged.text.length, quality_warnings: Array.from(warnings), truncated: merged.truncated || latest.diagnostics.truncated,
         scroll_enabled: true, scroll_steps: Math.min(steps, maxSteps), scroll_stop_reason: reason,
         scroll_snapshots: merged.snapshots, scroll_elapsed_ms: Date.now() - start,
         scroll_target: chosen.nested ? "container" : "page", scroll_uncertain_overlaps: merged.uncertain_overlaps,
+        scroll_total_steps: state.steps, scroll_total_elapsed_ms: state.elapsed_ms,
       }) };
     } finally {
       document.removeEventListener("keydown", onKey, true);
