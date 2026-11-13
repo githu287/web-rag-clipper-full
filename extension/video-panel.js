@@ -39,6 +39,8 @@ const webRagVideoPanel = (() => {
     el("key").value = ""; el("asr-key").value = ""; el("url").value = ""; el("file").value = "";
     el("jobs").replaceChildren(); el("preview-text").value = ""; el("preview").hidden = true;
     el("confirm").checked = false; el("ingest-status").textContent = ""; status("");
+    el("subtitle-status").textContent = ""; el("subtitle-scope").value = "all";
+    buttons();
   }
   function buttons() {
     el("upload-btn").disabled = submitting || saving || !config || !config.configured || !config.media_tools_available;
@@ -52,6 +54,12 @@ const webRagVideoPanel = (() => {
     el("ask").disabled = !selected || chatBusy || !config || !config.configured || !el("question").value.trim();
     el("question").disabled = chatBusy;
     el("transcript-choices").disabled = saving;
+    const job = jobs.find(item => item.id === selected);
+    const subtitles = job && job.status === "SUCCEEDED" && job.id === transcriptJob && job.result?.transcript?.status === "ready" &&
+      job.result.transcript.sentences?.length;
+    el("subtitle-srt").disabled = !subtitles;
+    el("subtitle-vtt").disabled = !subtitles;
+    el("subtitle-scope").disabled = !subtitles;
   }
   function clearChatView() {
     chatToken++; chatBusy = false;
@@ -148,6 +156,8 @@ const webRagVideoPanel = (() => {
   function renderTranscript(job) {
     if (transcriptJob === job.id) return;
     transcriptJob = job.id; el("transcript-list").replaceChildren();
+    el("subtitle-scope").value = "all";
+    el("subtitle-status").textContent = "字幕使用已有原文与ASR时间，选段导出保留原视频时间；下载不调用模型或写入知识库。";
     const transcript = job.result.transcript || {};
     const states = { ready: "云端 ASR 识别原文，时间为对齐估计，可能误识别。可逐段勾选保存，点击时间回看。",
       disabled: "此任务未启用原文转写。可在视频模型配置中启用，再上传生成。", no_audio: "原视频没有音轨，仅提供画面总结。",
@@ -462,6 +472,24 @@ const webRagVideoPanel = (() => {
       if (sameOwner(saveOwner)) { saving = false; el("ingest-status").textContent = error.message + "；若请求超时，请先在知识库中确认，避免重复保存。"; }
     } finally { if (sameOwner(saveOwner)) { buttons(); renderJobs(); } }
   });
+  function downloadSubtitles(format) {
+    if (!current(epoch)) return;
+    try {
+      const job = jobs.find(item => item.id === selected);
+      if (!job || transcriptJob !== job.id) throw new Error("请先打开要导出字幕的视频。");
+      const selectedIds = el("subtitle-scope").value === "selected" ?
+        [...el("transcript-list").querySelectorAll("input:checked")].map(input => Number(input.value)) : null;
+      const exported = webRagVideoSubtitles.render(job, { format, selectedIds });
+      if (!current(epoch) || selected !== job.id) return;
+      const url = URL.createObjectURL(new Blob([exported.content], { type: exported.mime }));
+      try {
+        const link = document.createElement("a"); link.href = url; link.download = exported.filename; link.click();
+        el("subtitle-status").textContent = `已生成 ${exported.count} 条${format.toUpperCase()}字幕；请核对原视频，ASR文字与时间可能有误差。`;
+      } finally { setTimeout(() => URL.revokeObjectURL(url), 1000); }
+    } catch (error) { el("subtitle-status").textContent = error.message; }
+  }
+  el("subtitle-srt").addEventListener("click", () => downloadSubtitles("srt"));
+  el("subtitle-vtt").addEventListener("click", () => downloadSubtitles("vtt"));
   el("download").addEventListener("click", () => {
     const url = URL.createObjectURL(new Blob([el("preview-text").value], { type: "text/markdown;charset=utf-8" }));
     const link = document.createElement("a"); link.href = url; link.download = "video-summary.md"; link.click();

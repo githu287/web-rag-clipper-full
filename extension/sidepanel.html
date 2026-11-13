@@ -109,6 +109,13 @@
             <input id="video-local-source" type="file" accept=".mp4,.mov,.webm,.mkv,.avi">
             <p class="hint" id="video-playback-status">点击原文或回答来源可定位；重新打开面板后需重新选择原视频。平台链接暂请下载后选择本地文件。</p>
             <fieldset id="video-transcript-choices"><legend>原文片段：勾选可加入待保存内容</legend><div id="video-transcript-list"></div></fieldset>
+            <div class="video-form">
+              <label for="video-subtitle-scope">下载字幕范围</label>
+              <select id="video-subtitle-scope"><option value="all">全部转写原文</option><option value="selected">仅勾选的原文片段</option></select>
+              <div class="video-actions"><button type="button" class="btn-secondary" id="video-subtitle-srt" disabled>下载 SRT</button>
+                <button type="button" class="btn-secondary" id="video-subtitle-vtt" disabled>下载 VTT</button></div>
+            </div>
+            <p class="hint" id="video-subtitle-status" role="status" aria-live="polite">字幕使用已有原文与ASR时间，选段导出保留原视频时间；下载不调用模型或写入知识库。</p>
           </section>
           <section class="video-qa" aria-labelledby="video-qa-title">
             <div class="video-section-title"><h3 id="video-qa-title">直接问这个视频</h3><button type="button" class="btn-secondary" id="video-chat-clear">清空对话</button></div>
@@ -380,6 +387,7 @@
   <script src="pagination.js"></script>
   <script src="pagination-capture.js"></script>
   <script src="image-ocr.js"></script>
+  <script src="video-subtitles.js"></script>
   <script src="video-panel.js"></script>
   <script src="source-check.js"></script>
   <script src="question-replay.js"></script>

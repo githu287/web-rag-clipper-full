@@ -139,7 +139,7 @@ def main():
         print(message, flush=True)
     try:
         with tempfile.TemporaryDirectory(prefix="profile-", dir=args.artifacts) as profile, sync_playwright() as playwright:
-            context = playwright.chromium.launch_persistent_context(profile, channel=args.channel, headless=True,
+            context = playwright.chromium.launch_persistent_context(profile, channel=args.channel, headless=True, accept_downloads=True,
                 ignore_default_args=["--disable-extensions"], args=["--enable-unsafe-extension-debugging"], viewport={"width":420,"height":900})
             try:
                 cdp = context.browser.new_browser_cdp_session()
@@ -248,6 +248,67 @@ def main():
                 page.locator("#video-chat-messages .video-time-link").nth(1).click()
                 assert page.locator("#video-player").evaluate("v=>v.currentTime") >= 10.225
                 done("ASR range citation exposes both server quotes and seeks each actual local position; HTML remains text; no new upload")
+
+                subtitle_requests, subtitle_downloads = [], []
+                page.on("request", lambda request: subtitle_requests.append(request.url) if request.url.startswith(base) else None)
+                page.on("download", lambda download: subtitle_downloads.append(download.suggested_filename))
+                page.wait_for_load_state("networkidle")
+                subtitle_requests.clear()
+                preview_before = page.locator("#video-preview-text").input_value()
+                counters = (len(questions), len(uploaded_summaries), len(repository.list("video-fixture")))
+                with page.expect_download() as transfer:
+                    page.locator("#video-subtitle-srt").click()
+                transfer.value.save_as(args.artifacts / "subtitles-all.srt")
+                assert transfer.value.suggested_filename.endswith(".srt")
+                srt = (args.artifacts / "subtitles-all.srt").read_text(encoding="utf-8-sig")
+                assert "00:00:00,235 --> 00:00:00,835" in srt and "00:00:10,235 --> 00:00:10,835" in srt
+                assert "&lt;img src=x onerror=alert(1)&gt;" in srt
+                with page.expect_download() as transfer:
+                    page.locator("#video-subtitle-vtt").click()
+                transfer.value.save_as(args.artifacts / "subtitles-all.vtt")
+                vtt = (args.artifacts / "subtitles-all.vtt").read_text(encoding="utf-8")
+                assert vtt.startswith("WEBVTT\n\nNOTE ") and "00:00:10.235 --> 00:00:10.835" in vtt
+
+                def parse_track(value):
+                    return page.evaluate("""value => new Promise((resolve,reject) => {
+                        const video=document.getElementById('video-player'), track=document.createElement('track');
+                        const url=URL.createObjectURL(new Blob([value],{type:'text/vtt'}));
+                        const cleanup=()=>{clearTimeout(timer);track.remove();URL.revokeObjectURL(url);};
+                        const timer=setTimeout(()=>{cleanup();reject(new Error('subtitle track timeout'));},5000);
+                        track.onload=()=>{const cues=[...track.track.cues].map(c=>({start:c.startTime,end:c.endTime,text:c.getCueAsHTML().textContent}));cleanup();resolve(cues);};
+                        track.onerror=()=>{cleanup();reject(new Error('subtitle track error'));};
+                        track.src=url;video.append(track);track.track.mode='hidden';
+                    })""", value)
+
+                cues = parse_track(vtt)
+                assert len(cues) == 2 and abs(cues[1]["start"] - 10.235) < .000001
+                assert cues[0]["text"] == "蓝色演示原文 <img src=x onerror=alert(1)>"
+                subprocess.run([ffmpeg_executable(settings), "-nostdin", "-loglevel", "error", "-y", "-protocol_whitelist", "file,pipe", "-i",
+                    str(args.artifacts / "subtitles-all.srt"), str(args.artifacts / "subtitles-srt-roundtrip.vtt")], check=True, timeout=20)
+                converted = parse_track((args.artifacts / "subtitles-srt-roundtrip.vtt").read_text(encoding="utf-8"))
+                assert len(converted) == 2 and abs(converted[1]["start"] - 10.235) < .000001
+                assert converted[0]["text"] == cues[0]["text"]
+                assert page.locator("#video-preview-text").input_value() == preview_before
+                done("Actual SRT/VTT downloads preserve fractional source times and literal text; Chrome and FFmpeg parse both formats")
+
+                page.locator("#video-subtitle-scope").select_option("selected")
+                page.locator("#video-subtitle-srt").click()
+                expect(page.locator("#video-subtitle-status")).to_contain_text("请先勾选")
+                assert len(subtitle_downloads) == 2
+                page.locator('#video-transcript-list input[value="2"]').check()
+                selection_preview = page.locator("#video-preview-text").input_value()
+                with page.expect_download() as transfer:
+                    page.locator("#video-subtitle-vtt").click()
+                transfer.value.save_as(args.artifacts / "subtitles-selected.vtt")
+                chosen = parse_track((args.artifacts / "subtitles-selected.vtt").read_text(encoding="utf-8"))
+                assert len(chosen) == 1 and abs(chosen[0]["start"] - 10.235) < .000001
+                assert page.locator("#video-preview-text").input_value() == selection_preview
+                assert counters == (len(questions), len(uploaded_summaries), len(repository.list("video-fixture")))
+                assert subtitle_requests == [], subtitle_requests
+                page.locator('#video-transcript-list input[value="2"]').uncheck()
+                page.locator("#video-subtitle-scope").select_option("all")
+                page.screenshot(path=str(args.artifacts / "subtitles.png"), full_page=True)
+                done("Subtitle selection keeps original video offsets; empty selection creates no file, API request, model call or ingestion")
                 page.locator("#video-question").fill("视频只有蓝色，对吗？还讲了什么？")
                 page.locator("#video-ask").click()
                 expect(page.locator("#video-chat-messages .assistant")).to_have_count(2)
@@ -351,6 +412,11 @@ def main():
                 assert page.locator("#video-player").get_attribute("src") is None
                 expect(page.locator("#video-transcript-list")).to_be_empty()
                 done("Changing Workspace clears the previous preview before asynchronous requests resolve")
+                expect(page.locator("#video-subtitle-srt")).to_be_disabled()
+                expect(page.locator("#video-subtitle-vtt")).to_be_disabled()
+                page.locator("#video-subtitle-vtt").dispatch_event("click")
+                assert len(subtitle_downloads) == 3
+                done("Workspace changes clear subtitle actions; a stale export click cannot download another Workspace's transcript")
 
                 page.evaluate("webRagApiClient.setPluginDetails({pluginId:'video-fixture',pluginSecret:'ephemeral-video-secret'});webRagVideoPanel.enter()")
                 expect(page.locator("#video-jobs .video-job")).to_have_count(1)
@@ -382,7 +448,7 @@ def main():
         engine.dispose()
         late_release.set()
         ingest_release.set()
-        (args.artifacts / "report.json").write_text(json.dumps({"checks": checks, "passed": len(checks) == 19, "cloud": "fixture (video and ASR)", "ingest": "fixture boundary", "media": "real FFmpeg", "errors": errors}, ensure_ascii=False, indent=2), encoding="utf-8")
+        (args.artifacts / "report.json").write_text(json.dumps({"checks": checks, "passed": len(checks) == 22, "cloud": "fixture (video and ASR)", "ingest": "fixture boundary", "media": "real FFmpeg", "errors": errors}, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 if __name__ == "__main__":
