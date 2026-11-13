@@ -1394,6 +1394,7 @@ button.page-num:not(.current):hover {
 .clip-completeness ul, .clip-completeness ol { padding-left: 20px; margin: 8px 0; }
 .clip-completeness a { overflow-wrap: anywhere; }
 #clip-continuation-text { width: 100%; box-sizing: border-box; margin: 8px 0; font: inherit; }
+#clip-continuation-summary { white-space: pre-line; }
 #clip-continue-scroll[hidden], #clip-continue-pages[hidden], #clip-retry-images[hidden], #clip-continuation-pending[hidden] { display: none; }
 
 .clip-preview-label {

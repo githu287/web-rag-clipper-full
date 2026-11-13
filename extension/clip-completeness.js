@@ -59,5 +59,14 @@
     if (result.length > MAX) throw new Error("追加后超过50万字符，请缩短当前预览或新增内容后再确认；原预览未修改");
     return result;
   }
-  return { actions, describe, mergeDiagnostics, append };
+  function review(d, addition) {
+    const text = String(addition || "");
+    const lines = [text.trim() ? `待追加 ${text.length.toLocaleString("zh-CN")} 个字符，请核对新增内容。` :
+      "本轮没有新增文字；确认仅更新采集进度，原有正文保持不变。"];
+    if (d.pagination_enabled) lines.push(`确认后分页：已读取 ${d.pagination_page_count || 1} 页；${stops[d.pagination_stop_reason] || "请核对停止原因"}。`);
+    if (d.scroll_enabled) lines.push(`确认后自动加载：累计 ${d.scroll_total_steps ?? d.scroll_steps ?? 0} 次滚动；${stops[d.scroll_stop_reason] || "请核对停止原因"}。`);
+    if (d.ocr_enabled) lines.push(`确认后图片识别：${d.ocr_recognized || 0} 张有文字、${d.ocr_empty || 0} 张无文字、${d.ocr_failed || 0} 张失败、${d.ocr_pending ?? (d.ocr_images || []).filter(image => image.status === "pending").length} 张未处理。`);
+    return lines.join("\n");
+  }
+  return { actions, describe, mergeDiagnostics, append, review };
 });

@@ -50,6 +50,8 @@ def main():
                             body = '<article><h1>虚拟长文章</h1><p>MIXED_PAGE_02。' + '这是同一文章的第二页内容。' * 30 + '</p></article>'
                 elif parsed.path == "/images":
                     body = '<article><h1>图文测试</h1><p>' + "正常正文，不将图片失败当作全文采集完成。" * 15 + '</p>' + ''.join(f'<img width="600" height="240" alt="示例图片{i}" src="/image.png?n={i}">' for i in range(1, 10)) + '</article>'
+                elif parsed.path == "/static-long":
+                    body = '<article style="min-height:16000px"><h1>已加载的长网页</h1><p>STATIC_ONCE。' + '全部正文已经在DOM中，滚动可能没有新增文字。' * 20 + '</p></article>'
                 else:
                     body = '<article><h1>其他网页</h1><p>这是一个不同来源的页面。</p></article>'
                 content = ('<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>续采测试文章</title><style>body{margin:20px}article{max-width:650px}p{line-height:1.8}img{display:block}</style></head><body>' + body + '</body></html>').encode()
@@ -110,6 +112,7 @@ def main():
                 expect(panel.locator("#clip-preview-save-btn")).to_be_disabled()
                 delta = panel.locator("#clip-continuation-text").input_value()
                 assert "PAGE_MARKER_06" in delta and "PAGE_MARKER_10" in delta and "PAGE_MARKER_05" not in delta
+                expect(panel.locator("#clip-continuation-summary")).to_contain_text("确认后分页：已读取 10 页")
                 assert not any(int(parse_qs(urlsplit(path).query).get("page", ["0"])[0]) in range(1, 6) for path in requests[start:])
                 original += "\nKEEP_EDIT_AFTER_FETCH"
                 panel.locator("#clip-preview-text").fill(original)
@@ -181,6 +184,26 @@ def main():
                 expect(panel.locator("#clip-status")).to_contain_text("滚动区域或续采位置已变化")
                 done("Reloading the source invalidates its DOM-bound scroll cursor and preserves the original preview instead of guessing a resume position")
 
+                navigate("/static-long"); panel.locator("#clip-auto-scroll").check(); extract()
+                old = panel.locator("#clip-preview-text").input_value() + "\nKEEP_STATIC_EDIT"
+                panel.locator("#clip-preview-text").fill(old)
+                continuation("#clip-continue-scroll")
+                expect(panel.locator("#clip-continuation-text")).to_have_value("")
+                expect(panel.locator("#clip-continuation-summary")).to_contain_text("本轮没有新增文字")
+                expect(panel.locator("#clip-continuation-summary")).to_contain_text("累计 8 次滚动")
+                expect(panel.locator("#clip-continuation-apply")).to_have_text("确认更新采集进度")
+                panel.locator("#clip-continuation-text").fill("用户补充的内容")
+                expect(panel.locator("#clip-continuation-summary")).to_contain_text("待追加")
+                expect(panel.locator("#clip-continuation-apply")).to_have_text("确认追加到当前预览")
+                panel.locator("#clip-continuation-text").fill("")
+                expect(panel.locator("#clip-continuation-apply")).to_have_text("确认更新采集进度")
+                panel.screenshot(path=str(args.artifacts / "empty-continuation-review.png"), full_page=True)
+                panel.locator("#clip-continuation-apply").click()
+                expect(panel.locator("#clip-preview-text")).to_have_value(old)
+                assert panel.evaluate("clipCaptureSession.report.scroll_total_steps") == 8
+                expect(panel.locator("#clip-continuation-summary")).to_be_empty()
+                done("Empty continuation clearly previews pending progress; edited additions update the action, and accepting empty text advances only the checkpoint without changing the edited body")
+
                 navigate("/virtual?page=1&mixed=1")
                 panel.locator("#clip-auto-scroll").check(); panel.locator("#clip-pagination").check(); extract()
                 expect(panel.locator("#clip-continue-scroll")).to_be_visible()
@@ -208,6 +231,7 @@ def main():
                 expect(panel.locator("#clip-preview-text")).to_have_value(old)
                 delta = panel.locator("#clip-continuation-text").input_value()
                 assert "OCR_RESULT_9" in delta and "OCR_RESULT_10" in delta and "OCR_RESULT_2" not in delta
+                expect(panel.locator("#clip-continuation-summary")).to_contain_text("9 张有文字")
                 assert "图片文字识别 9" in delta and "图片文字识别 1" in delta
                 panel.locator("#clip-continuation-apply").click()
                 expect(panel.locator("#clip-retry-images")).to_be_hidden()

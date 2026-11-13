@@ -1346,7 +1346,7 @@ async function completeClipJob(job, tabId, token) {
 function clearClipDraft() {
   if (clipCaptureController) clipCaptureController.abort();
   clipCaptureSession = null; clipContinuationPending = null;
-  if (typeof document !== "undefined") for (const id of ["clip-continuation-text", "clip-completeness-list", "clip-source-pages", "clip-source-images"]) {
+  if (typeof document !== "undefined") for (const id of ["clip-continuation-text", "clip-continuation-summary", "clip-completeness-list", "clip-source-pages", "clip-source-images"]) {
     const node = document.getElementById(id); if (node) { if (id === "clip-continuation-text") node.value = ""; else node.replaceChildren(); }
   }
   clipDraft = null;
@@ -1411,6 +1411,14 @@ function renderClipCompleteness() {
   document.getElementById("clip-continuation-pending").hidden = !clipContinuationPending;
   document.getElementById("clip-continuation-apply").disabled = clipBusy;
   document.getElementById("clip-continuation-discard").disabled = clipBusy;
+  renderClipContinuationReview();
+}
+
+function renderClipContinuationReview() {
+  const addition = document.getElementById("clip-continuation-text").value;
+  document.getElementById("clip-continuation-summary").textContent = clipContinuationPending
+    ? webRagClipCompleteness.review(clipContinuationPending.session.report, addition) : "";
+  document.getElementById("clip-continuation-apply").textContent = addition.trim() ? "确认追加到当前预览" : "确认更新采集进度";
 }
 
 function renderExtractionDiagnostics(trimmedLength) {
@@ -2617,6 +2625,7 @@ async function applyClipContinuation() {
     const raw = webRagClipCompleteness.append(clipDraft.raw_text, document.getElementById("clip-continuation-text").value);
     clipDraft = { ...clipDraft, raw_text: raw, diagnostics: pending.session.report };
     clipCaptureSession = pending.session; clipContinuationPending = null; clipErrorMsg = null;
+    document.getElementById("clip-continuation-text").value = "";
   } catch (error) { clipErrorMsg = error.message; }
   renderClipView();
 }
@@ -3021,7 +3030,8 @@ function updateSendState() {
 function bindEvents() {
   for (const [id, kind] of [["clip-continue-scroll", "scroll"], ["clip-continue-pages", "pagination"], ["clip-retry-images", "ocr"]]) document.getElementById(id).addEventListener("click", () => continueClipCapture(kind));
   document.getElementById("clip-continuation-apply").addEventListener("click", applyClipContinuation);
-  document.getElementById("clip-continuation-discard").addEventListener("click", () => { if (!clipBusy) { clipContinuationPending = null; renderClipView(); } });
+  document.getElementById("clip-continuation-text").addEventListener("input", renderClipContinuationReview);
+  document.getElementById("clip-continuation-discard").addEventListener("click", () => { if (!clipBusy) { clipContinuationPending = null; document.getElementById("clip-continuation-text").value = ""; renderClipView(); } });
   els.chatExport.addEventListener("click", exportChatSession);
   els.chatSessionsToggle.addEventListener("click", () => {
     if (!els.chatSessions.hidden) closeChatSessions();

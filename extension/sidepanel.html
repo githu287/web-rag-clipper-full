@@ -277,6 +277,7 @@
               <button type="button" class="btn-secondary" id="clip-retry-images" hidden>重试失败/未处理图片</button>
             </div>
             <section id="clip-continuation-pending" hidden>
+              <p class="hint" id="clip-continuation-summary" role="status" aria-live="polite"></p>
               <label for="clip-continuation-text">新增内容（待合并，可修改）</label>
               <textarea id="clip-continuation-text" rows="6" maxlength="500000"></textarea>
               <p class="hint">当前标题和正文不会被覆盖。确认后仅追加新增内容并更新采集进度；放弃则保留原续采位置。</p>

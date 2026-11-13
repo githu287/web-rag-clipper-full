@@ -112,6 +112,7 @@ def main():
                 except Exception as error:
                     record["status"] = "access_or_transport_error" if "net::ERR_" in str(error) else "capture_error"
                     record["error_type"] = type(error).__name__
+                    record["error"] = str(error)[:700]
                 finally:
                     source.close(); reference.close()
                     record["seconds"] = round(time.monotonic() - start, 3); save()

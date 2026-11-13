@@ -35,4 +35,7 @@ assert.equal(completeness.actions({ raw_text: "x" }, refreshed).ocr, false);
 assert(completeness.describe({ pagination_enabled: true, pagination_page_count: 5, pagination_stop_reason: "page_limit" }).some(line => line.includes("可继续")));
 assert(completeness.describe({ pagination_enabled: true, pagination_page_count: 30, pagination_stop_reason: "total_page_limit" }).some(line => line.includes("30页")));
 assert(completeness.describe({ pagination_enabled: true, pagination_stop_reason: "complete" }).some(line => line.includes("不能据此证明")));
+const pendingReport = { scroll_enabled: true, scroll_total_steps: 40, scroll_stop_reason: "step_limit", ocr_enabled: true, ocr_recognized: 4, ocr_empty: 1, ocr_failed: 0, ocr_images: [] };
+assert.match(completeness.review(pendingReport, ""), /没有新增文字[\s\S]*仅更新采集进度[\s\S]*40 次[\s\S]*4 张有文字、1 张无文字/);
+assert.match(completeness.review(pendingReport, "用户编辑的新增正文"), /待追加 9 个字符/);
 console.log("Capture completeness: serialized rolling checkpoints, real repetition, immutable review state, edited append, bounds, scope and unique OCR retry accounting passed");
