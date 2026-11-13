@@ -116,6 +116,8 @@
               <button type="button" class="btn-secondary" id="video-transcript-search-clear" disabled>清除搜索</button>
             </div>
             <p class="hint" id="video-transcript-search-status" role="status" aria-live="polite">有完整转写后，可按原文关键词搜索。</p>
+            <button type="button" class="btn-secondary" id="video-transcript-locate" disabled>定位当前原文</button>
+            <p class="hint" id="video-transcript-playback-status" role="status" aria-live="polite" aria-atomic="true">选择同一原视频后，按播放位置高亮原文；定位按钮仅滚动原文列表。</p>
             <fieldset id="video-transcript-choices"><legend>原文片段：勾选可加入待保存内容</legend><div id="video-transcript-list"></div></fieldset>
             <div class="video-form">
               <label for="video-subtitle-scope">下载字幕范围</label>
@@ -397,6 +399,7 @@
   <script src="image-ocr.js"></script>
   <script src="video-subtitles.js"></script>
   <script src="video-captions.js"></script>
+  <script src="video-transcript-playback.js"></script>
   <script src="video-panel.js"></script>
   <script src="source-check.js"></script>
   <script src="question-replay.js"></script>

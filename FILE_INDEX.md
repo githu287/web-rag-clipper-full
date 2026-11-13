@@ -317,6 +317,7 @@
 | `extension/video-panel.js` | 上传、链接、任务历史、直接追问、原文关键词搜索、按分段选择/编辑、下载、确认入库和异步身份保护 |
 | `extension/video-subtitles.js`、`extension/tests/video-subtitles.test.js` | 已完成ASR原文的SRT/VTT生成、时间与文本校验及导出测试 |
 | `extension/video-captions.js`、`extension/tests/video-captions.test.js` | 本机播放器原生字幕轨道、临时URL释放、加载失败和过期回调测试 |
+| `extension/video-transcript-playback.js`、`extension/tests/video-transcript-playback.test.js` | 播放位置对应的原文高亮、范围边界与重叠、手动定位列表及上下文清理 |
 | `scripts/check_video_browser.py` | 隔离API与真实Chrome/FFmpeg的视频交互、字幕导出/预览及身份切换验收；云端模型与入库边界使用替身 |
 | `backend/tests/test_video_qa.py` | 不入库问答、历史/问题预算、并发、过期与迟到回答的来源校验 |
 | `backend/tests/test_video_summary.py`、`backend/tests/test_video_cloud.py` | 实际媒体、迁移、队列、隔离、清理与 SDK 协议测试 |

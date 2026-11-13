@@ -277,6 +277,8 @@ input, textarea {
 #video-transcript-list { max-height: 320px; overflow-y: auto; }
 .video-transcript-row { display: grid; grid-template-columns: 18px minmax(0,1fr); gap: 5px; border-bottom: 1px solid var(--border); padding: 9px 2px; }
 .video-transcript-row[hidden] { display: none; }
+.video-transcript-row.is-current { background: var(--bg); box-shadow: inset 3px 0 var(--primary); }
+.video-transcript-row.is-current .video-time-link::before { content: "当前 · "; font-weight: 700; }
 .video-transcript-row:last-child { border-bottom: 0; }
 .video-transcript-row p { font-size: 12px; line-height: 1.8; white-space: pre-wrap; overflow-wrap: anywhere; margin-top: 4px; }
 .video-time-link { color: var(--primary); background: transparent; border: 0; padding: 3px 0; font: inherit; font-size: 11px; cursor: pointer; text-align: left; display: block; }

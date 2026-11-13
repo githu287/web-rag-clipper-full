@@ -9,6 +9,7 @@ const webRagVideoPanel = (() => {
   const chats = new Map();
   const localMedia = new Map();
   let transcriptJob = null, pendingSeek = null;
+  const playback = webRagVideoTranscriptPlayback.create(el("player"), el("transcript-list"), el("transcript-playback-status"), el("transcript-locate"), playableTranscript);
   const captions = webRagVideoCaptions.create(el("player"), (state, count) => {
     el("captions-enabled").checked = state === "loading" || state === "shown";
     el("captions-status").textContent = state === "shown" ? `已显示 ${count} 条转写字幕，文字与时间可能有ASR误差。` :
@@ -36,7 +37,7 @@ const webRagVideoPanel = (() => {
     if (chatBusy) el("chat-status").textContent = "已停止等待回答；云端请求可能仍在处理中，可稍后重新提问。";
     chatToken++; chatBusy = false;
   }
-  function leave() { active = false; epoch++; clearTimeout(timer); stopWaitingForAnswer(); el("player").pause(); captions.clear(); }
+  function leave() { active = false; epoch++; clearTimeout(timer); stopWaitingForAnswer(); el("player").pause(); captions.clear(); playback.clear(); }
   function reset() {
     leave(); owner = null; jobs = []; selected = null; ingestId = null; config = null;
     submitting = false; saving = false; saved = false; edited = false;
@@ -68,9 +69,15 @@ const webRagVideoPanel = (() => {
     el("subtitle-scope").disabled = !subtitles;
     el("transcript-search").disabled = !subtitles;
     el("transcript-search-clear").disabled = !subtitles || !el("transcript-search").value;
-    const player = el("player");
-    el("captions-enabled").disabled = !active || !subtitles || player.dataset.job !== selected || !localMedia.has(selected) ||
-      player.error || player.readyState < 1 || !Number.isFinite(player.duration) || Math.abs(player.duration - job.result.duration_seconds) > 1;
+    el("captions-enabled").disabled = !playableTranscript();
+    playback.update();
+  }
+  function playableTranscript() {
+    const job = jobs.find(item => item.id === selected), player = el("player");
+    return !!(current(epoch) && job?.status === "SUCCEEDED" && transcriptJob === selected &&
+      job.result?.transcript?.status === "ready" && job.result.transcript.sentences?.length &&
+      player.dataset.job === selected && localMedia.has(selected) && !player.error && player.readyState >= 1 &&
+      Number.isFinite(player.duration) && Math.abs(player.duration - job.result.duration_seconds) <= 1);
   }
   function clearChatView() {
     chatToken++; chatBusy = false;
@@ -104,7 +111,7 @@ const webRagVideoPanel = (() => {
     return `${String(Math.floor(value / 60)).padStart(2, "0")}:${String(value % 60).padStart(2, "0")}.${Math.floor((seconds - value) * 10)}`;
   }
   function clearPlayer() {
-    captions.clear(); el("captions-enabled").disabled = true;
+    captions.clear(); playback.clear(); el("captions-enabled").disabled = true;
     const player = el("player"); player.pause(); player.removeAttribute("src"); player.load(); player.hidden = true;
     player.dataset.job = ""; pendingSeek = null; el("local-source").value = "";
     el("playback-status").textContent = "请选择同一原视频用于定位，文件不会再次上传。";
@@ -160,10 +167,8 @@ const webRagVideoPanel = (() => {
   });
   el("captions-enabled").addEventListener("change", () => {
     if (!el("captions-enabled").checked) { captions.clear(); return; }
-    const ticket = epoch, jobId = selected, player = el("player"), job = jobs.find(item => item.id === jobId);
-    const valid = () => current(ticket) && selected === jobId && transcriptJob === jobId && player.dataset.job === jobId &&
-      localMedia.has(jobId) && !player.error && player.readyState >= 1 && Number.isFinite(player.duration) && job?.result &&
-      Math.abs(player.duration - job.result.duration_seconds) <= 1;
+    const ticket = epoch, jobId = selected, job = jobs.find(item => item.id === jobId);
+    const valid = () => current(ticket) && selected === jobId && playableTranscript();
     if (!valid()) { captions.clear(); buttons(); return; }
     try { captions.show(job, valid); }
     catch (error) { captions.clear(); el("captions-status").textContent = error.message; }
@@ -178,7 +183,9 @@ const webRagVideoPanel = (() => {
     el("confirm").checked = false; el("ingest-status").textContent = "已按所选部分重新生成待保存内容，可继续编辑。"; buttons();
   }
   function clearTranscript() {
-    transcriptJob = null; el("transcript-list").replaceChildren();
+    transcriptJob = null;
+    playback.setRows([]);
+    el("transcript-list").replaceChildren();
     el("transcript-search").value = ""; el("transcript-search").disabled = true;
     el("transcript-search-clear").disabled = true;
     el("transcript-search-status").textContent = "有完整转写后，可按原文关键词搜索。";
@@ -196,6 +203,7 @@ const webRagVideoPanel = (() => {
       (matches ? `找到 ${matches} / ${rows.length} 条原文。` : `未找到匹配原文（共 ${rows.length} 条）。`) : `共 ${rows.length} 条原文。`) +
       "搜索仅筛选显示；已勾选片段仍用于保存和选段导出，播放字幕仍显示全部原文。";
     el("transcript-list").scrollTop = 0;
+    playback.update();
   }
   el("transcript-search").addEventListener("input", () => { if (current(epoch) && !el("transcript-search").disabled) filterTranscript(); });
   el("transcript-search-clear").addEventListener("click", () => {
@@ -212,6 +220,7 @@ const webRagVideoPanel = (() => {
       disabled: "此任务未启用原文转写。可在视频模型配置中启用，再上传生成。", no_audio: "原视频没有音轨，仅提供画面总结。",
       no_speech: "云端未识别到可转写语音。", failed: "原文转写失败，当前仅提供 AI 总结。" };
     el("transcript-state").textContent = (states[transcript.status] || states.disabled) + (transcript.error ? " " + transcript.error : "");
+    const playbackRows = [];
     for (const row of transcript.status === "ready" ? transcript.sentences : []) {
       const item = document.createElement("article"); item.className = "video-transcript-row";
       const input = document.createElement("input"); input.type = "checkbox"; input.value = String(row.id); input.setAttribute("aria-label", `保存原文 ${row.id}`);
@@ -224,7 +233,9 @@ const webRagVideoPanel = (() => {
       time.textContent = `原文 ${row.id} · ${formatTime(row.start_seconds)}–${formatTime(row.end_seconds)}`;
       time.addEventListener("click", () => seekTo(row.start_seconds));
       const text = document.createElement("p"); text.textContent = row.text; body.append(time, text); item.append(input, body); el("transcript-list").append(item);
+      playbackRows.push({ id: row.id, start: row.start_seconds, end: row.end_seconds, element: item });
     }
+    playback.setRows(playbackRows);
     if (transcript.status === "ready" && transcript.sentences.length) filterTranscript();
   }
   function selectedMarkdown(job) {
