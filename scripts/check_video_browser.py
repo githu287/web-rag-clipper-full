@@ -122,7 +122,7 @@ def main():
         def transcribe(self, _path, duration, _config, _alive, *, keep_range, previous_tail):
             offset = keep_range[0]
             return [{"start_seconds": offset + .235, "end_seconds": offset + .835,
-                     "text": "蓝色演示原文 <img src=x onerror=alert(1)>"}], {"duration_seconds": duration}
+                     "text": "蓝色演示原文 <img src=x onerror=alert(1)>" if offset == 0 else "蓝色演示原文 第二段 Second segment 80% 请勿浇水。"}], {"duration_seconds": duration}
     service._cloud_client = CloudFixture()
     # Open codecs let the player assertions run in both installed Chrome and CI Chromium.
     media = args.artifacts / "fixture.webm"
@@ -265,6 +265,37 @@ def main():
                 subtitle_requests.clear()
                 preview_before = page.locator("#video-preview-text").input_value()
                 counters = (len(questions), len(uploaded_summaries), len(repository.list("video-fixture")))
+                search = page.locator("#video-transcript-search")
+                rows = page.locator("#video-transcript-list .video-transcript-row")
+                expect(search).to_be_enabled()
+                page.locator("#video-player").evaluate("v=>v.pause()")
+                search_position = page.locator("#video-player").evaluate("v=>v.currentTime")
+                for query in ("  请勿浇水  ", "sEcOnD SeGmEnT", "80%"):
+                    search.fill(query)
+                    expect(page.locator("#video-transcript-search-status")).to_contain_text("找到 1 / 2")
+                    expect(rows.nth(0)).to_be_hidden()
+                    expect(rows.nth(1)).to_be_visible()
+                search.fill("[.*]")
+                expect(page.locator("#video-transcript-search-status")).to_contain_text("未找到")
+                expect(page.locator("#video-transcript-list .video-transcript-row:visible")).to_have_count(0)
+                search.fill("<IMG SRC=X")
+                expect(rows.nth(0)).to_be_visible()
+                expect(rows.nth(1)).to_be_hidden()
+                expect(page.locator("#video-transcript-list img")).to_have_count(0)
+                assert abs(page.locator("#video-player").evaluate("v=>v.currentTime") - search_position) < .001
+                assert page.locator("#video-preview-text").input_value() == preview_before
+                assert not page.locator("#video-confirm").is_checked()
+                search.fill("Second")
+                page.screenshot(path=str(args.artifacts / "transcript-search.png"), full_page=True)
+                rows.nth(1).locator(".video-time-link").click()
+                assert page.locator("#video-player").evaluate("v=>v.currentTime") >= 10.225
+                page.locator("#video-transcript-search-clear").click()
+                expect(search).to_have_value("")
+                expect(page.locator("#video-transcript-list .video-transcript-row:visible")).to_have_count(2)
+                expect(page.locator("#video-transcript-search-clear")).to_be_disabled()
+                assert counters == (len(questions), len(uploaded_summaries), len(repository.list("video-fixture")))
+                assert subtitle_requests == [], subtitle_requests
+                done("Chinese and case-insensitive English literal search filters actual visible rows, preserves edits and playback, and keeps source-time seeking without API calls")
                 with page.expect_download() as transfer:
                     page.locator("#video-subtitle-srt").click()
                 transfer.value.save_as(args.artifacts / "subtitles-all.srt")
@@ -306,6 +337,11 @@ def main():
                 assert len(subtitle_downloads) == 2
                 page.locator('#video-transcript-list input[value="2"]').check()
                 selection_preview = page.locator("#video-preview-text").input_value()
+                page.locator("#video-confirm").check()
+                search.fill("<img")
+                expect(rows.nth(1)).to_be_hidden()
+                expect(page.locator('#video-transcript-list input[value="2"]')).to_be_checked()
+                expect(page.locator("#video-confirm")).to_be_checked()
                 with page.expect_download() as transfer:
                     page.locator("#video-subtitle-vtt").click()
                 transfer.value.save_as(args.artifacts / "subtitles-selected.vtt")
@@ -314,15 +350,18 @@ def main():
                 assert page.locator("#video-preview-text").input_value() == selection_preview
                 assert counters == (len(questions), len(uploaded_summaries), len(repository.list("video-fixture")))
                 assert subtitle_requests == [], subtitle_requests
+                page.locator("#video-transcript-search-clear").click()
+                page.locator("#video-confirm").uncheck()
                 page.locator('#video-transcript-list input[value="2"]').uncheck()
                 page.locator("#video-subtitle-scope").select_option("all")
                 page.screenshot(path=str(args.artifacts / "subtitles.png"), full_page=True)
-                done("Subtitle selection keeps original video offsets; empty selection creates no file, API request, model call or ingestion")
+                done("Subtitle selection includes checked rows hidden by search and keeps source offsets; search preserves confirmation and empty selection creates no file or API request")
 
                 player = page.locator("#video-player")
                 player.evaluate("v=>v.pause()")
                 position_before = player.evaluate("v=>v.currentTime")
                 subtitle_requests.clear()
+                search.fill("<img")
                 page.locator("#video-captions-enabled").check()
                 expect(page.locator("#video-captions-status")).to_contain_text("已显示 2 条")
                 assert player.evaluate("v=>v.paused") and abs(player.evaluate("v=>v.currentTime") - position_before) < .001
@@ -351,6 +390,8 @@ def main():
                 page.locator("#nav-video").click()
                 expect(page.locator("#video-captions-enabled")).to_be_enabled()
                 expect(page.locator("#video-captions-enabled")).not_to_be_checked()
+                expect(search).to_have_value("<img")
+                page.locator("#video-transcript-search-clear").click()
                 done("Leaving the video view clears caption data; returning keeps captions off until explicitly enabled again")
                 page.locator("#video-question").fill("视频只有蓝色，对吗？还讲了什么？")
                 page.locator("#video-ask").click()
@@ -374,10 +415,13 @@ def main():
                 page.locator('#video-transcript-list input[value="1"]').check()
                 selected_text = page.locator("#video-preview-text").input_value()
                 assert "原文 1" in selected_text and "原文 2" not in selected_text and "## 片段" not in selected_text
+                search.fill("Second")
+                expect(rows.nth(0)).to_be_hidden()
                 assert len(uploaded_summaries) == 1
                 page.locator("#video-confirm").check(); page.locator("#video-save").click()
                 expect(page.locator("#video-ingest-status")).to_contain_text("已保存到知识库")
                 assert uploaded_summaries[-1] == selected_text and len(uploaded_summaries) == 2
+                page.locator("#video-transcript-search-clear").click()
                 done("Only the selected transcript excerpt is persisted after explicit confirmation")
                 def prepare_save(text, mode):
                     # Selecting a section regenerates an editable version after a
@@ -447,6 +491,7 @@ def main():
                 expect(page.locator("#video-captions-enabled")).to_be_enabled()
                 page.locator("#video-captions-enabled").check()
                 expect(page.locator("#video-captions-status")).to_contain_text("已显示")
+                search.fill("Second")
                 page.locator("#video-question").fill("延迟回答")
                 page.locator("#video-ask").click()
                 assert late_started.wait(3)
@@ -468,9 +513,48 @@ def main():
                 expect(page.locator("#video-captions-enabled")).to_be_disabled()
                 expect(page.locator("#video-player track[data-asr]")).to_have_count(0)
                 done("Workspace changes remove native caption tracks and disable preview before late responses resolve")
+                expect(search).to_have_value("")
+                expect(search).to_be_disabled()
+                expect(page.locator("#video-transcript-search-clear")).to_be_disabled()
+                expect(page.locator("#video-transcript-search-status")).not_to_contain_text("找到")
+                page.locator("#video-transcript-search-clear").dispatch_event("click")
+                expect(page.locator("#video-transcript-list")).to_be_empty()
+                done("Workspace changes clear and disable transcript search; stale events cannot restore previous results")
 
                 page.evaluate("webRagApiClient.setPluginDetails({pluginId:'video-fixture',pluginSecret:'ephemeral-video-secret'});webRagVideoPanel.enter()")
                 expect(page.locator("#video-jobs .video-job")).to_have_count(1)
+                page.get_by_role("button", name="查看总结", exact=True).click()
+                search.fill("Second")
+                page.locator("#video-config-details").evaluate("e=>e.open=true")
+                page.locator("#video-asr-enabled").uncheck()
+                page.locator("#video-config-save").click()
+                expect(page.locator("#video-config-state")).to_have_text("已保存")
+                page.locator("#video-file").set_input_files(str(media))
+                page.locator("#video-upload-btn").click()
+                expect(page.locator("#video-jobs .video-job")).to_have_count(2)
+                expect(search).to_have_value("")
+                expect(search).to_be_disabled()
+                worker.run_once()
+                expect(page.locator("#video-transcript-state")).to_contain_text("未启用原文转写", timeout=15000)
+                expect(search).to_be_disabled()
+                expect(page.locator("#video-transcript-list")).to_be_empty()
+                page.get_by_role("button", name="查看总结", exact=True).nth(1).click()
+                expect(search).to_be_enabled()
+                expect(search).to_have_value("")
+                expect(page.locator("#video-transcript-list .video-transcript-row:visible")).to_have_count(2)
+                search.fill("<img")
+                page.locator('#video-part-options input[value="transcript"]').check()
+                expect(page.locator("#video-transcript-list input:checked")).to_have_count(2)
+                page.locator('#video-part-options input[value="transcript"]').uncheck()
+                expect(page.locator("#video-transcript-list input:checked")).to_have_count(0)
+                done("New uploads clear search; completed tasks without ASR disable it; switching back restores all original rows without the old query")
+                search.fill("Second")
+                page.locator("#video-jobs .video-job").nth(1).get_by_role("button", name="删除", exact=True).click()
+                expect(page.locator("#video-preview")).to_be_hidden()
+                expect(search).to_have_value("")
+                expect(search).to_be_disabled()
+                expect(page.locator("#video-transcript-list")).to_be_empty()
+                done("Deleting the selected video clears its query, result count and rows")
                 page.locator("#video-config-details").evaluate("e=>e.open=true")
                 page.locator("#video-provider").select_option("modelscope")
                 expect(page.locator("#video-base-url")).to_have_value("https://api-inference.modelscope.cn/v1")
@@ -499,7 +583,7 @@ def main():
         engine.dispose()
         late_release.set()
         ingest_release.set()
-        (args.artifacts / "report.json").write_text(json.dumps({"checks": checks, "passed": len(checks) == 26, "cloud": "fixture (video and ASR)", "ingest": "fixture boundary", "media": "real FFmpeg", "errors": errors}, ensure_ascii=False, indent=2), encoding="utf-8")
+        (args.artifacts / "report.json").write_text(json.dumps({"checks": checks, "passed": len(checks) == 30, "cloud": "fixture (video and ASR)", "ingest": "fixture boundary", "media": "real FFmpeg", "errors": errors}, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 if __name__ == "__main__":

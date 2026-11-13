@@ -110,6 +110,12 @@
             <p class="hint" id="video-playback-status">点击原文或回答来源可定位；重新打开面板后需重新选择原视频。平台链接暂请下载后选择本地文件。</p>
             <label class="video-confirm"><input type="checkbox" id="video-captions-enabled" disabled> 播放时显示转写字幕</label>
             <p class="hint" id="video-captions-status" role="status" aria-live="polite">选择同一原视频后可开启；使用已有ASR原文与时间，不重新转写。</p>
+            <div class="video-form">
+              <label for="video-transcript-search">搜索转写原文</label>
+              <input id="video-transcript-search" type="search" maxlength="200" placeholder="输入中文或英文关键词" aria-describedby="video-transcript-search-status" disabled>
+              <button type="button" class="btn-secondary" id="video-transcript-search-clear" disabled>清除搜索</button>
+            </div>
+            <p class="hint" id="video-transcript-search-status" role="status" aria-live="polite">有完整转写后，可按原文关键词搜索。</p>
             <fieldset id="video-transcript-choices"><legend>原文片段：勾选可加入待保存内容</legend><div id="video-transcript-list"></div></fieldset>
             <div class="video-form">
               <label for="video-subtitle-scope">下载字幕范围</label>

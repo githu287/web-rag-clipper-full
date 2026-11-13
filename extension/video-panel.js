@@ -41,7 +41,7 @@ const webRagVideoPanel = (() => {
     leave(); owner = null; jobs = []; selected = null; ingestId = null; config = null;
     submitting = false; saving = false; saved = false; edited = false;
     chats.clear(); clearChatView(); el("part-options").replaceChildren();
-    clearMedia(); transcriptJob = null; el("transcript-list").replaceChildren(); el("transcript-state").textContent = "";
+    clearMedia(); clearTranscript(); el("transcript-state").textContent = "";
     el("key").value = ""; el("asr-key").value = ""; el("url").value = ""; el("file").value = "";
     el("jobs").replaceChildren(); el("preview-text").value = ""; el("preview").hidden = true;
     el("confirm").checked = false; el("ingest-status").textContent = ""; status("");
@@ -66,6 +66,8 @@ const webRagVideoPanel = (() => {
     el("subtitle-srt").disabled = !subtitles;
     el("subtitle-vtt").disabled = !subtitles;
     el("subtitle-scope").disabled = !subtitles;
+    el("transcript-search").disabled = !subtitles;
+    el("transcript-search-clear").disabled = !subtitles || !el("transcript-search").value;
     const player = el("player");
     el("captions-enabled").disabled = !active || !subtitles || player.dataset.job !== selected || !localMedia.has(selected) ||
       player.error || player.readyState < 1 || !Number.isFinite(player.duration) || Math.abs(player.duration - job.result.duration_seconds) > 1;
@@ -175,9 +177,34 @@ const webRagVideoPanel = (() => {
     el("preview-text").value = selectedMarkdown(job); edited = true; saved = false;
     el("confirm").checked = false; el("ingest-status").textContent = "已按所选部分重新生成待保存内容，可继续编辑。"; buttons();
   }
+  function clearTranscript() {
+    transcriptJob = null; el("transcript-list").replaceChildren();
+    el("transcript-search").value = ""; el("transcript-search").disabled = true;
+    el("transcript-search-clear").disabled = true;
+    el("transcript-search-status").textContent = "有完整转写后，可按原文关键词搜索。";
+  }
+  function filterTranscript() {
+    const query = el("transcript-search").value.trim().toLowerCase();
+    const rows = [...el("transcript-list").querySelectorAll(".video-transcript-row")];
+    let matches = 0;
+    for (const row of rows) {
+      row.hidden = !!query && !row.querySelector("p").textContent.toLowerCase().includes(query);
+      if (!row.hidden) matches++;
+    }
+    el("transcript-search-clear").disabled = !el("transcript-search").value;
+    el("transcript-search-status").textContent = (query ?
+      (matches ? `找到 ${matches} / ${rows.length} 条原文。` : `未找到匹配原文（共 ${rows.length} 条）。`) : `共 ${rows.length} 条原文。`) +
+      "搜索仅筛选显示；已勾选片段仍用于保存和选段导出，播放字幕仍显示全部原文。";
+    el("transcript-list").scrollTop = 0;
+  }
+  el("transcript-search").addEventListener("input", () => { if (current(epoch) && !el("transcript-search").disabled) filterTranscript(); });
+  el("transcript-search-clear").addEventListener("click", () => {
+    if (!current(epoch) || el("transcript-search").disabled) return;
+    el("transcript-search").value = ""; filterTranscript(); el("transcript-search").focus();
+  });
   function renderTranscript(job) {
     if (transcriptJob === job.id) return;
-    transcriptJob = job.id; el("transcript-list").replaceChildren();
+    clearTranscript(); transcriptJob = job.id;
     el("subtitle-scope").value = "all";
     el("subtitle-status").textContent = "字幕使用已有原文与ASR时间，选段导出保留原视频时间；下载不调用模型或写入知识库。";
     const transcript = job.result.transcript || {};
@@ -198,6 +225,7 @@ const webRagVideoPanel = (() => {
       time.addEventListener("click", () => seekTo(row.start_seconds));
       const text = document.createElement("p"); text.textContent = row.text; body.append(time, text); item.append(input, body); el("transcript-list").append(item);
     }
+    if (transcript.status === "ready" && transcript.sentences.length) filterTranscript();
   }
   function selectedMarkdown(job) {
     const result = job.result;
@@ -264,7 +292,7 @@ const webRagVideoPanel = (() => {
         if (localMedia.has(job.id)) { URL.revokeObjectURL(localMedia.get(job.id).url); localMedia.delete(job.id); }
       }
       if (verb === "delete" && selected === job.id) {
-        clearPlayer(); transcriptJob = null; el("transcript-list").replaceChildren();
+        clearPlayer(); clearTranscript();
         chats.delete(job.id); clearChatView(); el("part-options").replaceChildren();
         selected = null; el("preview").hidden = true; el("preview-text").value = "";
         ingestId = null; saved = false; saving = false;
@@ -340,7 +368,7 @@ const webRagVideoPanel = (() => {
       if (chosen && chosen.result) preview(chosen);
       if (selected && !chosen) {
         if (localMedia.has(selected)) { URL.revokeObjectURL(localMedia.get(selected).url); localMedia.delete(selected); }
-        clearPlayer(); transcriptJob = null; el("transcript-list").replaceChildren();
+        clearPlayer(); clearTranscript();
         chats.delete(selected); selected = null; clearChatView(); el("part-options").replaceChildren();
         el("preview").hidden = true; el("preview-text").value = ""; buttons();
       }
@@ -422,7 +450,7 @@ const webRagVideoPanel = (() => {
       const job = kind === "upload" ? await webRagApiClient.videos.upload(file) : await webRagApiClient.videos.link(el("url").value.trim());
       if (!current(ticket)) return;
       status("任务已创建；处理进度保存在后端，重新打开面板可继续查看。");
-      clearPlayer(); selected = job.id; edited = false; saved = false; ingestId = null;
+      clearPlayer(); clearTranscript(); selected = job.id; edited = false; saved = false; ingestId = null;
       if (kind === "upload") rememberMedia(job.id, file);
       clearChatView(); el("part-options").replaceChildren(); el("confirm").checked = false;
       el("preview").hidden = true; el("preview-text").value = "";

@@ -314,7 +314,7 @@
 | `backend/api/routers/videos.py`、`backend/api/video_body_limit.py` | 视频 API 与 multipart 解析前的字节限制 |
 | `backend/workers/video_worker.py` | 独立视频处理入口、分段汇总、取消与清理 |
 | `backend/requirements-video.txt` | 固定媒体二进制与平台解析工具版本 |
-| `extension/video-panel.js` | 上传、链接、任务历史、直接追问、按分段选择/编辑、下载、确认入库和异步身份保护 |
+| `extension/video-panel.js` | 上传、链接、任务历史、直接追问、原文关键词搜索、按分段选择/编辑、下载、确认入库和异步身份保护 |
 | `extension/video-subtitles.js`、`extension/tests/video-subtitles.test.js` | 已完成ASR原文的SRT/VTT生成、时间与文本校验及导出测试 |
 | `extension/video-captions.js`、`extension/tests/video-captions.test.js` | 本机播放器原生字幕轨道、临时URL释放、加载失败和过期回调测试 |
 | `scripts/check_video_browser.py` | 隔离API与真实Chrome/FFmpeg的视频交互、字幕导出/预览及身份切换验收；云端模型与入库边界使用替身 |
