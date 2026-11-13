@@ -95,7 +95,9 @@ def main():
         return {"id": "fixture-ingest", "status": "SUCCEEDED"}
 
     class CloudFixture:
-        def summarize(self, *_args):
+        def summarize(self, *_args, **options):
+            if options:
+                assert options["has_audio"] and options["transcript"]
             return "主要内容：蓝色画面与提示音。\n\n关键结论：浏览器测试样例。", {"total_tokens": 18}
         def combine(self, *_args):
             return "整体摘要：蓝色画面与声音演示。", {"total_tokens": 6}
@@ -349,6 +351,27 @@ def main():
                 assert page.locator("#video-player").get_attribute("src") is None
                 expect(page.locator("#video-transcript-list")).to_be_empty()
                 done("Changing Workspace clears the previous preview before asynchronous requests resolve")
+
+                page.evaluate("webRagApiClient.setPluginDetails({pluginId:'video-fixture',pluginSecret:'ephemeral-video-secret'});webRagVideoPanel.enter()")
+                expect(page.locator("#video-jobs .video-job")).to_have_count(1)
+                page.locator("#video-config-details").evaluate("e=>e.open=true")
+                page.locator("#video-provider").select_option("modelscope")
+                expect(page.locator("#video-base-url")).to_have_value("https://api-inference.modelscope.cn/v1")
+                expect(page.locator("#video-asr-provider")).to_have_value("groq")
+                expect(page.locator("#video-asr-enabled")).to_be_checked()
+                expect(page.locator("#video-asr-enabled")).to_be_disabled()
+                page.locator("#video-key").fill("private-modelscope-fixture")
+                page.locator("#video-asr-key").fill("private-groq-fixture")
+                page.locator("#video-config-save").click()
+                expect(page.locator("#video-status")).to_contain_text("分别加密保存")
+                expect(page.locator("#video-key")).to_have_value("")
+                expect(page.locator("#video-asr-key")).to_have_value("")
+                settings_data = service.config("video-fixture", secret=True)
+                assert settings_data["api_key"] == "private-modelscope-fixture"
+                assert settings_data["asr_api_key"] == "private-groq-fixture"
+                storage = page.evaluate("()=>new Promise(resolve=>chrome.storage.local.get(null,resolve))")
+                assert "private-modelscope-fixture" not in json.dumps(storage) and "private-groq-fixture" not in json.dumps(storage)
+                done("ModelScope and Groq selectors keep independent encrypted keys, require audio and clear both secret inputs")
                 assert errors == [], errors
             finally:
                 context.close()
@@ -359,7 +382,7 @@ def main():
         engine.dispose()
         late_release.set()
         ingest_release.set()
-        (args.artifacts / "report.json").write_text(json.dumps({"checks": checks, "passed": len(checks) == 18, "cloud": "fixture (Omni and ASR)", "ingest": "fixture boundary", "media": "real FFmpeg", "errors": errors}, ensure_ascii=False, indent=2), encoding="utf-8")
+        (args.artifacts / "report.json").write_text(json.dumps({"checks": checks, "passed": len(checks) == 19, "cloud": "fixture (video and ASR)", "ingest": "fixture boundary", "media": "real FFmpeg", "errors": errors}, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 if __name__ == "__main__":

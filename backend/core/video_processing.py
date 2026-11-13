@@ -6,7 +6,7 @@ import math
 
 from .video_errors import VideoError
 
-PIPELINE_VERSION = 2  # ASR context windows and word ownership differ from hard cuts.
+PIPELINE_VERSION = 3  # Independent ASR providers and visual + transcript summaries.
 
 
 def load_state(raw):

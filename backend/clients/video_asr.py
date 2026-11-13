@@ -11,9 +11,9 @@ import httpx
 
 from ..core.video_errors import VideoError
 from ..core.video_transcript import same_boundary_word
+from ..core.video_providers import ASR_MODEL, asr_endpoint
 from .video_transport import DeadlineTransport
 
-ASR_MODEL = "fun-asr-flash-2026-06-15"
 ASR_TIMEOUT_SECONDS = 120
 
 
@@ -94,6 +94,11 @@ class CloudAsrClient:
         self.transport_factory = transport_factory
 
     def transcribe(self, path: Path, duration, config, alive=lambda: True, *, keep_range=None, previous_tail=None):
+        config = asr_endpoint(config)
+        if config["provider"] == "groq":
+            from .video_asr_groq import GroqAsrClient
+            return GroqAsrClient(self.transport_factory).transcribe(path, duration, config, alive,
+                keep_range=keep_range, previous_tail=previous_tail)
         if not 0 < path.stat().st_size <= 5 * 1024 * 1024:
             raise VideoError("转写音频分段超过大小限制")
         origin = urlsplit(config["base_url"])

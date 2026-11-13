@@ -36,7 +36,7 @@ const webRagVideoPanel = (() => {
     submitting = false; saving = false; saved = false; edited = false;
     chats.clear(); clearChatView(); el("part-options").replaceChildren();
     clearMedia(); transcriptJob = null; el("transcript-list").replaceChildren(); el("transcript-state").textContent = "";
-    el("key").value = ""; el("url").value = ""; el("file").value = "";
+    el("key").value = ""; el("asr-key").value = ""; el("url").value = ""; el("file").value = "";
     el("jobs").replaceChildren(); el("preview-text").value = ""; el("preview").hidden = true;
     el("confirm").checked = false; el("ingest-status").textContent = ""; status("");
   }
@@ -324,6 +324,39 @@ const webRagVideoPanel = (() => {
     } catch (error) { if (current(ticket)) status(error.message, true); }
     if (current(ticket) && (jobs.some(pending) || ingestId)) timer = setTimeout(() => refresh(ticket), 3000);
   }
+  function options(id, values, selected) {
+    el(id).replaceChildren();
+    for (const [value, label] of values) {
+      const option = document.createElement("option"); option.value = value; option.textContent = label; el(id).append(option);
+    }
+    if (selected) el(id).value = selected;
+  }
+  function asrFields(initial = false) {
+    const provider = el("asr-provider").value;
+    const preset = config.asr_providers?.[provider];
+    if (!preset) return;
+    options("asr-model", preset.models.map(name => [name, name]), initial ? config.asr_model : preset.models[0]);
+    el("asr-base-url").value = initial ? config.asr_base_url : preset.base_url;
+    el("asr-base-url").readOnly = provider === "groq";
+    if (!initial) el("asr-key").value = "";
+  }
+  function providerFields(initial = false) {
+    const provider = el("provider").value;
+    const preset = config.providers?.[provider];
+    const models = preset?.models || config.models;
+    options("model", models.map(name => [name, name]), initial ? config.model : models[0]);
+    el("base-url").value = initial ? config.base_url : preset.base_url;
+    el("base-url").readOnly = provider === "modelscope";
+    el("asr-enabled").disabled = provider === "modelscope";
+    if (provider === "modelscope") el("asr-enabled").checked = true;
+    if (!initial) {
+      el("key").value = "";
+      if (provider === "modelscope") el("asr-provider").value = "groq";
+      asrFields();
+    }
+  }
+  el("provider").addEventListener("change", () => { if (config) providerFields(); });
+  el("asr-provider").addEventListener("change", () => { if (config) asrFields(); });
   async function enter() {
     const now = identity();
     if (!owner || owner.id !== now.id || owner.secret !== now.secret) { reset(); owner = now; }
@@ -334,11 +367,10 @@ const webRagVideoPanel = (() => {
       const data = await webRagApiClient.videos.config();
       if (!current(ticket)) return;
       config = data;
-      el("base-url").value = data.base_url;
-      el("model").replaceChildren();
-      for (const name of data.models) { const option = document.createElement("option"); option.value = name; option.textContent = name; el("model").append(option); }
-      el("model").value = data.model;
       el("asr-enabled").checked = data.asr_enabled === true;
+      options("provider", Object.entries(data.providers || { dashscope: { label: "阿里云百炼" } }).map(([id, p]) => [id, p.label]), data.provider || "dashscope");
+      options("asr-provider", Object.entries(data.asr_providers || { dashscope: { label: "百炼 Fun-ASR" } }).map(([id, p]) => [id, p.label]), data.asr_provider || "dashscope");
+      providerFields(true); asrFields(true);
       el("config-state").textContent = data.configured ? "已保存" : "待配置";
       el("config-details").open = !data.configured;
       el("limits").textContent = `最大 ${Math.floor(data.max_upload_bytes / 1048576)} MB、${Math.floor(data.max_duration_seconds / 60)} 分钟。原素材最多保留 ${data.raw_retention_hours} 小时，总结 ${data.result_retention_days} 天；成功后删除原素材。`;
@@ -403,10 +435,12 @@ const webRagVideoPanel = (() => {
     event.preventDefault(); if (submitting) return;
     const ticket = epoch; submitting = true; buttons();
     try {
-      await webRagApiClient.videos.setConfig({ api_key: el("key").value, base_url: el("base-url").value.trim(), model: el("model").value, asr_enabled: el("asr-enabled").checked });
-      if (current(ticket)) { status("配置已加密保存。首次视频分析会验证模型权限。请确认地域与服务地址一致。"); await enter(); }
+      const payload = { provider: el("provider").value, api_key: el("key").value, base_url: el("base-url").value.trim(), model: el("model").value, asr_enabled: el("asr-enabled").checked };
+      if (config.asr_providers) Object.assign(payload, { asr_provider: el("asr-provider").value, asr_api_key: el("asr-key").value, asr_base_url: el("asr-base-url").value.trim(), asr_model: el("asr-model").value });
+      await webRagApiClient.videos.setConfig(payload);
+      if (current(ticket)) { status("视频和语音配置已分别加密保存；实际调用时验证权限并产生用量。"); await enter(); }
     } catch (error) { if (current(ticket)) status(error.message, true); }
-    finally { el("key").value = ""; if (current(ticket)) { submitting = false; buttons(); } }
+    finally { el("key").value = ""; el("asr-key").value = ""; if (current(ticket)) { submitting = false; buttons(); } }
   });
   el("config-remove").addEventListener("click", async () => {
     const ticket = epoch;

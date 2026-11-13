@@ -197,7 +197,7 @@ def test_material_or_configuration_changes_invalidate_cache_but_keep_prior_usage
     if change == "asr": service.put_config("a", {"base_url": DEFAULT_URL, "model": "qwen3-omni-flash", "asr_enabled": False})
     if change == "geometry": service.settings.video_segment_seconds = 11
     if change == "media_tool": service.settings.video_ffmpeg = "different-test-media-tool"
-    if change == "preprocessing": monkeypatch.setattr("backend.core.video_processing.PIPELINE_VERSION", 3)
+    if change == "preprocessing": monkeypatch.setattr("backend.core.video_processing.PIPELINE_VERSION", 4)
     service.retry("a", job.id)
     next_cloud, next_asr = clients()
     VideoWorker(service, next_cloud, next_asr).run_once()

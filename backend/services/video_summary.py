@@ -14,12 +14,11 @@ from ..core.security import decrypt_api_key, encrypt_api_key
 from ..core.video_errors import VideoError
 from ..core.video_citations import citation_ids
 from ..core.video_processing import processing_view
+from ..core.video_providers import MODELS, DEFAULT_URL, normalize_config, public_config
 from .video_links import normalize_link
 from .video_media import ffmpeg_executable
 from ..clients.video_asr import ASR_MODEL
 
-MODELS = ("qwen3-omni-flash", "qwen3.5-omni-flash", "qwen3.5-omni-plus", "qwen3.8-omni-flash")
-DEFAULT_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 VIDEO_EXTENSIONS = (".mp4", ".mov", ".webm", ".mkv", ".avi")
 
 
@@ -145,44 +144,27 @@ class VideoSummaryService:
         if row is None:
             if secret:
                 raise VideoError("请先在视频面板配置云端 Qwen-Omni 服务", 409)
-            return {"configured": False, "base_url": DEFAULT_URL, "model": MODELS[0], "models": MODELS,
-                    "asr_enabled": True, "asr_model": ASR_MODEL}
+            return public_config({"base_url": DEFAULT_URL, "model": MODELS[0], "asr_enabled": True}, configured=False)
         try:
             data = json.loads(decrypt_api_key(row.ciphertext, row.nonce, self.settings.app_master_key))
         except Exception:
             raise VideoError("视频模型配置无法解密，请重新保存配置", 503) from None
         if secret:
             return data
-        return {"configured": True, "base_url": data["base_url"], "model": data["model"], "models": MODELS,
-                "asr_enabled": data.get("asr_enabled", False), "asr_model": ASR_MODEL}
+        return public_config(data)
 
     def put_config(self, owner, payload):
-        if not isinstance(payload, dict) or set(payload) - {"api_key", "base_url", "model", "asr_enabled"}:
+        if not isinstance(payload, dict):
             raise VideoError("视频配置字段不正确", 422)
-        base_url, model, key = (payload.get(field) for field in ("base_url", "model", "api_key"))
-        if not isinstance(base_url, str) or not re.fullmatch(
-            r"https://(?:(?:dashscope(?:-intl|-us)?\.aliyuncs\.com)|(?:[a-zA-Z0-9-]+\.(?:cn-beijing|cn-shanghai|ap-southeast-1|us-east-1)\.maas\.aliyuncs\.com))/compatible-mode/v1/?", base_url):
-            raise VideoError("请填写百炼控制台提供的 HTTPS Chat Completions 服务地址（以 /compatible-mode/v1 结尾）", 422)
-        if model not in MODELS:
-            raise VideoError("请选择支持音视频输入的 Qwen-Omni 模型", 422)
-        if "asr_enabled" in payload:
-            asr_enabled = payload["asr_enabled"]
-        else:
+        previous = {}
+        if self.repo.config(owner):
             try:
-                asr_enabled = self.config(owner).get("asr_enabled", False) if self.repo.config(owner) else False
+                previous = self.config(owner, secret=True)
             except VideoError:
-                # A fresh explicit key can repair an unreadable encrypted config.
-                asr_enabled = False
-        if not isinstance(asr_enabled, bool):
-            raise VideoError("云端原文转写开关格式不正确", 422)
-        if asr_enabled and ("-us.aliyuncs.com" in base_url or "us-east-1" in base_url or "cn-shanghai" in base_url):
-            raise VideoError("云端原文转写请使用百炼北京或新加坡地域的地址与 Key", 422)
-        if key in (None, ""):
-            key = self.config(owner, secret=True)["api_key"]
-        if not isinstance(key, str) or not 10 <= len(key.strip()) <= 512 or any(ord(ch) < 32 for ch in key):
-            raise VideoError("API Key 格式不正确", 422)
-        ciphertext, nonce = encrypt_api_key(json.dumps({"api_key": key.strip(), "base_url": base_url.rstrip("/"), "model": model,
-                                                       "asr_enabled": asr_enabled}), self.settings.app_master_key)
+                if not payload.get("api_key"):
+                    raise
+        data = normalize_config(payload, previous)
+        ciphertext, nonce = encrypt_api_key(json.dumps(data), self.settings.app_master_key)
         self.repo.put_config(owner, ciphertext, nonce)
         return self.config(owner)
 

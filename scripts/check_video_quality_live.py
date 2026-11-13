@@ -57,6 +57,7 @@ def main():
     from backend.clients.video_asr import CloudAsrClient, ASR_MODEL
     from backend.core.video_errors import VideoError
     from backend.core.video_transcript import asr_window, append_transcript, shift_tail
+    from backend.core.video_providers import is_modelscope
     from backend.services.video_media import inspect_video, make_segment, make_audio
 
     cases = json.loads(args.manifest.read_text(encoding="utf-8"))
@@ -111,11 +112,13 @@ def main():
             parser.error("max_character_error_rate needs reference_text and a number in 0..1")
         prepared.append((case, source, info, count, reference, plain_reference, reference_range))
     config = service.config(args.workspace_id, secret=True)
+    if is_modelscope(config) and not args.with_asr and any(info.has_audio for _, _, info, *_ in prepared):
+        parser.error("ModelScope requires --with-asr for videos with audio; no incomplete visual-only summaries")
     client = CloudVideoClient()
     report = {"model": config["model"], "cases": [], "passed": True,
               "scope": "Real cloud + FFmpeg; subtitle disagreement and lexical semantic checks need human review; no API/ingestion"}
     if args.with_asr:
-        report["asr_model"] = ASR_MODEL
+        report["asr_model"] = config.get("asr_model", ASR_MODEL)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="media-", dir=args.output.parent) as temp:
         for case, source, info, count, reference, plain_reference, reference_range in prepared:
@@ -143,7 +146,11 @@ def main():
                         finally:
                             audio.unlink(missing_ok=True)
                     make_segment(source, segment, start, end - start, service.settings, has_audio=info.has_audio)
-                    text, tokens = client.summarize(segment, config)
+                    if is_modelscope(config):
+                        speech = [r for r in transcript["sentences"] if r["start_seconds"] < end and r["end_seconds"] > start]
+                        text, tokens = client.summarize(segment, config, transcript=speech, has_audio=info.has_audio)
+                    else:
+                        text, tokens = client.summarize(segment, config)
                     chapters.append({"number": index + 1, "summary": text, "start_seconds": start, "end_seconds": end})
                     for key, value in tokens.items():
                         usage[key] = usage.get(key, 0) + value

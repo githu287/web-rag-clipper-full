@@ -68,13 +68,18 @@
         <details id="video-config-details" class="video-card">
           <summary>云端视频模型 <span id="video-config-state">读取中</span></summary>
           <form id="video-config-form" class="video-form">
-            <p class="hint">使用百炼 Qwen-Omni，独立于聊天模型。Key 加密保存在后端；保存配置不会调用模型，首次分析才验证权限并产生用量。</p>
+            <p class="hint">视频服务独立于知识库聊天。百炼直接理解声音与画面；魔搭结合画面与独立云端转写生成总结。Key 分别加密保存，保存配置不会调用模型。</p>
+            <label for="video-provider">视频服务商</label><select id="video-provider"></select>
             <label for="video-base-url">Chat Completions 服务地址</label>
             <input id="video-base-url" type="url" required placeholder="从百炼控制台复制，以 /compatible-mode/v1 结尾">
-            <label for="video-model">音视频模型</label><select id="video-model"></select>
+            <label for="video-model">视频模型</label><select id="video-model"></select>
             <label for="video-key">API Key</label><input id="video-key" type="password" autocomplete="new-password" placeholder="已配置时留空保留原 Key">
             <label class="video-confirm"><input type="checkbox" id="video-asr-enabled"> 同时生成带时间戳的云端转写原文</label>
-            <p class="hint">使用同地域、同 Key 的 Fun-ASR-Flash，额外产生转写用量；需开通该模型权限。仅将音频字节发送到云端，不创建公网视频链接。配置影响之后开始处理的任务；旧任务保留原结果。</p>
+            <label for="video-asr-provider">语音转写服务商</label><select id="video-asr-provider"></select>
+            <label for="video-asr-base-url">转写服务地址</label><input id="video-asr-base-url" type="url">
+            <label for="video-asr-model">转写模型</label><select id="video-asr-model"></select>
+            <label for="video-asr-key">独立转写 API Key</label><input id="video-asr-key" type="password" autocomplete="new-password" placeholder="同一服务商留空保留；百炼可共用视频 Key">
+            <p class="hint" id="video-asr-hint">转写额外产生云端用量。魔搭必须配合独立语音服务；转写失败时不会生成缺少声音内容的总结。音频直接发送到所选转写服务，不创建公网链接。旧任务保留原结果。</p>
             <div class="video-actions"><button type="submit" class="primary-btn" id="video-config-save">保存配置</button>
               <button type="button" class="btn-secondary" id="video-config-remove">移除配置</button></div>
           </form>

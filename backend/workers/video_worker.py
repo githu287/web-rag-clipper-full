@@ -5,11 +5,12 @@ import math
 import signal
 import threading
 
-from ..clients.video import CloudVideoClient, PROMPT
+from ..clients.video import CloudVideoClient, PROMPT, MODELSCOPE_PROMPT
 from ..clients.video_asr import CloudAsrClient, ASR_MODEL
 from ..core.video_errors import VideoError
 from ..core.video_processing import processing_fingerprint
 from ..core.video_transcript import asr_window, append_transcript, shift_tail
+from ..core.video_providers import is_modelscope
 from ..services.video_links import download_platform
 from ..services.video_media import inspect_video, make_segment, make_audio
 
@@ -69,7 +70,7 @@ class VideoWorker:
                 elif not source.is_file():
                     raise VideoError("原始视频不存在或已过期，请重新上传")
                 info = inspect_video(source, self.settings, alive)
-                fingerprint = processing_fingerprint(source, config, self.settings, alive, info, PROMPT + ASR_MODEL)
+                fingerprint = processing_fingerprint(source, config, self.settings, alive, info, PROMPT + MODELSCOPE_PROMPT + ASR_MODEL)
                 cached = self.repo.begin_processing(job, fingerprint)
 
                 def checkpoint_call(kind, part, action, prepare=None):
@@ -91,7 +92,9 @@ class VideoWorker:
                 count = math.ceil(info.duration / self.settings.video_segment_seconds)
                 chapters, usage = [], {}
                 previous_tail = None
-                transcript = {"status": "disabled", "model": ASR_MODEL, "sentences": [], "usage": {"duration_seconds": 0}}
+                transcript = {"status": "disabled", "model": config.get("asr_model", ASR_MODEL), "sentences": [], "usage": {"duration_seconds": 0}}
+                if is_modelscope(config) and info.has_audio and not config.get("asr_enabled"):
+                    raise VideoError("魔搭视频总结需要独立语音转写，请开启并配置 ASR", 409)
                 if config.get("asr_enabled"):
                     transcript["status"] = "processing" if info.has_audio else "no_audio"
                 for index in range(count):
@@ -116,6 +119,8 @@ class VideoWorker:
                         except Exception as exc:
                             if isinstance(exc, VideoError) and exc.status == 409:
                                 raise
+                            if is_modelscope(config):
+                                raise VideoError(str(exc) if isinstance(exc, VideoError) else "独立语音转写失败，未生成完整视频总结", 502) from None
                             transcript.update(status="failed", sentences=[], error=str(exc) if isinstance(exc, VideoError) else "云端转写失败")
                         finally:
                             audio.unlink(missing_ok=True)
@@ -123,8 +128,12 @@ class VideoWorker:
                     def prepare_segment():
                         make_segment(source, segment, start, end - start, self.settings, alive, has_audio=info.has_audio)
                         stage(f"云端音视频分析 {index + 1}/{count}", 12 + int(75 * index / count))
-                    text, tokens = checkpoint_call("summary", index,
-                        lambda: self.client.summarize(segment, config, alive), prepare=prepare_segment)
+                    def summarize():
+                        if is_modelscope(config):
+                            speech = [row for row in transcript["sentences"] if row["start_seconds"] < end and row["end_seconds"] > start]
+                            return self.client.summarize(segment, config, alive, transcript=speech, has_audio=info.has_audio)
+                        return self.client.summarize(segment, config, alive)
+                    text, tokens = checkpoint_call("summary", index, summarize, prepare=prepare_segment)
                     chapters.append({"start_seconds": start, "end_seconds": round(end, 2), "summary": text})
                     for name, value in tokens.items():
                         usage[name] = usage.get(name, 0) + value
@@ -139,6 +148,8 @@ class VideoWorker:
                     for name, value in tokens.items():
                         usage[name] = usage.get(name, 0) + value
                 basis = "云端模型分析视频的声音与画面" if info.has_audio else "云端模型分析画面（未检测到音轨）"
+                if is_modelscope(config):
+                    basis = "魔搭云端分析画面 + 独立云端ASR转写声音" if info.has_audio else "魔搭云端分析画面（未检测到音轨）"
                 markdown = (f"# {title}\n\n> AI 生成的视频总结，请核对原视频。\n\n"
                             f"来源：{job.source_url or job.filename}\n\n依据：{basis}；预处理为最长 {self.settings.video_segment_seconds} 秒的 720px/12fps 视频分段。"
                             "章节时间是素材分段边界，不是逐句字幕时间；细小文字和短暂画面可能遗漏。\n\n## 整体摘要\n\n" + overview)
