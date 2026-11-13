@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Web RAG Clipper",
-  "version": "0.17.4",
-  "description": "剪藏当前网页正文到 Web RAG Clipper 知识库（本地后端 http://localhost:18001）",
+  "version": "0.18.0",
+  "description": "剪藏网页与视频笔记到个人知识库，支持连接共享服务端及恢复工作区登录",
   "action": {
     "default_title": "Web RAG Clipper"
   },

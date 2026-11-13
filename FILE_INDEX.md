@@ -300,6 +300,10 @@
 | `evaluation/aligned*/` | 运行时 ID 对齐数据；Git 忽略 |
 | `evaluation/reports/` | 基线输出和报告；Git 忽略 |
 
+## 工作区登录与共享部署
+
+跨电脑访问相关：`extension/workspace-panel.js`管理服务端选择、登录、加密文件恢复和退出；`extension/workspace-backup.js`只加密白名单登录身份。`extension/tests/workspace-access.test.js`验证地址绑定、凭证隔离和加密边界；`scripts/check_workspace_access_browser.py`以真实API/SQLite和两个独立Chrome配置验收。`SHARED_SERVER.md`说明部署与数据迁移，`deploy/`提供仅本机端口的Compose覆盖、Nginx和systemd示例。
+
 ## 视频模块
 
 | 文件 | 说明 |

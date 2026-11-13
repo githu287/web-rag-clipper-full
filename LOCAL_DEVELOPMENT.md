@@ -46,7 +46,7 @@ docker compose up -d --wait --wait-timeout 180
 
 视频总结需额外安装 `.venv/Scripts/python.exe -m pip install -r backend/requirements-video.txt`，并在独立终端运行 `.venv/Scripts/python.exe -m backend.workers.video_worker`。视频模型在扩展“视频”面板配置，全部推理在线上完成。
 
-API 文档地址为 `http://localhost:18001/docs`。默认端口与 `extension/config.js`、`extension/manifest.json` 一致；更换地址时同时更新这两处。不要重复启动 Worker。
+API 文档地址为 `http://localhost:18001/docs`。扩展默认指向此地址；0.18.0起欢迎页可填写共享HTTPS服务端并登录原工作区，无需改扩展源码。固定服务端、加密登录文件和旧数据迁移见[跨电脑说明](SHARED_SERVER.md)。不要重复启动Worker。
 
 ## 加载扩展
 

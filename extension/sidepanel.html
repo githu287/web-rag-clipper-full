@@ -16,7 +16,27 @@
 
     <div class="welcome-card">
       <h2>欢迎使用 Web RAG Clipper</h2>
-      <p class="welcome-desc">请先为你的插件设置一个唯一名称</p>
+      <p class="welcome-desc">已有知识库请选择原服务端并登录；创建新工作区会得到独立的空知识库。</p>
+      <label for="workspace-server">服务端地址</label>
+      <input class="workspace-input" type="url" id="workspace-server" autocomplete="url" spellcheck="false" placeholder="https://kb.example.com">
+      <p class="hint">换电脑时需连接同一个固定后端。localhost 指当前电脑，不会同步另一台电脑的数据。</p>
+      <form id="workspace-login" class="auth-form">
+        <label for="workspace-id">工作区 ID</label>
+        <input type="text" id="workspace-id" autocomplete="username" spellcheck="false" maxlength="128" required>
+        <label for="workspace-secret">登录密钥</label>
+        <input type="password" id="workspace-secret" autocomplete="current-password" maxlength="256" required>
+        <button type="submit" class="primary-btn" data-workspace-action>登录已有知识库</button>
+      </form>
+      <button type="button" class="btn-secondary" id="workspace-retry" data-workspace-action hidden>重新连接已保存的工作区</button>
+      <details class="workspace-recovery"><summary>使用加密登录文件恢复</summary>
+        <label for="workspace-file">选择登录文件</label><input class="workspace-input" type="file" id="workspace-file" accept=".json,application/json">
+        <label for="workspace-file-password">登录文件密码</label><input class="workspace-input" type="password" id="workspace-file-password" autocomplete="off" maxlength="256">
+        <button type="button" class="btn-secondary" id="workspace-import" data-workspace-action>解密并填入登录信息</button>
+        <button type="button" class="btn-secondary" id="workspace-export-welcome" data-workspace-action disabled>导出已保存身份的加密登录文件</button>
+        <p class="hint">文件只含服务端地址和登录凭证，不含知识库正文。导出密码至少10个字符；请另行保管密码。</p>
+      </details>
+      <p class="auth-status" id="workspace-status" role="status" aria-live="polite"></p>
+      <details class="workspace-recovery"><summary>首次使用：创建新工作区</summary>
       <form id="form-register-plugin" class="auth-form" novalidate>
         <label for="plugin-name-input">插件名称</label>
         <input type="text" id="plugin-name-input" autocomplete="off" spellcheck="false" placeholder="例如：我的 AI 助手">
@@ -24,6 +44,7 @@
         <button type="submit" class="primary-btn" id="plugin-register-btn">创建插件</button>
         <div class="auth-status" id="welcome-status"></div>
       </form>
+      </details>
     </div>
   </div>
 
@@ -295,6 +316,14 @@
           <div class="value" id="plugin-auth-status">—</div>
         </div>
 
+        <div class="section-title">登录与跨电脑使用</div>
+        <div class="hint">当前服务端</div><p class="workspace-address" id="workspace-server-current"></p>
+        <label for="workspace-backup-password">加密登录文件密码（10至256个字符）</label>
+        <input class="workspace-input" type="password" id="workspace-backup-password" autocomplete="new-password" maxlength="256">
+        <button type="button" class="btn-secondary" id="workspace-export" data-workspace-action>导出加密登录文件</button>
+        <p class="hint">在另一台电脑导入文件，使用同一服务端登录。文件不包含知识库正文、模型API Key或聊天记录。密码丢失后无法解密。</p>
+        <button type="button" class="btn-secondary" id="workspace-logout" data-workspace-action>退出登录（保留服务端知识库）</button>
+        <p class="hint" id="workspace-settings-status" role="status" aria-live="polite"></p>
         <div class="section-title">模型配置</div>
         <div class="model-status" id="model-status">—</div>
         <div class="api-key-form" id="api-key-form" hidden>
@@ -392,6 +421,8 @@
   <script src="url-utils.js"></script>
   <script src="session-store.js"></script>
   <script src="api-client.js"></script>
+  <script src="workspace-backup.js"></script>
+  <script src="workspace-panel.js"></script>
   <script src="clip-detect.js"></script>
   <script src="page-capture.js"></script>
   <script src="pagination.js"></script>

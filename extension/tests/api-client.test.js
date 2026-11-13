@@ -33,6 +33,7 @@ function loadApiClient(fetchImpl, timers) {
     chrome,
     console,
     fetch: fetchImpl,
+    URL,
     AbortController,
     setTimeout: timers ? timers.setTimeout : setTimeout,
     clearTimeout: timers ? timers.clearTimeout : clearTimeout,

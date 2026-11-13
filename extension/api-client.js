@@ -2,10 +2,10 @@
 // 职责：统一 Plugin Workspace 双凭证认证（X-Plugin-ID / X-Plugin-Secret）、
 //       统一错误分类、统一 JSON/204/非 JSON 处理。
 // 禁止：自动 retry（clips/upload/ask/search 可能产生重复请求）；
-//       保存 API Key / password；plugin_secret 落日志 / URL / DOM / 会话。
+//       保存 API Key / 文件密码；plugin_secret 落日志 / URL / 普通 DOM / 会话。
 "use strict";
 
-const API_BASE_URL = WEB_RAG_CLIPPER_CONFIG.API_BASE_URL;
+let API_BASE_URL = WEB_RAG_CLIPPER_CONFIG.API_BASE_URL;
 const API_REQUEST_TIMEOUT_MS = 30000;
 const API_UPLOAD_TIMEOUT_MS = 120000;
 // STORAGE_KEYS 已在 config.js 全局声明，禁止重复声明（避免页面解析失败）。
@@ -44,12 +44,44 @@ function parseErrorMessage(data, fallback) {
 
 const webRagApiClient = (() => {
   // 内存态身份：仅 X-Plugin-ID / X-Plugin-Secret 参与请求认证，
-  // plugin_secret 严禁 console.log / 拼 URL / 渲染到 DOM / 写入会话。
+  // plugin_secret 严禁 console.log / 拼 URL / 普通文本回显 / 写入会话；登录密码框与加密备份由 workspace-panel 管理。
   let pluginId = null;
   let pluginSecret = null;
   let pluginName = null;
   let apiKeyConfigured = false; // 以 GET /plugins/me 返回为准，不持久化
   let unauthenticatedHandler = null;
+  function serverUrl(value) {
+    if (typeof value !== "string" || value.length > 2048 || /[\\\s]/.test(value.trim())) throw new Error("服务端地址格式不正确");
+    let url;
+    try { url = new URL(value.trim()); } catch (_error) { throw new Error("请输入完整服务端地址，例如 https://kb.example.com"); }
+    if (url.username || url.password || url.search || url.hash ||
+      !(url.protocol === "https:" || (url.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)))) {
+      throw new Error("共享服务端需使用 HTTPS；HTTP 仅允许本机 localhost/127.0.0.1，不允许地址内含凭证、查询或片段");
+    }
+    return url.href.replace(/\/+$/, "");
+  }
+  function connection(value) {
+    if (!value || typeof value.plugin_id !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(value.plugin_id) ||
+      typeof value.plugin_secret !== "string" || !/^[A-Za-z0-9_-]{1,256}$/.test(value.plugin_secret)) throw new Error("工作区 ID 或登录密钥格式不正确");
+    return { server_url: serverUrl(value.server_url), plugin_id: value.plugin_id, plugin_secret: value.plugin_secret,
+      plugin_name: typeof value.plugin_name === "string" ? value.plugin_name.slice(0, 64) : "" };
+  }
+  const identity = () => ({ pluginId, pluginSecret, serverUrl: API_BASE_URL });
+  async function saveConnection(value) {
+    const next = connection(value);
+    // Validate/write the complete connection before changing the active identity.
+    await chrome.storage.local.set({ [STORAGE_KEYS.PLUGIN]: next, [STORAGE_KEYS.SERVER]: next.server_url });
+    API_BASE_URL = next.server_url; pluginId = next.plugin_id; pluginSecret = next.plugin_secret;
+    pluginName = next.plugin_name; apiKeyConfigured = false; budgetLoadedAt = 0;
+  }
+  async function verifyConnection(value) {
+    const next = connection(value);
+    const result = await fetchWithDeadline("/plugins/me", { method: "GET", headers: {
+      "X-Plugin-ID": next.plugin_id, "X-Plugin-Secret": next.plugin_secret,
+    } }, { auth: false }, API_REQUEST_TIMEOUT_MS, next.server_url);
+    if (result.data?.plugin_id !== next.plugin_id || typeof result.data.plugin_name !== "string") throw new Error("服务端身份响应不匹配，请确认地址");
+    return { ...next, plugin_name: result.data.plugin_name };
+  }
   // Fallback for older servers; current servers advertise budgets from SDK settings.
   const modelTimeouts = { search: 240000, ask: 540000, api_key: 240000, model_config: 540000 };
   let budgetLoadedAt = 0;
@@ -80,12 +112,12 @@ const webRagApiClient = (() => {
   }
 
   async function modelRequest(path, options, kind) {
-    const identity = { pluginId, pluginSecret };
+    const expected = identity();
     // Validate before fetching the public policy, then prevent identity changes
     // during that await from sending the old question/config into another workspace.
     applyAuth({});
     const timeoutMs = await modelTimeout(kind);
-    if (identity.pluginId !== pluginId || identity.pluginSecret !== pluginSecret) {
+    if (expected.pluginId !== pluginId || expected.pluginSecret !== pluginSecret || expected.serverUrl !== API_BASE_URL) {
       throw new ApiRequestError(401, "UNAUTHENTICATED", "插件身份已变更，请重新操作");
     }
     return request(path, Object.assign({}, options, { timeoutMs }));
@@ -93,8 +125,10 @@ const webRagApiClient = (() => {
 
   // 读取 webRagPlugin（唯一身份来源）。
   async function loadPlugin() {
-    const stored = await chrome.storage.local.get(STORAGE_KEYS.PLUGIN);
+    const stored = await chrome.storage.local.get([STORAGE_KEYS.PLUGIN, STORAGE_KEYS.SERVER]);
     const plugin = stored && stored[STORAGE_KEYS.PLUGIN];
+    const address = plugin?.server_url || stored?.[STORAGE_KEYS.SERVER];
+    API_BASE_URL = address ? serverUrl(address) : WEB_RAG_CLIPPER_CONFIG.API_BASE_URL;
     if (plugin && typeof plugin.plugin_id === "string" && plugin.plugin_id) {
       pluginId = plugin.plugin_id;
       pluginSecret = typeof plugin.plugin_secret === "string" ? plugin.plugin_secret : null;
@@ -116,6 +150,7 @@ const webRagApiClient = (() => {
         plugin_id: pluginId,
         plugin_secret: pluginSecret,
         plugin_name: pluginName,
+        server_url: API_BASE_URL,
       },
     });
     return true;
@@ -154,7 +189,7 @@ const webRagApiClient = (() => {
   // 双凭证：X-Plugin-ID + X-Plugin-Secret（唯一认证来源）。
   function applyAuth(headers) {
     if (!pluginId || !pluginSecret) {
-      throw new ApiRequestError(401, "UNAUTHENTICATED", "插件凭证缺失，请重新创建插件");
+      throw new ApiRequestError(401, "UNAUTHENTICATED", "插件凭证缺失，请登录原工作区或导入登录文件");
     }
     headers["X-Plugin-ID"] = pluginId;
     headers["X-Plugin-Secret"] = pluginSecret;
@@ -163,7 +198,7 @@ const webRagApiClient = (() => {
 
   // 401：凭证失效 → 清除本地插件身份，回到 Welcome。
   async function invalidatePlugin(identity) {
-    if (identity && (identity.pluginId !== pluginId || identity.pluginSecret !== pluginSecret)) {
+    if (identity && (identity.pluginId !== pluginId || identity.pluginSecret !== pluginSecret || (identity.serverUrl && identity.serverUrl !== API_BASE_URL))) {
       throw new ApiRequestError(401, "UNAUTHENTICATED", "请求使用的插件凭证已失效");
     }
     const currentPluginId = pluginId;
@@ -171,7 +206,7 @@ const webRagApiClient = (() => {
     if (unauthenticatedHandler) {
       await unauthenticatedHandler({ pluginId: currentPluginId });
     }
-    throw new ApiRequestError(401, "UNAUTHENTICATED", "插件凭证已失效，请重新创建插件");
+    throw new ApiRequestError(401, "UNAUTHENTICATED", "插件凭证已失效，请确认服务端并重新登录或导入登录文件");
   }
 
   // 上传通道专有的状态码；其余错误分类与 JSON 通道完全共用 classifyResponse。
@@ -219,7 +254,7 @@ const webRagApiClient = (() => {
     }
     if (!response.ok) {
       if (response.status === 401) {
-        throw new ApiRequestError(401, "UNAUTHENTICATED", "插件凭证已失效，请重新创建插件");
+        throw new ApiRequestError(401, "UNAUTHENTICATED", "插件凭证已失效，请确认服务端并重新登录或导入登录文件");
       }
       if (response.status === 409) {
         if (data && data.type === "PluginNameTakenError") {
@@ -258,11 +293,11 @@ const webRagApiClient = (() => {
       applyAuth(headers);
     }
     return fetchWithDeadline(path, { method: method, headers: headers, body: body },
-      { auth: opts.auth, identity: { pluginId, pluginSecret } }, opts.timeoutMs || API_REQUEST_TIMEOUT_MS);
+      { auth: opts.auth, identity: identity() }, opts.timeoutMs || API_REQUEST_TIMEOUT_MS);
   }
 
   // Covers headers AND body. No automatic retry: writes may already have committed.
-  async function fetchWithDeadline(path, init, classifyOptions, timeoutMs) {
+  async function fetchWithDeadline(path, init, classifyOptions, timeoutMs, baseUrl = API_BASE_URL) {
     const controller = new AbortController();
     let timeoutId;
     const externalSignal = init.signal;
@@ -284,7 +319,7 @@ const webRagApiClient = (() => {
     try {
       return await Promise.race([deadline, cancellation, (async () => {
         if (externalSignal && externalSignal.aborted) throw new ApiRequestError(0, "CANCELLED", "已取消提取");
-        const response = await fetch(API_BASE_URL + path, Object.assign({}, init, { signal: controller.signal }));
+        const response = await fetch(baseUrl + path, Object.assign({}, init, { signal: controller.signal, redirect: "error" }));
         if (controller.signal.aborted) throw timeoutError();
         return classifyResponse(response, Object.assign({}, classifyOptions, { signal: controller.signal }));
       })()]);
@@ -306,11 +341,13 @@ const webRagApiClient = (() => {
   async function uploadRequest(path, formData) {
     const headers = applyAuth({});
     return fetchWithDeadline(path, { method: "POST", headers: headers, body: formData },
-      { failureLabel: "上传", statusErrors: UPLOAD_STATUS_ERRORS, identity: { pluginId, pluginSecret } }, API_UPLOAD_TIMEOUT_MS);
+      { failureLabel: "上传", statusErrors: UPLOAD_STATUS_ERRORS, identity: identity() }, API_UPLOAD_TIMEOUT_MS);
   }
 
   return {
     ApiRequestError: ApiRequestError,
+    serverUrl, connection, saveConnection, verifyConnection,
+    getServerUrl: () => API_BASE_URL,
     getPlugin: getPlugin,
     setPluginDetails: setPluginDetails,
     loadPlugin: loadPlugin,
@@ -343,13 +380,15 @@ const webRagApiClient = (() => {
       async image(blob, signal) {
         const result = await fetchWithDeadline("/ocr/image", {
           method: "POST", headers: applyAuth({ "Content-Type": blob.type || "application/octet-stream" }), body: blob, signal,
-        }, { identity: { pluginId, pluginSecret }, failureLabel: "图片识别" }, 45000);
+        }, { identity: identity(), failureLabel: "图片识别" }, 45000);
         return result.data;
       },
     },
     plugins: {
       // POST /plugins/register：创建插件 workspace（无需凭证）
-      async register(pluginName) {
+      async register(pluginName, address) {
+        if (address) return (await fetchWithDeadline("/plugins/register", { method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ plugin_name: pluginName }) }, { auth: false }, API_REQUEST_TIMEOUT_MS, serverUrl(address))).data;
         const result = await request("/plugins/register", {
           method: "POST",
           body: { plugin_name: pluginName },

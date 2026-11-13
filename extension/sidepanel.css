@@ -272,6 +272,13 @@ input, textarea {
 .video-evidence { border-top: 1px solid var(--border); padding-top: 16px; margin-top: 14px; }
 #video-player { display: block; width: 100%; max-height: 240px; background: #111827; border-radius: 8px; margin: 10px 0; }
 #video-player[hidden] { display: none; }
+.workspace-input { display: block; width: 100%; box-sizing: border-box; margin: 8px 0 12px; padding: 9px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--text); font: inherit; font-size: 12px; }
+.workspace-input:focus { outline: 2px solid var(--primary); outline-offset: 1px; }
+.workspace-recovery label { display: block; font-size: 12px; margin-top: 12px; }
+#plugin-id-field { overflow-wrap: anywhere; }
+.workspace-recovery { margin: 18px 0; }
+.workspace-recovery summary { cursor: pointer; margin-bottom: 12px; }
+.workspace-address { overflow-wrap: anywhere; font-size: 12px; margin: 8px 0 16px; }
 #video-local-source { width: 100%; font-size: 11px; margin: 8px 0; }
 #video-transcript-choices { border: 1px solid var(--border); border-radius: 6px; padding: 8px; margin: 12px 0; font-size: 11px; }
 #video-transcript-list { max-height: 320px; overflow-y: auto; }

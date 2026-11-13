@@ -1,7 +1,6 @@
 // Web RAG Clipper 统一配置
 // 所有 JS 只从这里读取后端地址，禁止在其他文件中散落硬编码。
-// 如需指向其他后端（如局域网 / 公网部署），只需修改 API_BASE_URL，
-// 并同步 manifest.json 中 host_permissions 的对应地址。
+// API_BASE_URL 是首次使用的默认值；运行时服务端与凭证一起保存，支持登录共享后端。
 //
 // 职责边界（Phase 3.5 Step 2-F）：
 //   - 只负责 API_BASE_URL 与必要的 storage key 常量；
@@ -11,8 +10,9 @@ const WEB_RAG_CLIPPER_CONFIG = {
   API_BASE_URL: "http://localhost:18001",
   STORAGE_KEYS: {
     // 插件身份：{ plugin_id, plugin_secret, plugin_name }
-    // plugin_secret 仅用于 X-Plugin-Secret 请求头，禁止落日志 / URL / DOM / 会话。
+    // plugin_secret 只用于身份认证；登录界面的密码框及用户请求的加密登录文件可承载它，禁止落日志 / URL / 会话。
     PLUGIN: "webRagPlugin",
+    SERVER: "webRagServer",
     // 每个 Plugin 的当前 Session ID：{ [pluginId]: sessionId }
     // Phase 3.6 Step 2-H：全局 Session，所有 Tab 共享同一个聊天会话
     CURRENT_SESSION: "webRagCurrentSession",

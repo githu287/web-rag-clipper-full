@@ -180,6 +180,7 @@ function setStatus(el, text, type) {
 
 // ================================================================ 视图切换
 function renderWelcomeView() {
+  if (typeof webRagWorkspacePanel !== "undefined") webRagWorkspacePanel.refresh();
   if (typeof webRagVideoPanel !== "undefined") webRagVideoPanel.reset();
   els.viewWelcome.hidden = false;
   els.viewBlocked.hidden = true;
@@ -855,14 +856,9 @@ async function registerPlugin() {
   els.pluginRegisterBtn.textContent = "创建中...";
   setStatus(els.welcomeStatus, "", null);
   try {
-    const data = await webRagApiClient.plugins.register(name);
-    webRagApiClient.setPluginDetails({
-      pluginId: data.plugin_id,
-      pluginSecret: data.plugin_secret,
-      pluginName: data.plugin_name,
-      apiKeyConfigured: false,
-    });
-    await webRagApiClient.persistPlugin();
+    const address = webRagWorkspacePanel.address();
+    const data = await webRagApiClient.plugins.register(name, address);
+    await webRagWorkspacePanel.created(address, data);
     renderAppView();
     const tab = await getCurrentTab();
     if (tab && tab.id != null) {
@@ -2601,7 +2597,7 @@ function errorText(err) {
   if (err instanceof webRagApiClient.ApiRequestError) {
     switch (err.code) {
       case "UNAUTHENTICATED":
-        return "插件凭证已失效，请重新创建插件";
+        return "凭证验证失败，请确认服务端并登录原工作区或导入登录文件";
       case "PLUGIN_DISABLED":
       case "DISABLED":
         return "插件已被禁用，请联系管理员";
@@ -2612,7 +2608,7 @@ function errorText(err) {
       case "NETWORK":
         return "网络错误，请重试";
       case "BAD_CREDENTIALS":
-        return "凭证错误，请重新创建插件";
+        return "凭证错误，请登录原工作区或导入登录文件";
       case "FILE_TOO_LARGE":
         return "文件过大，最大 2MB";
       case "UNSUPPORTED_FILE_TYPE":
@@ -2629,8 +2625,9 @@ function renderSettings() {
   const plugin = webRagApiClient.getPlugin();
   els.pluginNameField.value = plugin.pluginName || "";
   const pid = plugin.pluginId || "";
-  els.pluginIdField.textContent = pid.length > 12 ? pid.slice(0, 6) + "…" + pid.slice(-6) : pid || "—";
+  els.pluginIdField.textContent = pid || "—";
   els.pluginAuthStatus.textContent = "● 已连接";
+  webRagWorkspacePanel.refresh();
   if (plugin.apiKeyConfigured) {
     const embedding = currentModelConfig && currentModelConfig.embedding;
     const llm = currentModelConfig && currentModelConfig.llm;
@@ -2895,7 +2892,7 @@ function bindEvents() {
   });
   els.formRegisterPlugin.addEventListener("submit", function (e) {
     e.preventDefault();
-    registerPlugin();
+    webRagWorkspacePanel.run(registerPlugin);
   });
 
   els.navClip.addEventListener("click", function () {
@@ -3188,10 +3185,20 @@ async function init() {
     stopUploadJobMonitor();
     clipBusy = false;
     renderWelcomeView();
-    setStatus(els.welcomeStatus, "插件凭证已失效，请重新创建插件", "err");
+    setStatus(els.welcomeStatus, "凭证验证失败，请确认服务端并登录原工作区，或导入加密登录文件。请勿通过同名创建找回数据。", "err");
   });
-  await webRagApiClient.loadPlugin();
-  await validatePlugin();
+  webRagWorkspacePanel.init(async () => {
+    await persistQuestionDraft();
+    if (await questionDraftController().flush() === false) throw new Error("草稿保存失败，请保留输入后再退出登录");
+  }, validatePlugin);
+  try {
+    await webRagApiClient.loadPlugin();
+    webRagWorkspacePanel.refresh();
+    await validatePlugin();
+  } catch (_error) {
+    renderWelcomeView();
+    setStatus(els.welcomeStatus, "本机连接配置读取失败，请确认服务端或导入登录文件；没有删除原有数据。", "err");
+  }
 }
 
 init();

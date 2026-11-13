@@ -1,0 +1,19 @@
+[Unit]
+Description=Web RAG Clipper API
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ragclipper
+Group=ragclipper
+WorkingDirectory=/srv/web-rag-clipper-full
+Environment=PYTHONUTF8=1
+ExecStart=/srv/web-rag-clipper-full/.venv/bin/python -m uvicorn backend.main:app --host 127.0.0.1 --port 18001 --proxy-headers --forwarded-allow-ips 127.0.0.1
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=660
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

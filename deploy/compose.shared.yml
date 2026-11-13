@@ -1,0 +1,22 @@
+# Use after docker-compose.yml and docker-compose.override.yml. Compose >= 2.24.4.
+# Explicit replacement prevents retaining the development 0.0.0.0 port mappings.
+services:
+  mysql:
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?Set MYSQL_ROOT_PASSWORD on the server}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-rag_clipper}
+      MYSQL_USER: ${MYSQL_USER:-rag_user}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?Set MYSQL_PASSWORD on the server}
+    ports: !override
+      - "127.0.0.1:33066:3306"
+  redis:
+    ports: !override
+      - "127.0.0.1:16379:6379"
+  minio:
+    ports: !override
+      - "127.0.0.1:19000:9000"
+      - "127.0.0.1:19001:9001"
+  milvus:
+    ports: !override
+      - "127.0.0.1:19530:19530"
+      - "127.0.0.1:9091:9091"
