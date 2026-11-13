@@ -6,7 +6,7 @@ import math
 
 from .video_errors import VideoError
 
-PIPELINE_VERSION = 1  # Bump when preprocessing or summary/ASR interpretation changes.
+PIPELINE_VERSION = 2  # ASR context windows and word ownership differ from hard cuts.
 
 
 def load_state(raw):

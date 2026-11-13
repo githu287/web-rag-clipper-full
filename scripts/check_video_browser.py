@@ -117,8 +117,9 @@ def main():
                 return client.answer(evidence, query, history, _config)
             return "蓝色背景与提示音。[片段 1]", {"total_tokens": 9}
     class AsrFixture:
-        def transcribe(self, _path, duration, _config, _alive):
-            return [{"start_seconds": min(.2, duration / 4), "end_seconds": min(.8, duration),
+        def transcribe(self, _path, duration, _config, _alive, *, keep_range, previous_tail):
+            offset = keep_range[0]
+            return [{"start_seconds": offset + .235, "end_seconds": offset + .835,
                      "text": "蓝色演示原文 <img src=x onerror=alert(1)>"}], {"duration_seconds": duration}
     service._cloud_client = CloudFixture()
     # Open codecs let the player assertions run in both installed Chrome and CI Chromium.
@@ -241,9 +242,9 @@ def main():
                 expect(page.locator("#video-chat-messages")).to_contain_text("蓝色演示原文")
                 expect(page.locator("#video-chat-messages .video-time-link")).to_have_count(2)
                 page.locator("#video-chat-messages .video-time-link").first.click()
-                assert page.locator("#video-player").evaluate("v=>v.currentTime") >= .19
+                assert page.locator("#video-player").evaluate("v=>v.currentTime") >= .225
                 page.locator("#video-chat-messages .video-time-link").nth(1).click()
-                assert page.locator("#video-player").evaluate("v=>v.currentTime") >= 10.19
+                assert page.locator("#video-player").evaluate("v=>v.currentTime") >= 10.225
                 done("ASR range citation exposes both server quotes and seeks each actual local position; HTML remains text; no new upload")
                 page.locator("#video-question").fill("视频只有蓝色，对吗？还讲了什么？")
                 page.locator("#video-ask").click()

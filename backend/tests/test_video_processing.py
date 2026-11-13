@@ -39,7 +39,8 @@ def clients():
     cloud, asr = Mock(), Mock()
     cloud.summarize.return_value = ("private-summary", {"total_tokens": 10})
     cloud.combine.return_value = ("private-overview", {"total_tokens": 5})
-    asr.transcribe.return_value = ([{"start_seconds": .1, "end_seconds": .8, "text": "private-asr"}], {"duration_seconds": 1})
+    asr.transcribe.side_effect = lambda *_args, keep_range, **_kwargs: ([{
+        "start_seconds": keep_range[0] + .1, "end_seconds": keep_range[0] + .8, "text": "private-asr"}], {"duration_seconds": 1})
     return cloud, asr
 
 
@@ -84,22 +85,57 @@ def test_failed_overview_retries_only_overview(service, media):
     assert view["reused"] == {"asr": 2, "summary": 2} and view["unknown_calls"] == 1
 
 
+def test_boundary_tail_and_merged_times_survive_checkpoint_reuse(service, media, monkeypatch):
+    from backend.clients.video_asr import aligned_sentences
+    from backend.tests.test_video_asr import word_response
+    monkeypatch.setattr("backend.workers.video_worker.inspect_video", lambda *_: VideoInfo(20, True))
+    cloud, asr = clients()
+    def transcribe(_path, duration, *_args, keep_range, previous_tail):
+        offset = 0 if keep_range[0] == 0 else 8
+        drift = 0 if offset == 0 else 32
+        words = [{"text": text, "begin_time": start + drift - offset * 1000,
+                  "end_time": end + drift - offset * 1000, "punctuation": punctuation}
+                 for start, end, text, punctuation in [(9807, 9927, "on", ""), (9927, 10047, " the", ""),
+                     (10047, 10326, " same", ""), (10326, 10798, " page", ".")]]
+        return aligned_sentences(word_response(words), duration, keep_range=keep_range,
+                                 previous_tail=previous_tail), {"duration_seconds": duration}
+    asr.transcribe.side_effect = transcribe
+    cloud.summarize.side_effect = [("first", {}), VideoError("controlled failure", 502)]
+    job = setup(service)
+    VideoWorker(service, cloud, asr).run_once()
+    failed = service.repo.get("a", job.id)
+    state = load_state(failed.processing_state)
+    assert state["cache"]["asr:0"]["data"][-1]["_tail_word"]["text"] == " the"
+    assert asr.transcribe.call_args_list[1].kwargs["previous_tail"] == {
+        "text": " the", "start_seconds": 1.927, "end_seconds": 2.047}
+    service.retry("a", job.id)
+    next_cloud, next_asr = clients()
+    VideoWorker(service, next_cloud, next_asr).run_once()
+    done = service.repo.get("a", job.id)
+    rows = json.loads(done.result)["transcript"]["sentences"]
+    assert rows == [{"id": 1, "start_seconds": 9.807, "end_seconds": 10.83, "text": "on the same page."}]
+    next_asr.transcribe.assert_not_called()
+    assert processing_view(done.processing_state)["reused"] == {"asr": 2, "summary": 1}
+    assert "_tail_word" not in done.result and not load_state(done.processing_state)["cache"]
+
+
 def test_thirty_minute_resume_preserves_tail_evidence_and_matches_uninterrupted_result(service, monkeypatch):
     """Distinct content at every cut detects duplicated/skipped cached sections."""
     service.settings.video_segment_seconds = 90
     monkeypatch.setattr("backend.workers.video_worker.inspect_video", lambda *_: VideoInfo(1800, True))
     def derive(_source, output, start, *_args, **_kwargs):
-        output.write_text(str(int(start // 90)))
+        output.write_text(str(start))
     monkeypatch.setattr("backend.workers.video_worker.make_audio", derive)
     monkeypatch.setattr("backend.workers.video_worker.make_segment", derive)
 
     def distinct_clients(fail_at=None):
         cloud, asr = Mock(), Mock()
-        def transcribe(path, *_args):
-            part = int(path.read_text())
-            return [{"start_seconds": .1, "end_seconds": 89.8, "text": f"第{part + 1}段独立事实"}], {"duration_seconds": 90}
+        def transcribe(path, duration, *_args, keep_range, **_kwargs):
+            part = round((float(path.read_text()) + keep_range[0]) / 90)
+            return [{"start_seconds": keep_range[0] + .1, "end_seconds": keep_range[1] - .2,
+                     "text": f"第{part + 1}段独立事实"}], {"duration_seconds": duration}
         def summarize(path, *_args):
-            part = int(path.read_text())
+            part = int(float(path.read_text()) // 90)
             if part == fail_at:
                 raise VideoError("controlled pre-provider failure", 502)
             return f"第{part + 1}段独立总结", {"total_tokens": 100 + part}
@@ -122,7 +158,7 @@ def test_thirty_minute_resume_preserves_tail_evidence_and_matches_uninterrupted_
     ledger = processing_view(done.processing_state)
     assert retry_asr.transcribe.call_count == 9 and retry_cloud.summarize.call_count == 10
     assert retry_cloud.combine.call_count == 1 and ledger["reused"] == {"asr": 11, "summary": 10}
-    assert ledger["known_usage"] == {"video": {"total_tokens": 2240}, "asr": {"duration_seconds": 1800}}
+    assert ledger["known_usage"] == {"video": {"total_tokens": 2240}, "asr": {"duration_seconds": 1876}}
     assert ledger["unknown_calls"] == 1
     assert resumed["transcript"]["sentences"][-1] == {
         "id": 20, "start_seconds": 1710.1, "end_seconds": 1799.8, "text": "第20段独立事实"}
@@ -161,7 +197,7 @@ def test_material_or_configuration_changes_invalidate_cache_but_keep_prior_usage
     if change == "asr": service.put_config("a", {"base_url": DEFAULT_URL, "model": "qwen3-omni-flash", "asr_enabled": False})
     if change == "geometry": service.settings.video_segment_seconds = 11
     if change == "media_tool": service.settings.video_ffmpeg = "different-test-media-tool"
-    if change == "preprocessing": monkeypatch.setattr("backend.core.video_processing.PIPELINE_VERSION", 2)
+    if change == "preprocessing": monkeypatch.setattr("backend.core.video_processing.PIPELINE_VERSION", 3)
     service.retry("a", job.id)
     next_cloud, next_asr = clients()
     VideoWorker(service, next_cloud, next_asr).run_once()

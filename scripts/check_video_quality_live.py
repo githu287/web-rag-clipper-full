@@ -56,6 +56,7 @@ def main():
     from backend.clients.video import CloudVideoClient
     from backend.clients.video_asr import CloudAsrClient, ASR_MODEL
     from backend.core.video_errors import VideoError
+    from backend.core.video_transcript import asr_window, append_transcript, shift_tail
     from backend.services.video_media import inspect_video, make_segment, make_audio
 
     cases = json.loads(args.manifest.read_text(encoding="utf-8"))
@@ -123,20 +124,22 @@ def main():
             try:
                 segment = Path(temp) / "segment.mp4"
                 chapters, usage = [], {}
+                previous_tail = None
                 transcript = {"status": "processing" if info.has_audio else "no_audio", "sentences": [], "usage": {"duration_seconds": 0}}
                 for index in range(count):
                     start = index * service.settings.video_segment_seconds
                     end = min(info.duration, start + service.settings.video_segment_seconds)
                     if args.with_asr and info.has_audio:
                         audio = Path(temp) / "audio.wav"
+                        window = asr_window(start, end, info.duration)
                         try:
-                            make_audio(source, audio, start, end - start, service.settings)
-                            sentences, asr_usage = CloudAsrClient().transcribe(audio, end - start, config)
+                            make_audio(source, audio, window.start, window.duration, service.settings)
+                            sentences, asr_usage = CloudAsrClient().transcribe(audio, window.duration, config,
+                                keep_range=window.keep_range, previous_tail=shift_tail(previous_tail, -window.start))
                             transcript["usage"]["duration_seconds"] += asr_usage.get("duration_seconds", 0)
-                            for sentence in sentences:
-                                transcript["sentences"].append({"id": len(transcript["sentences"]) + 1,
-                                    "start_seconds": round(start + sentence["start_seconds"], 3),
-                                    "end_seconds": round(start + sentence["end_seconds"], 3), "text": sentence["text"]})
+                            append_transcript(transcript["sentences"], sentences, window.start)
+                            if sentences:
+                                previous_tail = shift_tail(sentences[-1].get("_tail_word"), window.start)
                         finally:
                             audio.unlink(missing_ok=True)
                     make_segment(source, segment, start, end - start, service.settings, has_audio=info.has_audio)

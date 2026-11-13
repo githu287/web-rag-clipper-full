@@ -11,12 +11,64 @@ import pytest
 
 from backend.clients.video_asr import CloudAsrClient, aligned_sentences, ASR_MODEL
 from backend.core.video_errors import VideoError
+from backend.core.video_transcript import asr_window
 from backend.services.video_media import ffmpeg_executable
 from backend.services.video_summary import job_response
 from backend.tests.test_video_summary import service, real_video, configure
 from backend.workers.video_worker import VideoWorker
 
 CONFIG = {"api_key": "private-fixture-key", "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1"}
+
+
+def word_response(words):
+    text = "".join(w["text"] + w.get("punctuation", "") for w in words)
+    return {"output": {"sentence": {"sentence_end": True, "text": text, "words": words}, "text": text}}
+
+
+@pytest.mark.parametrize("start,end,duration,expected", [
+    (0, 90, 180, (0, 92, (0, 90))),
+    (90, 180, 270, (88, 182, (2, 92))),
+    (180, 181, 181, (178, 181, (2, 3))),
+    (0, 1, 1, (0, 1, (0, 1))),
+])
+def test_asr_context_uses_real_media_offsets_and_clips_first_and_short_tail(start, end, duration, expected):
+    window = asr_window(start, end, duration)
+    assert (window.start, window.end, window.keep_range) == expected
+    assert window.duration == expected[1] - expected[0]
+
+
+def test_context_ownership_keeps_real_chinese_repetitions_negations_and_numbers():
+    # Independent per-call local timestamps for the same real word positions.
+    # The second 谢谢 straddles the cut with its midpoint exactly at 90s.
+    source = [(88000, 88400, "谢谢"), (89800, 90200, "谢谢"),
+              (90500, 91000, "不"), (91000, 91500, "退款80%")]
+    result = []
+    for start, end in [(0, 90), (90, 94)]:
+        window = asr_window(start, end, 94)
+        words = [{"begin_time": a - window.start * 1000, "end_time": b - window.start * 1000, "text": text}
+                 for a, b, text in source]
+        rows = aligned_sentences(word_response(words), window.duration, keep_range=window.keep_range)
+        result.extend({"text": row["text"], "start_seconds": row["start_seconds"] + window.start,
+                       "end_seconds": row["end_seconds"] + window.start} for row in rows)
+    assert "".join(row["text"] for row in result) == "谢谢谢谢不退款80%"
+    assert result[0] == {"start_seconds": 88, "end_seconds": 88.4, "text": "谢谢"}
+    # Preserve provider times even when a retained word begins before its owner.
+    assert result[1] == {"start_seconds": 89.8, "end_seconds": 91.5, "text": "谢谢不退款80%"}
+
+
+@pytest.mark.parametrize("damage", ["unstable", "outside", "missing_text"])
+def test_invalid_context_is_rejected_even_when_all_its_words_would_be_discarded(damage):
+    data = word_response([{"text": "上下文", "begin_time": 100, "end_time": 500}])
+    if damage == "unstable": data["output"]["sentence"]["words"][0]["fixed"] = False
+    if damage == "outside": data["output"]["sentence"]["words"][0]["end_time"] = 6000
+    if damage == "missing_text": data["output"]["sentence"]["text"] += "漏字"
+    with pytest.raises(VideoError):
+        aligned_sentences(data, 4, keep_range=(2, 4))
+
+
+def test_valid_context_without_owned_speech_is_empty_without_invented_words():
+    data = word_response([{"text": "上下文", "begin_time": 100, "end_time": 500}])
+    assert aligned_sentences(data, 4, keep_range=(2, 4)) == []
 
 
 def response_data():
@@ -122,17 +174,21 @@ def test_worker_offsets_transcript_and_keeps_usage_separate(service, real_video)
     configure(service)
     service.put_config("a", {"base_url": CONFIG["base_url"], "model": "qwen3-omni-flash", "asr_enabled": True})
     with real_video.open("rb") as stream: job = service.upload("a", stream, "actual.mp4")
-    def transcribe(path, duration, *_args):
+    def transcribe(path, duration, *_args, keep_range, **_kwargs):
         with wave.open(str(path)) as wav:
             assert wav.getframerate() == 16000 and wav.getnchannels() == 1 and wav.getsampwidth() == 2
-        return [{"start_seconds": .2, "end_seconds": min(.7, duration), "text": "已识别原文"}], {"duration_seconds": duration}
+            assert abs(wav.getnframes() / 16000 - duration) < .02
+        offset = keep_range[0]
+        return [{"start_seconds": offset + .2, "end_seconds": offset + .7, "text": "已识别原文"}], {"duration_seconds": duration}
     asr = Mock(transcribe=Mock(side_effect=transcribe))
     cloud = Mock(); cloud.summarize.return_value = ("summary", {"total_tokens": 10}); cloud.combine.return_value = ("overview", {})
     VideoWorker(service, cloud, asr).run_once()
     result = job_response(service.repo.get("a", job.id))["result"]
     assert result["transcript"]["status"] == "ready"
     assert result["transcript"]["sentences"][1] == {"id": 2, "start_seconds": 10.2, "end_seconds": 10.7, "text": "已识别原文"}
-    assert result["usage"]["total_tokens"] == 20 and result["transcript"]["usage"]["duration_seconds"] == 11
+    assert result["usage"]["total_tokens"] == 20 and result["transcript"]["usage"]["duration_seconds"] == 14
+    assert [call.args[1] for call in asr.transcribe.call_args_list] == [11, 3]
+    assert [call.kwargs["keep_range"] for call in asr.transcribe.call_args_list] == [(0, 10), (2, 3)]
     assert not list(service.root.iterdir())
 
 
@@ -168,7 +224,7 @@ def test_cancellation_after_transcription_never_starts_video_model_and_cleans_au
     configure(service)
     service.put_config("a", {"base_url": CONFIG["base_url"], "model": "qwen3-omni-flash", "asr_enabled": True})
     with real_video.open("rb") as stream: job = service.upload("a", stream, "actual.mp4")
-    def cancel(*_args):
+    def cancel(*_args, **_kwargs):
         service.cancel("a", job.id)
         return [], {}
     asr = Mock(transcribe=Mock(side_effect=cancel)); cloud = Mock()

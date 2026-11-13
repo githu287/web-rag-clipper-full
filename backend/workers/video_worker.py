@@ -9,6 +9,7 @@ from ..clients.video import CloudVideoClient, PROMPT
 from ..clients.video_asr import CloudAsrClient, ASR_MODEL
 from ..core.video_errors import VideoError
 from ..core.video_processing import processing_fingerprint
+from ..core.video_transcript import asr_window, append_transcript, shift_tail
 from ..services.video_links import download_platform
 from ..services.video_media import inspect_video, make_segment, make_audio
 
@@ -89,6 +90,7 @@ class VideoWorker:
 
                 count = math.ceil(info.duration / self.settings.video_segment_seconds)
                 chapters, usage = [], {}
+                previous_tail = None
                 transcript = {"status": "disabled", "model": ASR_MODEL, "sentences": [], "usage": {"duration_seconds": 0}}
                 if config.get("asr_enabled"):
                     transcript["status"] = "processing" if info.has_audio else "no_audio"
@@ -99,15 +101,16 @@ class VideoWorker:
                     if transcript["status"] == "processing":
                         stage(f"云端原文转写 {index + 1}/{count}", 10 + int(75 * index / count))
                         audio = directory / "audio.wav"
+                        window = asr_window(start, end, info.duration)
                         try:
                             rows, tokens = checkpoint_call("asr", index,
-                                lambda: self.asr_client.transcribe(audio, end - start, config, alive),
-                                prepare=lambda: make_audio(source, audio, start, end - start, self.settings, alive))
+                                lambda: self.asr_client.transcribe(audio, window.duration, config, alive,
+                                    keep_range=window.keep_range, previous_tail=shift_tail(previous_tail, -window.start)),
+                                prepare=lambda: make_audio(source, audio, window.start, window.duration, self.settings, alive))
                             transcript["usage"]["duration_seconds"] += tokens.get("duration_seconds", 0)
-                            for row in rows:
-                                transcript["sentences"].append({"id": len(transcript["sentences"]) + 1,
-                                    "start_seconds": round(start + row["start_seconds"], 3),
-                                    "end_seconds": round(start + row["end_seconds"], 3), "text": row["text"]})
+                            append_transcript(transcript["sentences"], rows, window.start)
+                            if rows:
+                                previous_tail = shift_tail(rows[-1].get("_tail_word"), window.start)
                             if len(transcript["sentences"]) > 3000 or sum(len(row["text"]) for row in transcript["sentences"]) > 120000:
                                 raise VideoError("转写原文过长，请使用较短视频生成可定位原文")
                         except Exception as exc:

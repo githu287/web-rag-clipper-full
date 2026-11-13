@@ -95,6 +95,32 @@ def test_unique_cue_anchor_checks_real_range_overlap_without_guessing_word_times
     assert alignment["anchors"][0]["asr_start"] == 9
 
 
+def test_repeated_reference_phrase_is_ambiguous_even_if_asr_only_matches_one_occurrence():
+    cues = [{"start_seconds": 10, "end_seconds": 14, "text": "Scientist, he showed that you can compute anything"},
+            {"start_seconds": 30, "end_seconds": 34, "text": "He showed that you can compute anything"}]
+    rows = [{"start_seconds": 10, "end_seconds": 14, "text": "Scientist, he showed that you can compute anything"},
+            {"start_seconds": 30, "end_seconds": 34, "text": "He showed that you could compute anything"}]
+    alignment = compare_transcript(cues, rows, 40)["cue_alignment"]
+    assert alignment["ambiguous_reference_cues"] == 1
+    assert alignment["uniquely_matched_cues"] == alignment["overlapping_ranges"] == 1
+    # The lexical error remains scored; rejecting an ambiguous anchor cannot
+    # turn different recognized text into a perfect transcript.
+    assert compare_transcript(cues, rows, 40)["edit_distance"] == 1
+
+
+def test_chinese_repeated_cues_are_not_time_anchors_but_unique_drift_is_still_reported():
+    cues = [{"start_seconds": 1, "end_seconds": 3, "text": "请不要退款八十元"},
+            {"start_seconds": 10, "end_seconds": 13, "text": "请不要退款八十元"},
+            {"start_seconds": 20, "end_seconds": 23, "text": "请核对第二笔金额"}]
+    rows = [{"start_seconds": 1, "end_seconds": 3, "text": "请不要退款八十元"},
+            {"start_seconds": 10, "end_seconds": 13, "text": "请要退款八十元"},
+            {"start_seconds": 25, "end_seconds": 28, "text": "请核对第二笔金额"}]
+    alignment = compare_transcript(cues, rows, 30)["cue_alignment"]
+    assert alignment["ambiguous_reference_cues"] == 2
+    assert alignment["uniquely_matched_cues"] == 1
+    assert not alignment["anchors"][0]["overlap"]
+
+
 @pytest.mark.parametrize("maximum,exit_code", [(0.1, 0), (True, 2)])
 def test_paid_runner_validates_reference_before_cloud_and_reports_scores(tmp_path, monkeypatch, maximum, exit_code):
     import json

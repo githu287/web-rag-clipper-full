@@ -112,13 +112,21 @@ def compare_transcript(cues, sentences, duration, segment_seconds=90):
         actual_tokens.extend(value)
         owners.extend([number] * len(value))
     joined = " " + " ".join(actual_tokens) + " "
-    anchors, candidates = [], 0
+    reference_joined = " " + " ".join(text(selected)) + " "
+    anchors, candidates, ambiguous = [], 0, 0
     for cue in selected:
         value = tokens(cue["text"])
         if len(value) < 5:
             continue
         candidates += 1
         needle = " " + " ".join(value) + " "
+        reference_position = reference_joined.find(needle)
+        if reference_joined.find(needle, reference_position + 1) >= 0:
+            # A repeated reference phrase may have only one exact ASR match
+            # because the other occurrence was misrecognized. It is not a
+            # unique time anchor; lexical similarity cannot identify its owner.
+            ambiguous += 1
+            continue
         position = joined.find(needle)
         if position < 0 or joined.find(needle, position + 1) >= 0:
             continue
@@ -138,5 +146,6 @@ def compare_transcript(cues, sentences, duration, segment_seconds=90):
                            **disagreement(text(reference), text(actual))})
     return {**score, "reference_cues": len(selected), "boundaries": boundaries,
             "cue_alignment": {"candidate_cues": candidates, "uniquely_matched_cues": len(anchors),
+                              "ambiguous_reference_cues": ambiguous,
                               "overlapping_ranges": sum(a["overlap"] for a in anchors), "anchors": anchors},
             "method": "Case/punctuation normalized token edit distance; no numeric/name correction; cue windows are approximate"}

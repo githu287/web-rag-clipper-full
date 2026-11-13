@@ -10,13 +10,14 @@ from urllib.parse import urlsplit
 import httpx
 
 from ..core.video_errors import VideoError
+from ..core.video_transcript import same_boundary_word
 from .video_transport import DeadlineTransport
 
 ASR_MODEL = "fun-asr-flash-2026-06-15"
 ASR_TIMEOUT_SECONDS = 120
 
 
-def aligned_sentences(data, duration):
+def aligned_sentences(data, duration, *, keep_range=None, previous_tail=None):
     """Group final ASR words by punctuation; never ask an LLM to invent times."""
     output = data.get("output", {}) if isinstance(data, dict) else {}
     if not isinstance(output, dict):
@@ -34,13 +35,7 @@ def aligned_sentences(data, duration):
         return []
     if not words or len(text) > 12000:
         raise VideoError("转写缺少可靠的字词时间戳", 502)
-    result, parts, begin, previous = [], [], None, -1
-    def flush(end):
-        nonlocal parts, begin
-        value = "".join(parts).strip()
-        if value:
-            result.append({"start_seconds": round(begin / 1000, 3), "end_seconds": round(min(end / 1000, duration), 3), "text": value})
-        parts, begin = [], None
+    previous = -1
     for word in words:
         if not isinstance(word, dict):
             raise VideoError("转写时间戳格式不正确", 502)
@@ -51,20 +46,46 @@ def aligned_sentences(data, duration):
             or not 0 <= start < end <= duration * 1000 + 500 or start < previous or start >= duration * 1000
             or not isinstance(value, str) or not isinstance(punctuation, str) or word.get("fixed", True) is not True):
             raise VideoError("转写时间戳不完整或超出素材范围", 502)
+        previous = start
+    normalize = lambda s: re.sub(r"\s+", "", s)
+    joined = "".join(word["text"] + word.get("punctuation", "") for word in words)
+    if normalize(joined) != normalize(text) or (isinstance(full_text, str) and full_text and normalize(text) != normalize(full_text)):
+        raise VideoError("转写原文与时间戳不完整一致，已停止使用该结果", 502)
+    # Validate the entire response before discarding context. Do not hide a
+    # partial/unstable provider result just because it lies outside this owner.
+    if keep_range is not None:
+        left, right = keep_range
+        if not 0 <= left < right <= duration:
+            raise VideoError("转写保留范围超出音频分段", 502)
+        words = [word for word in words if left * 1000 <=
+                 (word["begin_time"] + min(word["end_time"], duration * 1000)) / 2 < right * 1000]
+        # Adjacent calls can place the same word on opposite sides of the cut.
+        # Only the first owned word can duplicate the previous owned tail.
+        if words and same_boundary_word(words[0], previous_tail):
+            words = words[1:]
+    result, parts, begin = [], [], None
+    def flush(end):
+        nonlocal parts, begin
+        value = "".join(parts).strip()
+        if value:
+            result.append({"start_seconds": round(begin / 1000, 3), "end_seconds": round(min(end / 1000, duration), 3), "text": value})
+        parts, begin = [], None
+    for word in words:
+        start, end = word.get("begin_time"), word.get("end_time")
+        value, punctuation = word.get("text"), word.get("punctuation", "")
         if begin is None:
             begin = start
         parts.append(value + punctuation)
-        previous = start
         if (re.search(r"[。！？.!?;；]", punctuation)
             or (re.search(r"[,，:：]", punctuation) and end - begin >= 4000)
             or end - begin >= 20000):
             flush(end)
     if parts:
         flush(end)
-    normalize = lambda s: re.sub(r"\s+", "", s)
-    joined = "".join(row["text"] for row in result)
-    if normalize(joined) != normalize(text) or (isinstance(full_text, str) and full_text and normalize(text) != normalize(full_text)):
-        raise VideoError("转写原文与时间戳不完整一致，已停止使用该结果", 502)
+    if result and keep_range is not None:
+        tail = words[-1]
+        result[-1]["_tail_word"] = {"text": tail["text"], "start_seconds": round(tail["begin_time"] / 1000, 3),
+                                   "end_seconds": round(min(tail["end_time"] / 1000, duration), 3)}
     return result
 
 
@@ -72,7 +93,7 @@ class CloudAsrClient:
     def __init__(self, transport_factory=None):
         self.transport_factory = transport_factory
 
-    def transcribe(self, path: Path, duration, config, alive=lambda: True):
+    def transcribe(self, path: Path, duration, config, alive=lambda: True, *, keep_range=None, previous_tail=None):
         if not 0 < path.stat().st_size <= 5 * 1024 * 1024:
             raise VideoError("转写音频分段超过大小限制")
         origin = urlsplit(config["base_url"])
@@ -113,7 +134,7 @@ class CloudAsrClient:
                         body.extend(block)
             check()
             data = json.loads(body)
-            sentences = aligned_sentences(data, duration)
+            sentences = aligned_sentences(data, duration, keep_range=keep_range, previous_tail=previous_tail)
             usage = data.get("usage", {})
             seconds = usage.get("duration", 0) if isinstance(usage, dict) else 0
             if isinstance(seconds, bool) or not isinstance(seconds, (int, float)) or not math.isfinite(seconds) or seconds < 0:
